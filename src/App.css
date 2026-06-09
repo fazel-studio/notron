@@ -1,0 +1,48 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+.prose code::before { content: none !important; }
+.prose code::after { content: none !important; }
+
+
+
+body {
+  background-color: #18181b; /* zinc-900 */
+  color: #f4f4f5; /* zinc-100 */
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+button {
+  background-color: transparent;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 150, 0.3);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 150, 150, 0.5);
+}
+
+/* Minimap styles */
+.cm-minimap-container {
+  opacity: 0.8;
+  transition: opacity 0.2s;
+  cursor: pointer;
+  max-width: 150px;
+}
+.cm-minimap-container:hover {
+  opacity: 1;
+}

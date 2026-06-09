@@ -1,0 +1,61 @@
+[package]
+name = "notron"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "notron_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+toml = "0.8"
+docx-rs = "0.4"
+calamine = "0.24"
+image = "0.25"
+walkdir = "2"
+encoding_rs = "0.8"
+mime_guess = "2"
+zip = "8.6.0"
+tauri-plugin-dialog = "2.7.1"
+tauri-plugin-fs = { version = "2.5.1", features = ["watch"] }
+
+[profile.dev]
+incremental = true
+debug = 1
+opt-level = 0
+codegen-units = 256
+
+[profile.dev.package."*"]
+debug = false
+opt-level = 0
+
+[profile.dev.package.tauri]
+opt-level = 1
+
+[profile.dev.package.tauri-runtime]
+opt-level = 1
+
+[profile.dev.package.tauri-runtime-wry]
+opt-level = 1
+
+[profile.dev.package.wry]
+opt-level = 1
+
+[profile.release]
+debug = false
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
