@@ -27,4 +27,5 @@ src-tauri/binaries/
 *.sw?
 
 # Others
-PLAN.md
+plannings/
+.kilo/

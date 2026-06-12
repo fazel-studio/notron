@@ -1,0 +1,124 @@
+/**
+ * treeFlattener.ts — Section 3.1 & 3.2
+ *
+ * Converts a nested file tree into a flat array for virtual scrolling.
+ * Virtual lists can only work on flat arrays, NOT on nested structures.
+ *
+ * Section 3.1 Golden Rule:
+ *   "Flatten Before Virtualizing — Struktur tree HARUS diubah menjadi
+ *    array linear terlebih dahulu sebelum bisa di-virtual-scroll."
+ */
+
+export interface FlatTreeNode {
+  /** Unique identifier — same as path */
+  path: string;
+  /** Display name */
+  name: string;
+  /** Indentation level (0 = root children) */
+  depth: number;
+  /** Whether this is a directory */
+  is_dir: boolean;
+  /** Whether this directory is expanded (only meaningful if is_dir) */
+  isExpanded: boolean;
+  /** Whether this directory has children (determines expand arrow) */
+  has_children: boolean;
+  /** Is this a temporary node for the creation input? */
+  is_creating?: boolean;
+  /** Type of item being created */
+  creating_type?: 'file' | 'folder';
+}
+
+export interface RawFileNode {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  has_children?: boolean;
+  children?: RawFileNode[];
+}
+
+/**
+ * Perform a DFS traversal of the file tree and produce a flat array
+ * of ONLY the visible nodes, based on the current set of expanded paths.
+ *
+ * This is the core function for Section 3.1 — Tree Flattening.
+ *
+ * @param nodes      - Array of top-level nodes (root's children)
+ * @param expandedSet - Set of paths that are currently expanded
+ * @param childrenCache - Map from path → loaded children (Section 3.3 Node Cache)
+ * @param depth      - Current recursion depth (starts at 0)
+ * @returns Flat array of visible nodes, ready for virtual scrolling
+ */
+export function flattenTree(
+  nodes: RawFileNode[],
+  expandedSet: Set<string>,
+  childrenCache: Map<string, RawFileNode[]>,
+  depth = 0,
+  creatingItem?: { type: 'file' | 'folder'; parentPath: string } | null
+): FlatTreeNode[] {
+  const result: FlatTreeNode[] = [];
+
+  for (const node of nodes) {
+    const isExpanded = node.is_dir && expandedSet.has(node.path);
+    const has_children = node.has_children ?? (node.children ? node.children.length > 0 : false);
+
+    result.push({
+      path: node.path,
+      name: node.name,
+      depth,
+      is_dir: node.is_dir,
+      isExpanded,
+      has_children,
+    });
+
+    // If this directory is expanded, recurse into its (cached) children
+    if (isExpanded) {
+      // Section 3.3: Use cache first, fall back to node.children
+      const children = childrenCache.get(node.path) ?? node.children ?? [];
+      const childFlat = flattenTree(children, expandedSet, childrenCache, depth + 1, creatingItem);
+
+      if (creatingItem && creatingItem.parentPath === node.path) {
+        if (creatingItem.type === 'folder') {
+          childFlat.unshift({
+            path: '__creating_input__',
+            name: '',
+            depth: depth + 1,
+            is_dir: true,
+            isExpanded: false,
+            has_children: false,
+            is_creating: true,
+            creating_type: 'folder'
+          });
+        } else {
+          let insertIndex = 0;
+          while (insertIndex < childFlat.length && childFlat[insertIndex].is_dir && !childFlat[insertIndex].is_creating) {
+            insertIndex++;
+          }
+          childFlat.splice(insertIndex, 0, {
+            path: '__creating_input__',
+            name: '',
+            depth: depth + 1,
+            is_dir: false,
+            isExpanded: false,
+            has_children: false,
+            is_creating: true,
+            creating_type: 'file'
+          });
+        }
+      }
+
+      for (const c of childFlat) result.push(c);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Sort nodes: directories first, then alphabetical by name (case-insensitive).
+ */
+export function sortNodes(nodes: RawFileNode[]): RawFileNode[] {
+  return [...nodes].sort((a, b) => {
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+  });
+}

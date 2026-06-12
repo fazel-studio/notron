@@ -1,24 +1,173 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+@theme {
+  /* Background layers */
+  --color-canvas: var(--bg-canvas);
+  --color-surface: var(--bg-surface);
+  --color-surface-2: var(--bg-surface-2);
+  --color-elevated: var(--bg-elevated);
+
+  /* Interactive states */
+  --color-hover: var(--bg-hover);
+  --color-active: var(--bg-active);
+  --color-selected: var(--bg-selected);
+  --color-selected-hover: var(--bg-selected-hover);
+
+  /* Border */
+  --color-subtle: var(--border-subtle);
+  --color-strong: var(--border-strong);
+  --color-focus: var(--border-focus);
+
+  /* Text */
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-muted: var(--text-muted);
+  --color-inverse: var(--text-inverse);
+  --color-on-accent: var(--text-on-accent);
+
+  /* Icon */
+  --color-icon-default: var(--icon-default);
+  --color-icon-muted: var(--icon-muted);
+  --color-icon-active: var(--icon-active);
+  --color-icon-active-tab: var(--icon-active-tab);
+
+  /* Accent */
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-active: var(--accent-active);
+  --color-indicator-active: var(--indicator-active);
+
+  /* Scrollbar */
+  --color-scrollbar-thumb: var(--scrollbar-thumb);
+  --color-scrollbar-thumb-hover: var(--scrollbar-thumb-hover);
+
+  /* Status */
+  --color-status-error: var(--color-error);
+  --color-status-warning: var(--color-warning);
+  --color-status-info: var(--color-info);
+  --color-status-success: var(--color-success);
+
+  /* Shadow */
+  --shadow-elevated: var(--shadow-elevated);
+}
+
+:root {
+  /* LIGHT THEME */
+  --bg-canvas: #ffffff;
+  --bg-surface: #f3f4f6;
+  --bg-surface-2: #e5e7eb;
+  --bg-elevated: #ffffff;
+
+  /* Interactive states - Darker for Light Theme */
+  --bg-hover: #e5e7eb;
+  --bg-active: #d1d5db;
+  --bg-selected: #bfdbfe;
+  --bg-selected-hover: #93c5fd;
+
+  --border-subtle: #e5e7eb;
+  --border-strong: #d1d5db;
+  --border-focus: #3b82f6;
+
+  --text-primary: #111827;
+  --text-secondary: #374151;
+  --text-muted: #6b7280;
+  --text-inverse: #f9fafb;
+  --text-on-accent: #ffffff;
+
+  --icon-default: #4b5563;
+  --icon-muted: #9ca3af;
+  --icon-active: #111827;
+  --icon-active-tab: #111827;
+
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-active: #1d4ed8;
+  --indicator-active: #3b82f6;
+
+  --scrollbar-thumb: rgba(107, 114, 128, 0.3);
+  --scrollbar-thumb-hover: rgba(107, 114, 128, 0.5);
+
+  --color-error: #ef4444;
+  --color-warning: #f59e0b;
+  --color-info: #3b82f6;
+  --color-success: #10b981;
+
+  --shadow-elevated: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.dark {
+  /* DARK THEME */
+  --bg-canvas: #18181b;
+  --bg-surface: #27272a;
+  --bg-surface-2: #1f1f23;
+  --bg-elevated: #27272a;
+
+  /* Interactive states - Lighter for Dark Theme */
+  --bg-hover: #3f3f46;
+  --bg-active: #52525b;
+  --bg-selected: rgba(59, 130, 246, 0.3);
+  --bg-selected-hover: rgba(59, 130, 246, 0.4);
+
+  --border-subtle: #3f3f46;
+  --border-strong: #52525b;
+  --border-focus: #60a5fa;
+
+  --text-primary: #f4f4f5;
+  --text-secondary: #d4d4d8;
+  --text-muted: #a1a1aa;
+  --text-inverse: #18181b;
+  --text-on-accent: #ffffff;
+
+  --icon-default: #a1a1aa;
+  --icon-muted: #71717a;
+  --icon-active: #f4f4f5;
+  --icon-active-tab: #ffffff;
+
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-active: #93c5fd;
+  --indicator-active: #60a5fa;
+
+  --scrollbar-thumb: rgba(161, 161, 170, 0.3);
+  --scrollbar-thumb-hover: rgba(161, 161, 170, 0.5);
+
+  --color-error: #f87171;
+  --color-warning: #fbbf24;
+  --color-info: #60a5fa;
+  --color-success: #34d399;
+
+  --shadow-elevated: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.3);
+}
+
 .prose code::before { content: none !important; }
 .prose code::after { content: none !important; }
 
-
-
 body {
-  background-color: #18181b; /* zinc-900 */
-  color: #f4f4f5; /* zinc-100 */
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
   margin: 0;
   padding: 0;
   overflow: hidden;
+}
+
+.cm-content, .cm-line, input, textarea, [contenteditable="true"], .selectable, .prose * {
+  user-select: text !important;
+}
+
+div:not(.cm-content):not(.cm-line):not(.selectable)::selection {
+  background: transparent;
+}
+
+::selection {
+  background-color: var(--bg-selected);
+  color: inherit;
 }
 
 button {
   background-color: transparent;
 }
 
-/* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -27,22 +176,37 @@ button {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(150, 150, 150, 0.3);
+  background: var(--scrollbar-thumb);
   border: 3px solid transparent;
   background-clip: padding-box;
   border-radius: 10px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(150, 150, 150, 0.5);
+  background: var(--scrollbar-thumb-hover);
 }
 
-/* Minimap styles */
 .cm-minimap-container {
-  opacity: 0.8;
-  transition: opacity 0.2s;
   cursor: pointer;
   max-width: 150px;
+  height: 100%;
 }
-.cm-minimap-container:hover {
-  opacity: 1;
+
+.cm-editor:has(.cm-minimap) .cm-scroller {
+  padding-right: 155px !important;
+}
+
+.cm-editor {
+  position: relative;
+}
+.cm-editor .cm-minimap {
+  position: absolute !important;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 150px;
+  overflow: hidden;
+  pointer-events: auto;
+  z-index: 999 !important;
+  background-color: var(--bg-canvas) !important;
+  border-left: 1px solid var(--border-subtle);
 }

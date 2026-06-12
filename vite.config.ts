@@ -1,19 +1,14 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from '@tailwindcss/vite'
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
-// https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [tailwindcss(), react()],
+  plugins: [tailwindcss(), svelte()],
 
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
-  //
-  // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
     strictPort: true,
@@ -26,8 +21,57 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
+    },
+  },
+  // Pre-bundle dependency berat saat dev server start, bukan saat browser request pertama
+  // Ini menghilangkan blank white screen dan "Not Responding" di dev mode
+  optimizeDeps: {
+    include: [
+      '@codemirror/view',
+      '@codemirror/state',
+      '@codemirror/language',
+      '@codemirror/commands',
+      '@codemirror/search',
+      '@codemirror/autocomplete',
+      '@codemirror/lang-javascript',
+      '@codemirror/lang-python',
+      '@codemirror/lang-html',
+      '@codemirror/lang-css',
+      '@codemirror/lang-json',
+      '@codemirror/lang-markdown',
+      '@codemirror/lang-rust',
+      '@codemirror/lang-cpp',
+      '@codemirror/lang-java',
+      '@codemirror/lang-go',
+      '@codemirror/lang-sql',
+      '@codemirror/lang-xml',
+      '@codemirror/lang-php',
+      '@codemirror/theme-one-dark',
+      'marked',
+    ],
+    // Exclude mermaid dari pre-bundle karena sudah lazy loaded
+    exclude: ['mermaid'],
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Pisahkan mermaid ke chunk terpisah (lazy loaded)
+          'mermaid': ['mermaid'],
+          // Pisahkan CodeMirror core ke chunk terpisah
+          'codemirror': [
+            '@codemirror/view',
+            '@codemirror/state',
+            '@codemirror/language',
+            '@codemirror/commands',
+            '@codemirror/search',
+            '@codemirror/autocomplete',
+            '@codemirror/theme-one-dark',
+            '@replit/codemirror-minimap',
+          ],
+        },
+      },
     },
   },
 }));

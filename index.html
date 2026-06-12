@@ -5,10 +5,16 @@
     <link rel="icon" type="image/png" href="/notron.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Notron Editor</title>
+    <script>
+      (function() {
+        var theme = localStorage.getItem('notron_theme') || 'system';
+        var isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.classList.toggle('dark', isDark);
+      })();
+    </script>
   </head>
-
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
