@@ -13,6 +13,15 @@ pub struct FileContent {
     pub line_count: usize,
 }
 
+/// Single-IPC result for opening a file.
+/// Combines size check + content read into one round-trip.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FileOpenMeta {
+    pub content: Vec<u8>,
+    pub size: u64,
+    pub is_large: bool,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SearchResult {
     pub path: String,
@@ -44,7 +53,7 @@ pub struct FileNode {
 }
 
 const LARGE_FILE_THRESHOLD: u64 = 1_048_576; // 1MB
-// Section 4.3: Chunked Loading thresholds
+// Chunked Loading thresholds
 const CHUNK_THRESHOLD_LOW: u64  = 512 * 1024;   // 500KB — load chunked
 const CHUNK_THRESHOLD_HIGH: u64 = 5 * 1024 * 1024; // 5MB — disable syntax highlight
 const INITIAL_CHUNK_SIZE: usize = 100 * 1024;    // 100KB first chunk
@@ -70,7 +79,20 @@ pub async fn open_file(path: String) -> Result<FileContent, String> {
     })
 }
 
-/// Section 4.3: Chunked loading for large files.
+#[tauri::command]
+pub async fn open_file_with_meta(path: String) -> Result<FileOpenMeta, String> {
+    let metadata = fs::metadata(&path).await.map_err(|e| e.to_string())?;
+    let size = metadata.len();
+    let is_large = size > LARGE_FILE_THRESHOLD;
+    let bytes = if is_large {
+        Vec::new()
+    } else {
+        fs::read(&path).await.map_err(|e| e.to_string())?
+    };
+    Ok(FileOpenMeta { content: bytes, size, is_large })
+}
+
+/// Chunked loading for large files.
 /// Returns the first INITIAL_CHUNK_SIZE bytes immediately.
 /// The caller should use this for files > CHUNK_THRESHOLD_LOW.
 #[derive(Serialize, Deserialize, Debug)]
@@ -120,6 +142,101 @@ pub async fn read_file_binary(path: String) -> Result<Vec<u8>, String> {
     fs::read(&path).await.map_err(|e| e.to_string())
 }
 
+/// Read file as text directly. Returns String, avoiding the massive JSON array
+/// overhead of read_file_binary (which serializes bytes as [72,101,108,...]).
+/// For a 100KB file, this reduces IPC payload from ~500KB to ~100KB.
+#[tauri::command]
+pub async fn read_file_text(path: String) -> Result<String, String> {
+    let bytes = fs::read(&path).await.map_err(|e| e.to_string())?;
+
+    // Check for binary content (NUL bytes in first 8KB)
+    let check_len = bytes.len().min(8000);
+    for &b in &bytes[..check_len] {
+        if b == 0 {
+            return Err("__BINARY__".to_string());
+        }
+    }
+
+    let content = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
+    Ok(content)
+}
+
+/// Batch read multiple directories in a single IPC call.
+/// Replaces N sequential invoke('read_directory') calls with 1 call.
+/// Critical for restoreExpandedChildren() during startup.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DirBatchEntry {
+    pub path: String,
+    pub children: Vec<FileNode>,
+}
+
+#[tauri::command]
+pub async fn read_directory_batch(
+    paths: Vec<String>,
+    show_dot_files: Option<bool>,
+) -> Result<Vec<DirBatchEntry>, String> {
+    let show_dot = show_dot_files.unwrap_or(false);
+
+    // Read all directories concurrently using tokio::spawn
+    let mut handles = Vec::with_capacity(paths.len());
+    for path in paths {
+        let show_dot = show_dot;
+        handles.push(tokio::spawn(async move {
+            read_single_dir(&path, show_dot).await
+        }));
+    }
+
+    let mut results = Vec::with_capacity(handles.len());
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(entry)) => results.push(entry),
+            Ok(Err(e)) => {
+                // Skip failed directories silently (may have been deleted)
+                eprintln!("read_directory_batch: skipping failed dir: {}", e);
+            }
+            Err(e) => {
+                eprintln!("read_directory_batch: task join error: {}", e);
+            }
+        }
+    }
+    Ok(results)
+}
+
+/// Internal helper for batch directory reading
+async fn read_single_dir(path: &str, show_dot: bool) -> Result<DirBatchEntry, String> {
+    let dir_path = std::path::Path::new(path);
+    if !fs::metadata(dir_path).await.map(|m| m.is_dir()).unwrap_or(false) {
+        return Err(format!("Not a directory: {}", path));
+    }
+
+    let mut children = Vec::new();
+    if let Ok(mut entries) = fs::read_dir(dir_path).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let child_name = entry.file_name().to_string_lossy().into_owned();
+            if is_ignored_dir(&child_name) { continue; }
+            if !show_dot && is_dot_file(&child_name) { continue; }
+
+            let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
+            children.push(FileNode {
+                name: child_name,
+                path: entry.path().to_string_lossy().into_owned(),
+                is_dir,
+                has_children: is_dir,
+                children: None,
+            });
+        }
+    }
+
+    children.sort_by(|a, b| {
+        b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+
+    Ok(DirBatchEntry {
+        path: path.to_string(),
+        children,
+    })
+}
+
 #[tauri::command]
 pub async fn save_file(path: String, content: String, encoding: Option<String>) -> Result<(), String> {
     let enc_str = encoding.unwrap_or_else(|| "UTF-8".to_string());
@@ -145,8 +262,8 @@ pub async fn read_directory(path: String, show_dot_files: Option<bool>) -> Resul
     let show_dot = show_dot_files.unwrap_or(false);
     let dir_path = Path::new(&path);
 
-    if fs::metadata(dir_path).await.is_err() {
-        return Err("Path does not exist".to_string());
+    if !fs::metadata(dir_path).await.map(|m| m.is_dir()).unwrap_or(false) {
+        return Err("Path is not a directory".to_string());
     }
 
     let name = dir_path.file_name().unwrap_or_default().to_string_lossy().into_owned();
@@ -160,26 +277,7 @@ pub async fn read_directory(path: String, show_dot_files: Option<bool>) -> Resul
             if !show_dot && is_dot_file(&child_name) { continue; }
 
             let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
-
-            // Check if directory has any children (for expand arrow indication)
-            let has_children = if is_dir {
-                if let Ok(mut sub_entries) = fs::read_dir(entry.path()).await {
-                    let mut found = false;
-                    while let Ok(Some(e)) = sub_entries.next_entry().await {
-                        let ename = e.file_name().to_string_lossy().into_owned();
-                        if !show_dot && is_dot_file(&ename) { continue; }
-                        if !is_ignored_dir(&ename) {
-                            found = true;
-                            break;
-                        }
-                    }
-                    found
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
+            let has_children = is_dir;
 
             children.push(FileNode {
                 name: child_name,

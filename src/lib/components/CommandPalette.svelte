@@ -17,7 +17,7 @@
 
 
 
-  // Use fzf for fuzzy search (Bagian 17.2)
+  // Use fzf for fuzzy search 
   let filteredCommands = $derived.by(() => {
     if (!query.trim()) return commands.slice(0, MAX_RESULTS);
     const fuzzy = new Fzf(commands, {

@@ -22,8 +22,12 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 toml = "0.8"
 walkdir = "2"
 encoding_rs = "0.8"
+r2d2 = "0.8"
+r2d2_sqlite = "0.24"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-fs = { version = "2.5.1", features = ["watch"] }
+tauri-plugin-shell = "2"
+tauri-plugin-pty = "0.3.0"
 regex = "1"
 
 [profile.dev]

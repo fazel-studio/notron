@@ -19,6 +19,7 @@
         "minHeight": 400,
         "maximized": true,
         "decorations": false,
+        "visible": false,
         "backgroundColor": "#1e1e1e"
       }
     ],

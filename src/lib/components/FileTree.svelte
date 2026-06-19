@@ -2,27 +2,27 @@
   /**
    * FileTree.svelte — Optimized File Explorer
    *
-   * Implements Section 3 optimizations WITHOUT flickering:
-   *  3.1 Tree Flattening (flattenTree utility)
-   *  3.2 UI Virtualization (VirtualList component)
-   *  3.3 Node Cache — never cleared on collapse
-   *  3.4 Optimistic UI on Expand
-   *  3.5 Async read_directory (tokio::fs on Rust side)
-   *  3.6 FS Watcher cache invalidation (via 'fs-change' event)
-   *
-   * FLICKERING FIX: Use dedicated derived() stores so the loadRoot
-   * $effect only tracks explorerRefreshCounter and showDotFiles,
-   * NOT every change to $ui (expandedPaths, selectedPath, etc.).
+   * Performance optimizations:
+   *  - Tree Flattening (flattenTree utility)
+   *  - UI Virtualization (VirtualList component)
+   *  - Node Cache — never cleared on collapse
+   *  - Optimistic UI on Expand
+   *  - Async read_directory (tokio::fs on Rust side)
+   *  - FS Watcher cache invalidation (via 'fs-change' event)
+   *  - Batch directory restore (single IPC for N folders)
+   *  - Set-based expandedPaths (O(1) lookups)
    */
 
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { derived } from 'svelte/store';
+  import { onMount } from 'svelte';
   import { editorStore } from '../stores/editor';
   import { uiStore } from '../stores/ui';
     import { settingsStore } from '../stores/settings';
-  import type { MenuItem } from './ContextMenu.svelte';
   import Tooltip from './Tooltip.svelte';
+  import type { MenuItem } from './ContextMenu.svelte';
+  import Modal from './Modal.svelte';
   import CreationInput from './CreationInput.svelte';
   import RenameInput from './RenameInput.svelte';
   import VirtualList from './VirtualList.svelte';
@@ -33,12 +33,21 @@
     File, FileCode, FileJson, FileText, Image, Settings, Globe, Hash, Loader2
   } from 'lucide-svelte';
 
+  interface FileOpenMeta {
+    content: number[];
+    size: number;
+    is_large: boolean;
+  }
+
+  interface DirBatchEntry {
+    path: string;
+    children: RawFileNode[];
+  }
+
   interface Props { rootPath: string }
   let { rootPath }: Props = $props();
 
-  // ─────────────────────────────────────────────────────────
-  // Icon map (from TreeNode.svelte — lucide-svelte)
-  // ─────────────────────────────────────────────────────────
+  // Icon map for file extensions (lucide-svelte icons)
   const ICON_MAP: Record<string, any> = {
     ts: FileCode, tsx: FileCode, js: FileCode, jsx: FileCode,
     rs: FileCode, py: FileCode, go: FileCode,
@@ -52,25 +61,17 @@
     return ICON_MAP[ext] ?? File;
   }
 
-  // ─────────────────────────────────────────────────────────
-  // FLICKERING FIX:
-  // Extract ONLY the fields we want to trigger root reload from.
-  // This means the loadRoot $effect below will ONLY re-run when
-  // explorerRefreshCounter or showDotFiles changes — NOT when
-  // expandedPaths, selectedExplorerPath, or other fields change.
-  // ─────────────────────────────────────────────────────────
-  // FLICKERING FIX: Fine-grained tracking
-  // ─────────────────────────────────────────────────────────
+  // Fine-grained derived stores to prevent over-firing
   const refreshCounterStore = derived(uiStore, $s => $s.explorerRefreshCounter);
   const showDotFilesStore   = derived(uiStore, $s => $s.showDotFiles);
-  const explorerRootStore   = derived(uiStore, $s => $s.explorerRoot); // track specifically
+  const explorerRootStore   = derived(uiStore, $s => $s.explorerRoot);
   
   const ui = uiStore;
+  // expandedPaths is now a separate Set-based store
+  const expandedPathsStore = uiStore.expandedPaths;
 
   
-  // ─────────────────────────────────────────────────────────
   // State
-  // ─────────────────────────────────────────────────────────
   let rootChildren   = $state<RawFileNode[]>([]);
   let errorMsg       = $state<string | null>(null);
   let isInitialLoading = $state(false);
@@ -81,27 +82,82 @@
   });
 
   /**
-   * Section 3.3: Node Cache
-   * Map<path → children>. NEVER cleared on collapse.
+   * Node Cache: Map<path → children>. NEVER cleared on collapse.
    * Only invalidated by FS Watcher events.
    */
-  // Use a plain Map + a reactive version counter to avoid double-render.
-  // The version counter is the single reactivity signal for flatList.
   const _nodeCache = new Map<string, RawFileNode[]>();
   let nodeCacheVersion = $state(0);
 
-  /** Section 3.4: Paths currently being loaded (show spinner) */
+  /** Paths currently being loaded (show spinner) */
   let loadingPaths = $state(new Set<string>());
 
-  // ─────────────────────────────────────────────────────────
-  // Derived flat list (Section 3.1 + 3.2)
-  // ─────────────────────────────────────────────────────────
+  function getParentPath(path: string) {
+    const normalized = path.replace(/\\/g, '/');
+    const parts = normalized.split('/');
+    parts.pop();
+    return parts.join('/') || path;
+  }
+
+  /**
+   * PERF: Batch restore expanded children using single IPC call.
+   * Previously this was N sequential invoke('read_directory') calls.
+   * Now uses invoke('read_directory_batch') — 1 round-trip for all.
+   */
+  async function restoreExpandedChildren() {
+    const expanded = uiStore.getExpandedPathsSnapshot();
+    if (!expanded.length) return;
+
+    const ordered = [...expanded].sort((a, b) => a.split(/\\|\//).length - b.split(/\\|\//).length);
+    const toLoad = ordered.filter(expPath => {
+      if (_nodeCache.has(expPath) || expPath === rootPath) return false;
+      const parentPath = getParentPath(expPath);
+      if (parentPath !== rootPath && !_nodeCache.has(parentPath)) return false;
+      return true;
+    });
+
+    if (toLoad.length === 0) return;
+
+    loadingPaths = new Set([...loadingPaths, ...toLoad]);
+
+    try {
+      const showDot = uiStore.getSnapshot().showDotFiles;
+      
+      // Single IPC call for all directories
+      const results = await invoke<DirBatchEntry[]>('read_directory_batch', {
+        paths: toLoad,
+        showDotFiles: showDot,
+      });
+
+      for (const result of results) {
+        _nodeCache.set(result.path, sortNodes(result.children));
+      }
+      nodeCacheVersion++;
+    } catch (err) {
+      console.warn('restoreExpandedChildren batch failed:', err);
+      // Fallback: try individual loads
+      const showDot = uiStore.getSnapshot().showDotFiles;
+      for (const expPath of toLoad) {
+        try {
+          const fullNode = await invoke<RawFileNode>('read_directory', { path: expPath, showDotFiles: showDot });
+          _nodeCache.set(expPath, sortNodes(fullNode.children ?? []));
+        } catch { /* skip */ }
+      }
+      nodeCacheVersion++;
+    } finally {
+      const next = new Set(loadingPaths);
+      for (const p of toLoad) next.delete(p);
+      loadingPaths = next;
+    }
+  }
+
+  // Derived flat list — uses Set directly (O(1) lookups)
   let creatingItem = $derived($ui.creatingItem);
-  let expandedSet = $derived(new Set($ui.expandedPaths));
+  // PERF: expandedPaths is now Set<string> from separate store
+  let expandedSet = $derived($expandedPathsStore);
 
   let flatList = $derived.by(() => {
     void nodeCacheVersion; // track cache version
-    let list = flattenTree(sortNodes(rootChildren), expandedSet, _nodeCache, 0, creatingItem);
+    let list = flattenTree(sortNodes(rootChildren), expandedSet, _nodeCache, 0, creatingItem, loadingPaths);
     if (creatingItem && creatingItem.parentPath === rootPath) {
         if (creatingItem.type === 'folder') {
             list.unshift({
@@ -134,97 +190,99 @@
     return list;
   });
 
-  // ─────────────────────────────────────────────────────────
   // Load root — ONLY triggered by refreshCounter, showDotFiles, rootPath.
   // NOT triggered by expandedPaths/selectedPath changes.
-  // ─────────────────────────────────────────────────────────
   $effect(() => {
-    const counter = $refreshCounterStore;
-    const showDot = $showDotFilesStore;
-    const rp = $explorerRootStore; // Use derived store instead of prop to guarantee no over-firing
+    $refreshCounterStore;
+    $showDotFilesStore;
+    const rp = $explorerRootStore;
     
     if (!rp) return;
-    console.log('[FileTree] loadRoot triggered by effect', { counter, showDot, rp });
-    // IMPORTANT: don't clear rootChildren here to avoid flickering on config change
     loadRoot(rp);
   });
 
   async function loadRoot(path: string) {
     if (rootChildren.length === 0) {
-        isInitialLoading = true;
+      isInitialLoading = true;
     }
     errorMsg = null;
+
     try {
       const showDotFiles = uiStore.getSnapshot().showDotFiles;
       const node = await invoke<RawFileNode>('read_directory', { path, showDotFiles });
       rootChildren = sortNodes(node.children ?? []);
       _nodeCache.set(path, rootChildren);
-
-      // Reload expanded paths to prevent them from becoming empty after a cache clear
-      const expanded = uiStore.getSnapshot().expandedPaths;
-      if (expanded.length > 0) {
-        await Promise.all(expanded.map(async (expPath) => {
-          try {
-            const expNode = await invoke<RawFileNode>('read_directory', { path: expPath, showDotFiles });
-            _nodeCache.set(expPath, sortNodes(expNode.children ?? []));
-          } catch (e) {
-            // Ignore errors for folders that might have been deleted
-          }
-        }));
-      }
-
       nodeCacheVersion++;
     } catch (err) {
       errorMsg = String(err);
       setTimeout(() => uiStore.setExplorerRoot(null), 2000);
     } finally {
       isInitialLoading = false;
+      restoreExpandedChildren().catch(console.error);
     }
   }
 
-  // ─────────────────────────────────────────────────────────
-  // Section 3.4: Optimistic expand + Section 3.3: Cache
-  // ─────────────────────────────────────────────────────────
+  onMount(() => {
+    const handleCreateFile = () => {
+      setTimeout(() => {
+        const targetPath = resolveCreationPath();
+        uiStore.setCreatingItem({ type: 'file', parentPath: targetPath });
+        uiStore.toggleExpandedPath(targetPath, true);
+      }, 10);
+    };
+    
+    const handleCreateFolder = () => {
+      setTimeout(() => {
+        const targetPath = resolveCreationPath();
+        uiStore.setCreatingItem({ type: 'folder', parentPath: targetPath });
+        uiStore.toggleExpandedPath(targetPath, true);
+      }, 10);
+    };
+
+    document.addEventListener('notron-create-file', handleCreateFile);
+    document.addEventListener('notron-create-folder', handleCreateFolder);
+
+    return () => {
+      document.removeEventListener('notron-create-file', handleCreateFile);
+      document.removeEventListener('notron-create-folder', handleCreateFolder);
+    };
+  });
+
+  // Optimistic expand + Cache
   async function handleExpand(node: FlatTreeNode) {
     if (!node.is_dir) return;
 
     if (expandedSet.has(node.path)) {
-      // Collapse — keep cache, only remove from expandedSet
       uiStore.toggleExpandedPath(node.path, false);
       return;
     }
 
-    // Cache hit → instant, no fetch needed
     if (_nodeCache.has(node.path)) {
       uiStore.toggleExpandedPath(node.path, true);
       return;
     }
 
-    // Section 3.4: Optimistic — show expand arrow immediately
     uiStore.toggleExpandedPath(node.path, true);
     loadingPaths = new Set(loadingPaths).add(node.path);
 
-    try {
-      const fullNode = await invoke<RawFileNode>('read_directory', {
-        path: node.path,
-        showDotFiles: uiStore.getSnapshot().showDotFiles,
-      });
+    invoke<RawFileNode>('read_directory', {
+      path: node.path,
+      showDotFiles: uiStore.getSnapshot().showDotFiles,
+    }).then((fullNode) => {
       const children = sortNodes(fullNode.children ?? []);
       _nodeCache.set(node.path, children);
-      nodeCacheVersion++; // single reactive trigger → flatList recomputes once
-    } catch (err) {
+      nodeCacheVersion++;
+    }).catch((err) => {
       console.error('Failed to load directory', node.path, err);
       uiStore.toggleExpandedPath(node.path, false);
-    } finally {
+    }).finally(() => {
       const next = new Set(loadingPaths);
       next.delete(node.path);
       loadingPaths = next;
-    }
+    });
   }
 
-  // ─────────────────────────────────────────────────────────
-  // Section 3.6: FS Watcher cache invalidation
-  // ─────────────────────────────────────────────────────────
+  // FS Watcher cache invalidation
   $effect(() => {
     if (!rootPath) return;
     const unlisten = listen<{ path: string; parent_path: string; kind: string }>(
@@ -235,8 +293,9 @@
         _nodeCache.delete(parent_path);
         nodeCacheVersion++;
 
+        const expandedSnap = uiStore.getExpandedPathsSetSnapshot();
         const snap = uiStore.getSnapshot();
-        if (snap.expandedPaths.includes(parent_path)) {
+        if (expandedSnap.has(parent_path)) {
           try {
             const fullNode = await invoke<RawFileNode>('read_directory', {
               path: parent_path, showDotFiles: snap.showDotFiles,
@@ -260,13 +319,11 @@
     return () => { unlisten.then(fn => fn()); };
   });
 
-  // ─────────────────────────────────────────────────────────
-  // File click
-  // ─────────────────────────────────────────────────────────
+  // File click — uses read_file_text for text files (no binary overhead)
   async function handleFileClick(node: FlatTreeNode) {
     uiStore.setSelectedExplorerPath(node.path);
     if (node.is_dir) {
-      await handleExpand(node);
+      handleExpand(node);
       return;
     }
     const isImg = /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(node.name);
@@ -274,18 +331,37 @@
       editorStore.addTab({ id: node.path, path: node.path, name: node.name, content: '', language: 'image', isPreview: true });
       return;
     }
-    const isLarge = await invoke<boolean>('is_large_file', { path: node.path });
-    if (isLarge) {
-      if (!confirm(`"${node.name}" is large (>1MB). Open anyway? Syntax highlighting will be disabled.`)) return;
-      editorStore.addTab({ id: node.path, path: node.path, name: node.name, content: '', language: 'plaintext', isPreview: true, isLargeFile: true });
-      return;
+    editorStore.addTab({ id: node.path, path: node.path, name: node.name, content: null, language: 'plaintext', isPreview: true, isLoading: true });
+    try {
+      // PERF: Use read_file_text — returns String directly, no JSON array overhead
+      const content = await invoke<string>('read_file_text', { path: node.path });
+      editorStore.setInitialContent(node.path, content);
+    } catch (err) {
+      const errStr = String(err);
+      if (errStr === '__BINARY__') {
+        editorStore.setTabUnsupported(node.path, true);
+        editorStore.setInitialContent(node.path, '');
+      } else {
+        // Try open_file_with_meta as fallback for large files
+        try {
+          const meta = await invoke<FileOpenMeta>('open_file_with_meta', { path: node.path });
+          if (meta.is_large) {
+            editorStore.closeTab(node.path);
+            if (!confirm(`"${node.name}" is large (>1MB). Open anyway? Syntax highlighting will be disabled.`)) return;
+            editorStore.addTab({ id: node.path, path: node.path, name: node.name, content: '', language: 'plaintext', isPreview: true, isLargeFile: true });
+            return;
+          }
+          const content = new TextDecoder('utf-8').decode(new Uint8Array(meta.content)).replace(/\r\n/g, '\n');
+          editorStore.setInitialContent(node.path, content);
+        } catch (fallbackErr) {
+          console.error('Failed to open file:', node.path, fallbackErr);
+          editorStore.setTabLoading(node.path, false);
+        }
+      }
     }
-    editorStore.addTab({ id: node.path, path: node.path, name: node.name, content: null, language: 'plaintext', isPreview: true });
   }
 
-  // ─────────────────────────────────────────────────────────
   // Context menu helpers
-  // ─────────────────────────────────────────────────────────
   async function handlePaste(targetPath: string, isDir: boolean) {
     const clip = uiStore.getSnapshot().clipboard;
     if (!clip) return;
@@ -295,16 +371,53 @@
       ? `${targetPath}${sep}${fileName}`
       : (() => { const p = targetPath.split(sep); p.pop(); return [...p, fileName].join(sep); })();
     try {
-      await invoke('copy_item', { srcPath: clip.path, dstPath: actualTarget });
-      if (clip.type === 'cut') { await invoke('delete_item', { path: clip.path }); uiStore.setClipboard(null); }
-      invalidateCacheAndRefreshRoot();
+      await uiStore.withStatus(`Copying ${fileName}...`, invoke('copy_item', { srcPath: clip.path, dstPath: actualTarget }), 500);
+      if (clip.type === 'cut') {
+        await uiStore.withStatus(`Moving ${fileName}...`, invoke('delete_item', { path: clip.path }), 500);
+        uiStore.setClipboard(null);
+        invalidateCacheForPath(clip.path);
+      }
+      invalidateCacheForPath(actualTarget);
+      const parentDir = targetPath.split(/[/\\]/).slice(0, -1).join('/') || targetPath;
+      invalidateCacheForPath(parentDir);
+      nodeCacheVersion++;
+      uiStore.triggerExplorerRefresh();
     } catch (err) { alert(err); }
   }
 
-  async function handleDeleteNode(node: FlatTreeNode) {
-    if (!confirm(`Delete "${node.name}"?`)) return;
+  let nodeToDelete: FlatTreeNode | null = $state(null);
+  let skipDeleteConfirm = $state(false);
+
+  async function requestDeleteNode(node: FlatTreeNode) {
+    const explorerRoot = $ui.explorerRoot;
+    if (!explorerRoot) return;
+    const skipSetting = localStorage.getItem(`delete_confirm_skip_${explorerRoot}`);
+    if (skipSetting === 'true') {
+      await executeDelete(node);
+    } else {
+      nodeToDelete = node;
+      skipDeleteConfirm = false;
+    }
+  }
+
+  async function confirmDelete() {
+    if (!nodeToDelete) return;
+    const explorerRoot = $ui.explorerRoot;
+    if (skipDeleteConfirm && explorerRoot) {
+      localStorage.setItem(`delete_confirm_skip_${explorerRoot}`, 'true');
+    }
+    const node = nodeToDelete;
+    nodeToDelete = null;
+    await executeDelete(node);
+  }
+
+  function cancelDelete() {
+    nodeToDelete = null;
+  }
+
+  async function executeDelete(node: FlatTreeNode) {
     try {
-      await invoke('delete_item', { path: node.path });
+      await uiStore.withStatus(`Deleting ${node.name}...`, invoke('delete_item', { path: node.path }), 500);
       editorStore.closeTab(node.path);
       const sep = node.path.includes('\\') ? '\\' : '/';
       const parts = node.path.split(sep); parts.pop();
@@ -316,13 +429,18 @@
         nodeCacheVersion++;
       }
       _nodeCache.delete(node.path);
+      uiStore.triggerExplorerRefresh();
     } catch (err) { alert(err); }
   }
 
-  function invalidateCacheAndRefreshRoot() {
-    _nodeCache.clear();
-    nodeCacheVersion++;
-    uiStore.triggerExplorerRefresh();
+  function invalidateCacheForPath(path: string) {
+    const normalized = path.replace(/\\/g, '/');
+    for (const key of _nodeCache.keys()) {
+      const normalizedKey = key.replace(/\\/g, '/');
+      if (normalizedKey === normalized || normalizedKey.startsWith(normalized + '/')) {
+        _nodeCache.delete(key);
+      }
+    }
   }
 
   function handleCopyPath(path: string) { navigator.clipboard.writeText(path); }
@@ -342,7 +460,8 @@
         { id: 'copy-path',  label: 'Copy Path',  action: () => handleCopyPath(node.path) },
         { id: 'sep-3',      label: '',           action: () => {}, separator: true },
         { id: 'rename',     label: 'Rename',     action: () => uiStore.setRenamingItem(node.path) },
-        { id: 'delete',     label: 'Delete',     action: () => handleDeleteNode(node) },
+        { id: 'delete',     label: 'Delete',     action: () => requestDeleteNode(node) },
+        { id: 'sep-4',      label: '',           action: () => {}, separator: true },
       ];
     } else {
       return [
@@ -352,20 +471,37 @@
         { id: 'copy-path', label: 'Copy Path', action: () => handleCopyPath(node.path) },
         { id: 'sep-2',     label: '',          action: () => {}, separator: true },
         { id: 'rename',    label: 'Rename',    action: () => uiStore.setRenamingItem(node.path) },
-        { id: 'delete',    label: 'Delete',    action: () => handleDeleteNode(node) },
+        { id: 'delete',    label: 'Delete',    action: () => requestDeleteNode(node) },
+        { id: 'sep-5',     label: '',          action: () => {}, separator: true },
       ];
     }
   }
 
+  function resolveCreationPath(): string {
+    const selected = uiStore.getSnapshot().selectedExplorerPath;
+    if (!selected || selected === rootPath) return rootPath;
+    
+    const node = flatList.find(n => n.path === selected);
+    if (node) {
+      if (node.is_dir) return selected;
+      return getParentPath(selected);
+    }
+    return getParentPath(selected);
+  }
+
   // Root area context menu
-  let rootMenuItems = $derived<MenuItem[]>([
-    { id: 'new-file',   label: 'New File',   action: () => uiStore.setCreatingItem({ type: 'file',   parentPath: rootPath }) },
-    { id: 'new-folder', label: 'New Folder', action: () => uiStore.setCreatingItem({ type: 'folder', parentPath: rootPath }) },
-    { id: 'sep-1',      label: '',           action: () => {}, separator: true },
-    { id: 'paste',      label: 'Paste',      action: () => handlePaste(rootPath, true), disabled: !$ui.clipboard },
-    { id: 'sep-2',      label: '',           action: () => {}, separator: true },
-    { id: 'copy-path',  label: 'Copy Path',  action: () => handleCopyPath(rootPath) },
-  ]);
+  function getRootMenuItems(): MenuItem[] {
+    const clip = uiStore.getSnapshot().clipboard;
+    const targetPath = resolveCreationPath();
+    return [
+      { id: 'new-file',   label: 'New File',   action: () => { uiStore.setCreatingItem({ type: 'file',   parentPath: targetPath }); uiStore.toggleExpandedPath(targetPath, true); } },
+      { id: 'new-folder', label: 'New Folder', action: () => { uiStore.setCreatingItem({ type: 'folder', parentPath: targetPath }); uiStore.toggleExpandedPath(targetPath, true); } },
+      { id: 'sep-1',      label: '',           action: () => {}, separator: true },
+      { id: 'paste',      label: 'Paste',      action: () => handlePaste(rootPath, true), disabled: !clip },
+      { id: 'sep-2',      label: '',           action: () => {}, separator: true },
+      { id: 'copy-path',  label: 'Copy Path',  action: () => handleCopyPath(rootPath) },
+    ];
+  }
 
   function getBoundedPos(x: number, y: number) {
     // Basic bounds checking for menu
@@ -381,17 +517,18 @@
     e.stopPropagation();
     uiStore.setSelectedExplorerPath(node.path);
     const pos = getBoundedPos(e.clientX, e.clientY);
-    ctxMenu = { isOpen: true, x: pos.x, y: pos.y, items: getNodeMenuItems(node) };
+    setTimeout(() => {
+      ctxMenu = { isOpen: true, x: pos.x, y: pos.y, items: getNodeMenuItems(node) };
+    }, 0);
   }
 
   function handleRootContextMenu(e: MouseEvent) {
-    if (e.target !== e.currentTarget) {
-      // Allow clicking directly on the root container, but don't override node clicks
-      // if propagation wasn't stopped for some reason.
-    }
     e.preventDefault();
+    e.stopPropagation();
     const pos = getBoundedPos(e.clientX, e.clientY);
-    ctxMenu = { isOpen: true, x: pos.x, y: pos.y, items: rootMenuItems };
+    setTimeout(() => {
+      ctxMenu = { isOpen: true, x: pos.x, y: pos.y, items: getRootMenuItems() };
+    }, 0);
   }
 
   function handleCtxItemAction(item: MenuItem) {
@@ -407,10 +544,9 @@
     if (e.key === 'F2') { uiStore.setRenamingItem(path); }
     else if (e.key === 'Delete') {
       const node = flatList.find(n => n.path === path);
-      if (node && confirm(`Delete "${node.name}"?`)) {
-        invoke('delete_item', { path }).then(() => invalidateCacheAndRefreshRoot()).catch(err => alert(err));
-      }
-    } else if (e.ctrlKey && e.key.toLowerCase() === 'c') { uiStore.setClipboard({ path, type: 'copy' }); }
+      if (node) requestDeleteNode(node);
+    }
+    else if (e.ctrlKey && e.key.toLowerCase() === 'c') { uiStore.setClipboard({ path, type: 'copy' }); }
     else if (e.ctrlKey && e.key.toLowerCase() === 'x') { uiStore.setClipboard({ path, type: 'cut' }); }
     else if (e.ctrlKey && e.key.toLowerCase() === 'v') { handlePaste(path, false); }
   }
@@ -431,18 +567,23 @@
   </div>
 
 {:else if rootChildren.length === 0}
-  <div class="p-4 text-xs text-muted">
+  <div 
+    class="p-4 text-xs text-muted flex-1 h-full outline-none transition-all {$ui.selectedExplorerPath === rootPath ? 'bg-surface-2 ring-1 ring-inset ring-focus' : ''}"
+    role="presentation"
+    onclick={() => uiStore.setSelectedExplorerPath(rootPath)}
+    oncontextmenu={handleRootContextMenu}
+  >
     Empty folder.
   </div>
 
 {:else}
   <!-- Root-level context menu container (empty area right-click) -->
   <div
-    class="flex-1 h-full outline-none flex flex-col"
+    class="flex-1 h-full outline-none flex flex-col p-2 transition-all {$ui.selectedExplorerPath === rootPath ? 'bg-surface-2 ring-1 ring-inset ring-focus' : ''}"
     role="tree"
     tabindex="0"
     onkeydown={handleKeydown}
-    onclick={() => uiStore.setSelectedExplorerPath(null)}
+    onclick={() => uiStore.setSelectedExplorerPath(rootPath)}
     oncontextmenu={handleRootContextMenu}
   >
     <VirtualList items={flatList} itemHeight={26} overscan={5} class="flex-1">
@@ -524,12 +665,21 @@
 
 <!-- Centralized Context Menu UI -->
 <svelte:window 
-  onclick={() => { if (ctxMenu.isOpen) ctxMenu.isOpen = false; }} 
-  oncontextmenu={() => { if (ctxMenu.isOpen) ctxMenu.isOpen = false; }}
+  onclickcapture={(e) => { 
+    if (ctxMenu.isOpen && !(e.target as Element)?.closest('[data-notron-context-menu]')) {
+      ctxMenu.isOpen = false; 
+    }
+  }} 
+  oncontextmenucapture={(e) => { 
+    if (ctxMenu.isOpen && !(e.target as Element)?.closest('[data-notron-context-menu]')) {
+      ctxMenu.isOpen = false; 
+    }
+  }}
   onkeydown={(e) => { if (e.key === 'Escape' && ctxMenu.isOpen) ctxMenu.isOpen = false; }} 
 />
 {#if ctxMenu.isOpen}
   <div
+    data-notron-context-menu="true"
     class="fixed min-w-[160px] rounded-md border p-1 shadow-md z-[100] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary"
     style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;"
     role="presentation"
@@ -553,4 +703,35 @@
       {/if}
     {/each}
   </div>
+{/if}
+
+{#if nodeToDelete}
+  <Modal
+    isOpen={true}
+    title="Confirm Delete"
+    onClose={cancelDelete}
+    widthClass="max-w-sm"
+  >
+    <div class="p-6">
+      <p class="text-sm opacity-80 mb-4 break-words">
+        Are you sure you want to delete <span class="font-semibold text-primary">{nodeToDelete.name}</span>?
+      </p>
+      
+      <label class="flex items-center gap-2 mb-2 cursor-pointer select-none">
+        <input type="checkbox" bind:checked={skipDeleteConfirm} class="w-4 h-4 rounded border-subtle bg-surface-2 text-accent focus:ring-accent focus:ring-opacity-50 transition-shadow">
+        <span class="text-xs opacity-70">Don't show again in this workspace</span>
+      </label>
+    </div>
+    
+    {#snippet footer()}
+      <div class="flex justify-end gap-3 w-full">
+        <button onclick={cancelDelete} class="px-4 py-2 text-sm rounded bg-surface-2 hover:bg-hover transition-colors text-primary border border-subtle">
+          Cancel
+        </button>
+        <button onclick={confirmDelete} class="px-4 py-2 text-sm rounded bg-status-error hover:bg-status-error/80 transition-colors text-white border border-transparent">
+          Yes, Delete it
+        </button>
+      </div>
+    {/snippet}
+  </Modal>
 {/if}

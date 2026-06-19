@@ -4,6 +4,7 @@
     import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open, save } from '@tauri-apps/plugin-dialog';
   import { invoke } from '@tauri-apps/api/core';
+  import { terminalStore } from '../stores/terminal';
 
   const tabs = editorStore.tabs;
   const activeTabId = editorStore.activeTabId;
@@ -35,8 +36,12 @@
         let content = '';
         const isImage = /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(fileName);
         if (!isImage) {
-          const bytes = await invoke<number[]>('read_file_binary', { path: selected });
-          content = new TextDecoder('utf-8').decode(new Uint8Array(bytes)).replace(/\r\n/g, '\n');
+          try {
+            content = await invoke<string>('read_file_text', { path: selected });
+          } catch (e) {
+            if (String(e) === '__BINARY__') content = '';
+            else throw e;
+          }
         }
         editorStore.addTab({
           id: `tab-${Date.now()}`, path: selected, name: fileName, content,
@@ -51,8 +56,14 @@
   async function handleOpenFolder() {
     try {
       const selected = await open({ directory: true, multiple: false });
-      if (selected && typeof selected === 'string') uiStore.setExplorerRoot(selected);
-    } catch (err) { console.error(err); }
+      if (selected && typeof selected === 'string') {
+        if (!$ui.recentWorkspaces.includes(selected)) {
+          uiStore.setPendingTrustPath(selected);
+        } else {
+          window.dispatchEvent(new CustomEvent('request-workspace-switch', { detail: { path: selected } }));
+        }
+      }
+    } catch (err) { console.error("Failed to open folder:", err); }
     closeAll();
   }
 
@@ -128,7 +139,8 @@
         { label: 'New File', action: () => { uiStore.openNewFileDialog('menu'); closeAll(); } },
         { label: 'New Window', action: handleNewWindow, sep: true },
         { label: 'Open File', action: handleOpenFile },
-        { label: 'Open Folder', action: handleOpenFolder, sep: true },
+        { label: 'Open Folder', action: handleOpenFolder },
+        { label: 'Open Recent...', action: () => { uiStore.openRecentFoldersModal(); closeAll(); }, sep: true },
         { label: 'Save', action: handleSave, disabled: isDisabled },
         { label: 'Save As', action: handleSaveAs, disabled: isDisabled, sep: true },
         { label: 'Exit', action: handleExit }
@@ -155,6 +167,16 @@
         { label: 'Move Line Up', action: () => dispatchEditorAction('moveLineUp'), disabled: isDisabled },
         { label: 'Move Line Down', action: () => dispatchEditorAction('moveLineDown'), disabled: isDisabled, sep: true },
         { label: 'Duplicate Selection', action: () => dispatchEditorAction('copyLineDown'), disabled: isDisabled }
+      ]
+    },
+    {
+      label: 'Terminal', items: [
+        { label: 'New Terminal', action: () => { 
+            const cwd = uiStore.getSnapshot().explorerRoot || '';
+            terminalStore.newTerminal('powershell', cwd); 
+            closeAll(); 
+          } 
+        }
       ]
     },
     {

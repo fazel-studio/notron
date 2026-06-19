@@ -60,7 +60,7 @@
 
   let currentLoadedPath = $state("");
 
-  // Session cache for directory listings (Bagian 7.1 - 10 second TTL)
+  // Session cache for directory listings 
   let cacheDir = new Map<string, { items: DropdownItem[]; time: number }>();
   const CACHE_TTL = 10000;
 
@@ -91,7 +91,7 @@
     } catch (err) { return []; }
   }
 
-  // Hover preload with 150ms delay (Bagian 7.1)
+  // Hover preload with 150ms delay
   let hoverTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
   function handlePathHover(index: number) {
@@ -136,7 +136,8 @@
   });
 
   $effect(() => {
-    const cursorLine = activeTab?.cursor?.line;
+    const cursor = activeTab ? editorStore.getCursor(activeTab.id) : null;
+    const cursorLine = cursor?.line;
     if (cursorLine && symbols.length > 0) {
       const sym = [...symbols].reverse().find(s => s.line <= cursorLine);
       currentSymbol = sym || null;
@@ -257,7 +258,7 @@
 <svelte:window onclick={() => openDropdown = null} />
 
 {#if activeTab && activeTab.language !== 'welcome'}
-<div class="h-7 flex items-center px-4 text-[11px] select-none border-b shrink-0 bg-transparent border-subtle text-secondary">
+<div class="h-7 flex items-center px-4 text-[11px] select-none border-b shrink-0 bg-transparent border-subtle text-secondary relative">
   <div class="flex items-center gap-0.5 overflow-x-auto scrollbar-hide">
     {#each pathParts as part, i (i)}
       {#if i > 0}
@@ -312,6 +313,10 @@
       </button>
     {/if}
   </div>
+  
+  {#if activeTab.isLoading}
+    <div class="absolute bottom-0 left-0 right-0 h-[1px] bg-indicator-active animate-pulse opacity-70"></div>
+  {/if}
 </div>
 
 {#if openDropdown}

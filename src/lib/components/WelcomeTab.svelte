@@ -6,14 +6,12 @@
   import { exists } from '@tauri-apps/plugin-fs';
 
   const ui = uiStore;
-  let showMoreModal = $state(false);
 
   async function handleOpenRecent(path: string) {
     try {
       const doesExist = await exists(path);
       if (!doesExist) { alert(`Path not found: ${path}`); return; }
-      uiStore.setExplorerRoot(path);
-      showMoreModal = false;
+      window.dispatchEvent(new CustomEvent('request-workspace-switch', { detail: { path } }));
     } catch (err) { alert(`Failed to load folder: ${err}`); }
   }
 
@@ -27,8 +25,12 @@
         let content = '';
         const isImage = /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(fileName);
         if (!isImage) {
-          const bytes = await invoke<number[]>('read_file_binary', { path: selected });
-          content = new TextDecoder('utf-8').decode(new Uint8Array(bytes)).replace(/\r\n/g, '\n');
+          try {
+            content = await invoke<string>('read_file_text', { path: selected });
+          } catch (e) {
+            if (String(e) === '__BINARY__') content = '';
+            else throw e;
+          }
         }
         editorStore.addTab({
           id: `tab-${Date.now()}`, path: selected, name: fileName, content,
@@ -42,7 +44,13 @@
   async function handleOpenFolder() {
     try {
       const selected = await open({ directory: true, multiple: false });
-      if (selected && typeof selected === 'string') uiStore.setExplorerRoot(selected);
+      if (selected && typeof selected === 'string') {
+        if (!$ui.recentWorkspaces.includes(selected)) {
+          uiStore.setPendingTrustPath(selected);
+        } else {
+          window.dispatchEvent(new CustomEvent('request-workspace-switch', { detail: { path: selected } }));
+        }
+      }
     } catch (err) { console.error(err); }
   }
 
@@ -85,9 +93,9 @@
               </button>
             {/each}
             {#if hasMore}
-              <button onclick={() => showMoreModal = true} class="flex items-center gap-2 w-full text-left text-accent opacity-80 hover:opacity-100 transition-opacity p-2 rounded hover:bg-hover mt-2">
+              <button onclick={() => uiStore.openRecentFoldersModal()} class="flex items-center gap-2 w-full text-left text-accent opacity-80 hover:opacity-100 transition-opacity p-2 rounded hover:bg-hover mt-2">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                <span>More...</span>
+                <span>More Recent...</span>
               </button>
             {/if}
           </div>
@@ -96,24 +104,4 @@
     </div>
   </div>
 
-  {#if showMoreModal}
-    <div class="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm" role="presentation" onclick={() => showMoreModal = false} onkeydown={(e) => { if (e.key === 'Escape') showMoreModal = false; }}>
-      <div class="w-full max-w-lg rounded-lg shadow-2xl flex flex-col max-h-[80vh] border bg-surface-2 border-subtle text-primary" role="dialog" tabindex="0" onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key === 'Escape') showMoreModal = false; }}>
-        <div class="flex items-center justify-between p-4 border-b border-subtle">
-          <h2 class="font-semibold text-primary">Recent Folders</h2>
-          <button aria-label="Close" onclick={() => showMoreModal = false} class="text-icon-default hover:text-icon-active transition-colors">
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </div>
-        <div class="flex-1 overflow-y-auto p-2">
-          {#each $ui.recentWorkspaces as path (path)}
-            <button onclick={() => handleOpenRecent(path)} class="flex flex-col items-start w-full text-left opacity-80 hover:opacity-100 transition-opacity p-3 rounded hover:bg-hover">
-              <span class="font-medium truncate w-full">{path.split(/[/\\]/).pop()}</span>
-              <span class="text-xs opacity-50 truncate w-full">{path}</span>
-            </button>
-          {/each}
-        </div>
-      </div>
-    </div>
-  {/if}
 </div>

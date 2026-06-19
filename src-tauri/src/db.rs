@@ -1,10 +1,13 @@
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, Result as SqlResult, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
-use std::sync::Mutex;
 
-pub struct DbState(pub Mutex<Option<Connection>>);
+/// Connection pool replaces single Mutex<Connection>.
+/// Allows parallel queries — critical for startup performance.
+pub struct DbState(pub Pool<SqliteConnectionManager>);
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RecentFile {
@@ -25,9 +28,7 @@ pub struct Bookmark {
     pub created_at: i64,
 }
 
-// ============================================================
-// Tiered State Structs (Section 1.1 - Tiered State Loading)
-// ============================================================
+// Tiered State Structs
 
 /// Tier 1: Critical State — must load before first render (<20ms)
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -46,7 +47,7 @@ pub struct UiStateRow {
     pub sidebar_width: Option<i64>,
     pub panel_height: Option<i64>,
     pub sidebar_visible: Option<bool>,
-    pub expanded_folder_paths: Option<String>, // JSON array
+    pub expanded_folder_paths: Option<String>,
     pub active_sidebar_panel: Option<String>,
     pub is_minimap_enabled: Option<bool>,
 }
@@ -54,20 +55,20 @@ pub struct UiStateRow {
 /// Tier 3: Session State — tab metadata (<300ms, can be background)
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct SessionStateRow {
-    pub open_tabs_json: Option<String>,    // JSON array of tab metadata
+    pub open_tabs_json: Option<String>,
     pub active_tab_id: Option<String>,
-    pub scroll_positions_json: Option<String>, // JSON
-    pub editor_snapshots_json: Option<String>, // JSON
+    pub scroll_positions_json: Option<String>,
+    pub editor_snapshots_json: Option<String>,
 }
 
 // IPC batch query types (Section 1.4 + 6.1)
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct BatchOperation {
     pub op: String,
     pub args: Value,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 pub struct BatchResult {
     pub ok: bool,
     pub data: Value,
@@ -76,14 +77,31 @@ pub struct BatchResult {
 
 const SCHEMA_VERSION: i64 = 2;
 
-pub fn init_db(app_handle: &AppHandle) -> SqlResult<Connection> {
+/// Initialize DB with connection pool (3 connections).
+/// PRAGMAs are applied per-connection via r2d2 customizer.
+pub fn init_db(app_handle: &AppHandle) -> Result<Pool<SqliteConnectionManager>, String> {
     let app_dir = app_handle.path().app_data_dir().expect("failed to get app data dir");
     std::fs::create_dir_all(&app_dir).expect("failed to create app data dir");
     let db_path = app_dir.join("notron_db.sqlite");
 
-    let conn = Connection::open(db_path)?;
+    let manager = SqliteConnectionManager::file(&db_path);
 
-    // === Section 2.1: Full PRAGMA set for maximum performance ===
+    let pool = Pool::builder()
+        .max_size(4)
+        .build(manager)
+        .map_err(|e| format!("Failed to create pool: {}", e))?;
+
+    // Apply PRAGMAs and create schema on the first connection
+    {
+        let conn = pool.get().map_err(|e| format!("Failed to get connection: {}", e))?;
+        apply_pragmas(&conn).map_err(|e| format!("PRAGMA error: {}", e))?;
+        create_schema(&conn).map_err(|e| format!("Schema error: {}", e))?;
+    }
+
+    Ok(pool)
+}
+
+fn apply_pragmas(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch("
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous  = NORMAL;
@@ -91,9 +109,10 @@ pub fn init_db(app_handle: &AppHandle) -> SqlResult<Connection> {
         PRAGMA mmap_size    = 268435456;
         PRAGMA temp_store   = MEMORY;
         PRAGMA foreign_keys = ON;
-    ")?;
+    ")
+}
 
-    // Legacy tables (kept for backwards compat)
+fn create_schema(conn: &Connection) -> SqlResult<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS recent_files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,8 +154,6 @@ pub fn init_db(app_handle: &AppHandle) -> SqlResult<Connection> {
         [],
     )?;
 
-    // === Section 1.1: Tiered State Tables ===
-    // Tier 1 — Critical State (window geometry, active workspace)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS critical_state (
             workspace_id TEXT PRIMARY KEY,
@@ -150,7 +167,6 @@ pub fn init_db(app_handle: &AppHandle) -> SqlResult<Connection> {
         [],
     )?;
 
-    // Tier 2 — UI State (sidebar widths, panel sizes, expanded folders)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS ui_state (
             workspace_id          TEXT PRIMARY KEY,
@@ -165,7 +181,6 @@ pub fn init_db(app_handle: &AppHandle) -> SqlResult<Connection> {
         [],
     )?;
 
-    // Tier 3 — Session State (tab list, scroll positions, editor snapshots)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS session_state (
             workspace_id          TEXT PRIMARY KEY,
@@ -190,10 +205,9 @@ pub fn init_db(app_handle: &AppHandle) -> SqlResult<Connection> {
         .unwrap_or(0);
 
     if current_version < SCHEMA_VERSION {
-        run_migrations(&conn, current_version)?;
+        run_migrations(conn, current_version)?;
     }
 
-    // === Section 2.3: Optimized indexes ===
     conn.execute_batch("
         CREATE INDEX IF NOT EXISTS idx_recent_files_opened    ON recent_files(opened_at DESC);
         CREATE INDEX IF NOT EXISTS idx_workspace_state_ws     ON workspace_state(workspace_path);
@@ -203,7 +217,7 @@ pub fn init_db(app_handle: &AppHandle) -> SqlResult<Connection> {
         CREATE INDEX IF NOT EXISTS idx_critical_state_ws      ON critical_state(workspace_id);
     ")?;
 
-    Ok(conn)
+    Ok(())
 }
 
 fn run_migrations(conn: &Connection, from_version: i64) -> SqlResult<()> {
@@ -220,7 +234,6 @@ fn run_migrations(conn: &Connection, from_version: i64) -> SqlResult<()> {
         )?;
     }
     if from_version < 2 {
-        // Tiered state tables — already created in init_db above, this is idempotent
         conn.execute_batch("
             CREATE TABLE IF NOT EXISTS critical_state (
                 workspace_id TEXT PRIMARY KEY,
@@ -248,9 +261,6 @@ fn run_migrations(conn: &Connection, from_version: i64) -> SqlResult<()> {
     Ok(())
 }
 
-// ============================================================
-// Helper: current unix timestamp
-// ============================================================
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -258,9 +268,30 @@ fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
-// ============================================================
+/// Helper: get connection from pool and run closure on blocking thread.
+/// This is the replacement for the old with_db that used Mutex<Connection>.
+async fn with_db<F, R>(state: &DbState, f: F) -> Result<R, String>
+where
+    F: FnOnce(&Connection) -> Result<R, String> + Send + 'static,
+    R: Send + 'static,
+{
+    let pool = state.0.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| format!("Pool error: {}", e))?;
+        // Apply PRAGMAs on each connection from pool (WAL mode persists per-file,
+        // but cache_size/mmap_size are per-connection)
+        let _ = conn.execute_batch("
+            PRAGMA cache_size = -65536;
+            PRAGMA mmap_size  = 268435456;
+            PRAGMA temp_store = MEMORY;
+        ");
+        f(&conn)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // Legacy commands (kept for backwards compat)
-// ============================================================
 
 #[tauri::command]
 pub async fn add_recent_file(
@@ -269,64 +300,67 @@ pub async fn add_recent_file(
     file_type: String,
     state: tauri::State<'_, DbState>,
 ) -> Result<(), String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-    let now = now_secs();
-    conn.execute(
-        "INSERT INTO recent_files (path, name, opened_at, file_type)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(path) DO UPDATE SET opened_at = ?3",
-        params![path, name, now, file_type],
-    ).map_err(|e| e.to_string())?;
-    Ok(())
+    with_db(&state, move |conn| {
+        let now = now_secs();
+        conn.execute(
+            "INSERT INTO recent_files (path, name, opened_at, file_type)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(path) DO UPDATE SET opened_at = ?3",
+            params![path, name, now, file_type],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
 }
 
 #[tauri::command]
 pub async fn get_recent_files(state: tauri::State<'_, DbState>) -> Result<Vec<RecentFile>, String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-    let mut stmt = conn.prepare(
-        "SELECT id, path, name, opened_at, file_type FROM recent_files ORDER BY opened_at DESC LIMIT 20"
-    ).map_err(|e| e.to_string())?;
-    let files_iter = stmt.query_map([], |row| {
-        Ok(RecentFile { id: row.get(0)?, path: row.get(1)?, name: row.get(2)?, opened_at: row.get(3)?, file_type: row.get(4)? })
-    }).map_err(|e| e.to_string())?;
-    let mut files = Vec::new();
-    for file in files_iter { files.push(file.map_err(|e| e.to_string())?); }
-    Ok(files)
+    with_db(&state, move |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, path, name, opened_at, file_type FROM recent_files ORDER BY opened_at DESC LIMIT 20"
+        ).map_err(|e| e.to_string())?;
+        let files_iter = stmt.query_map([], |row| {
+            Ok(RecentFile { id: row.get(0)?, path: row.get(1)?, name: row.get(2)?, opened_at: row.get(3)?, file_type: row.get(4)? })
+        }).map_err(|e| e.to_string())?;
+        let mut files = Vec::new();
+        for file in files_iter { files.push(file.map_err(|e| e.to_string())?); }
+        Ok(files)
+    }).await
 }
 
 #[tauri::command]
 pub async fn clear_recent_files(state: tauri::State<'_, DbState>) -> Result<(), String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-    conn.execute("DELETE FROM recent_files", []).map_err(|e| e.to_string())?;
-    Ok(())
+    with_db(&state, move |conn| {
+        conn.execute("DELETE FROM recent_files", []).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
 }
 
 #[tauri::command]
 pub async fn get_setting(key: String, state: tauri::State<'_, DbState>) -> Result<Option<String>, String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-    let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1").map_err(|e| e.to_string())?;
-    let mut rows = stmt.query(params![key]).map_err(|e| e.to_string())?;
-    if let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        let value: String = row.get(0).map_err(|e| e.to_string())?;
-        Ok(Some(value))
-    } else {
-        Ok(None)
-    }
+    let k = key.clone();
+    with_db(&state, move |conn| {
+        let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1").map_err(|e| e.to_string())?;
+        let mut rows = stmt.query(params![k]).map_err(|e| e.to_string())?;
+        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let value: String = row.get(0).map_err(|e| e.to_string())?;
+            Ok(Some(value))
+        } else {
+            Ok(None)
+        }
+    }).await
 }
 
 #[tauri::command]
 pub async fn set_setting(key: String, value: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-    conn.execute(
-        "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
-        params![key, value],
-    ).map_err(|e| e.to_string())?;
-    Ok(())
+    let k = key.clone();
+    let v = value.clone();
+    with_db(&state, move |conn| {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+            params![k, v],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
 }
 
 #[tauri::command]
@@ -335,20 +369,22 @@ pub async fn save_workspace_state(
     pairs: Vec<(String, String)>,
     state: tauri::State<'_, DbState>,
 ) -> Result<(), String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-    let now = now_secs();
-    conn.execute("BEGIN TRANSACTION", []).map_err(|e| e.to_string())?;
-    for (key, value) in &pairs {
-        conn.execute(
-            "INSERT INTO workspace_state (workspace_path, key, value, updated_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(workspace_path, key) DO UPDATE SET value = ?3, updated_at = ?4",
-            params![workspace_path, key, value, now],
-        ).map_err(|e| e.to_string())?;
-    }
-    conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
-    Ok(())
+    let wp = workspace_path.clone();
+    let prs = pairs.clone();
+    with_db(&state, move |conn| {
+        let now = now_secs();
+        conn.execute("BEGIN TRANSACTION", []).map_err(|e| e.to_string())?;
+        for (key, value) in &prs {
+            conn.execute(
+                "INSERT INTO workspace_state (workspace_path, key, value, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(workspace_path, key) DO UPDATE SET value = ?3, updated_at = ?4",
+                params![wp, key, value, now],
+            ).map_err(|e| e.to_string())?;
+        }
+        conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
 }
 
 #[tauri::command]
@@ -356,17 +392,18 @@ pub async fn load_workspace_state(
     workspace_path: String,
     state: tauri::State<'_, DbState>,
 ) -> Result<Vec<(String, String)>, String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-    let mut stmt = conn.prepare(
-        "SELECT key, value FROM workspace_state WHERE workspace_path = ?1"
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(params![workspace_path], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    }).map_err(|e| e.to_string())?;
-    let mut result = Vec::new();
-    for row in rows { result.push(row.map_err(|e| e.to_string())?); }
-    Ok(result)
+    let wp = workspace_path.clone();
+    with_db(&state, move |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT key, value FROM workspace_state WHERE workspace_path = ?1"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![wp], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }).map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for row in rows { result.push(row.map_err(|e| e.to_string())?); }
+        Ok(result)
+    }).await
 }
 
 #[tauri::command]
@@ -374,13 +411,14 @@ pub async fn delete_workspace_state(
     workspace_path: String,
     state: tauri::State<'_, DbState>,
 ) -> Result<(), String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-    conn.execute(
-        "DELETE FROM workspace_state WHERE workspace_path = ?1",
-        params![workspace_path],
-    ).map_err(|e| e.to_string())?;
-    Ok(())
+    let wp = workspace_path.clone();
+    with_db(&state, move |conn| {
+        conn.execute(
+            "DELETE FROM workspace_state WHERE workspace_path = ?1",
+            params![wp],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
 }
 
 #[tauri::command]
@@ -389,15 +427,16 @@ pub async fn save_workspace_sidebar_width(
     width: i32,
     state: tauri::State<'_, DbState>,
 ) -> Result<(), String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-    let now = now_secs();
-    conn.execute(
-        "INSERT INTO workspace_state (workspace_path, key, value, updated_at) VALUES (?1, 'sidebar_width', ?2, ?3)
-         ON CONFLICT(workspace_path, key) DO UPDATE SET value = ?2, updated_at = ?3",
-        params![workspace_path, width.to_string(), now],
-    ).map_err(|e| e.to_string())?;
-    Ok(())
+    let wp = workspace_path.clone();
+    with_db(&state, move |conn| {
+        let now = now_secs();
+        conn.execute(
+            "INSERT INTO workspace_state (workspace_path, key, value, updated_at) VALUES (?1, 'sidebar_width', ?2, ?3)
+             ON CONFLICT(workspace_path, key) DO UPDATE SET value = ?2, updated_at = ?3",
+            params![wp, width.to_string(), now],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
 }
 
 #[tauri::command]
@@ -406,15 +445,17 @@ pub async fn save_workspace_expanded_paths(
     paths_json: String,
     state: tauri::State<'_, DbState>,
 ) -> Result<(), String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-    let now = now_secs();
-    conn.execute(
-        "INSERT INTO workspace_state (workspace_path, key, value, updated_at) VALUES (?1, 'expanded_paths', ?2, ?3)
-         ON CONFLICT(workspace_path, key) DO UPDATE SET value = ?2, updated_at = ?3",
-        params![workspace_path, paths_json, now],
-    ).map_err(|e| e.to_string())?;
-    Ok(())
+    let wp = workspace_path.clone();
+    let pj = paths_json.clone();
+    with_db(&state, move |conn| {
+        let now = now_secs();
+        conn.execute(
+            "INSERT INTO workspace_state (workspace_path, key, value, updated_at) VALUES (?1, 'expanded_paths', ?2, ?3)
+             ON CONFLICT(workspace_path, key) DO UPDATE SET value = ?2, updated_at = ?3",
+            params![wp, pj, now],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
 }
 
 #[tauri::command]
@@ -423,219 +464,211 @@ pub async fn save_workspace_session(
     session_json: String,
     state: tauri::State<'_, DbState>,
 ) -> Result<(), String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-    let now = now_secs();
-    conn.execute("BEGIN TRANSACTION", []).map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO workspace_state (workspace_path, key, value, updated_at) VALUES (?1, 'session', ?2, ?3)
-         ON CONFLICT(workspace_path, key) DO UPDATE SET value = ?2, updated_at = ?3",
-        params![workspace_path, session_json, now],
-    ).map_err(|e| e.to_string())?;
-    conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
-    Ok(())
+    let wp = workspace_path.clone();
+    let sj = session_json.clone();
+    with_db(&state, move |conn| {
+        let now = now_secs();
+        conn.execute("BEGIN TRANSACTION", []).map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO workspace_state (workspace_path, key, value, updated_at) VALUES (?1, 'session', ?2, ?3)
+             ON CONFLICT(workspace_path, key) DO UPDATE SET value = ?2, updated_at = ?3",
+            params![wp, sj, now],
+        ).map_err(|e| e.to_string())?;
+        conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
 }
 
-// ============================================================
-// Section 1.1: Tiered State Load/Save Commands
-// ============================================================
+// Tiered State Load/Save Commands
 
-/// Load Tier 1 (Critical State) — fastest possible query
 #[tauri::command]
 pub async fn load_critical_state(
     workspace_id: String,
     state: tauri::State<'_, DbState>,
 ) -> Result<CriticalState, String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
+    let wid = workspace_id.clone();
+    with_db(&state, move |conn| {
+        let result = conn.query_row(
+            "SELECT window_width, window_height, window_x, window_y, active_tab_path
+             FROM critical_state WHERE workspace_id = ?1",
+            params![wid],
+            |row| {
+                Ok(CriticalState {
+                    active_workspace_id: Some(wid.clone()),
+                    window_width: row.get(0)?,
+                    window_height: row.get(1)?,
+                    window_x: row.get(2)?,
+                    window_y: row.get(3)?,
+                    active_tab_path: row.get(4)?,
+                })
+            },
+        );
 
-    let result = conn.query_row(
-        "SELECT window_width, window_height, window_x, window_y, active_tab_path
-         FROM critical_state WHERE workspace_id = ?1",
-        params![workspace_id],
-        |row| {
-            Ok(CriticalState {
-                active_workspace_id: Some(workspace_id.clone()),
-                window_width: row.get(0)?,
-                window_height: row.get(1)?,
-                window_x: row.get(2)?,
-                window_y: row.get(3)?,
-                active_tab_path: row.get(4)?,
-            })
-        },
-    );
-
-    match result {
-        Ok(s) => Ok(s),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(CriticalState {
-            active_workspace_id: Some(workspace_id),
-            ..Default::default()
-        }),
-        Err(e) => Err(e.to_string()),
-    }
+        match result {
+            Ok(s) => Ok(s),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(CriticalState {
+                active_workspace_id: Some(wid),
+                ..Default::default()
+            }),
+            Err(e) => Err(e.to_string()),
+        }
+    }).await
 }
 
-/// Save Tier 1 (Critical State)
 #[tauri::command]
 pub async fn save_critical_state(
     workspace_id: String,
     critical: CriticalState,
     state: tauri::State<'_, DbState>,
 ) -> Result<(), String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-    let now = now_secs();
-    conn.execute(
-        "INSERT INTO critical_state (workspace_id, window_width, window_height, window_x, window_y, active_tab_path, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(workspace_id) DO UPDATE SET
-           window_width=?2, window_height=?3, window_x=?4, window_y=?5,
-           active_tab_path=?6, updated_at=?7",
-        params![
-            workspace_id,
-            critical.window_width, critical.window_height,
-            critical.window_x, critical.window_y,
-            critical.active_tab_path, now
-        ],
-    ).map_err(|e| e.to_string())?;
-    Ok(())
+    let wid = workspace_id.clone();
+    let crit = critical.clone();
+    with_db(&state, move |conn| {
+        let now = now_secs();
+        conn.execute(
+            "INSERT INTO critical_state (workspace_id, window_width, window_height, window_x, window_y, active_tab_path, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(workspace_id) DO UPDATE SET
+               window_width=?2, window_height=?3, window_x=?4, window_y=?5,
+               active_tab_path=?6, updated_at=?7",
+            params![
+                wid,
+                crit.window_width, crit.window_height,
+                crit.window_x, crit.window_y,
+                crit.active_tab_path, now
+            ],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
 }
 
-/// Load Tier 2 (UI State)
 #[tauri::command]
 pub async fn load_ui_state(
     workspace_id: String,
     state: tauri::State<'_, DbState>,
 ) -> Result<UiStateRow, String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
+    let wid = workspace_id.clone();
+    with_db(&state, move |conn| {
+        let result = conn.query_row(
+            "SELECT sidebar_width, panel_height, sidebar_visible, expanded_folder_paths,
+                    active_sidebar_panel, is_minimap_enabled
+             FROM ui_state WHERE workspace_id = ?1",
+            params![wid],
+            |row| {
+                Ok(UiStateRow {
+                    sidebar_width: row.get(0)?,
+                    panel_height: row.get(1)?,
+                    sidebar_visible: row.get::<_, Option<i64>>(2)?.map(|v| v != 0),
+                    expanded_folder_paths: row.get(3)?,
+                    active_sidebar_panel: row.get(4)?,
+                    is_minimap_enabled: row.get::<_, Option<i64>>(5)?.map(|v| v != 0),
+                })
+            },
+        );
 
-    let result = conn.query_row(
-        "SELECT sidebar_width, panel_height, sidebar_visible, expanded_folder_paths,
-                active_sidebar_panel, is_minimap_enabled
-         FROM ui_state WHERE workspace_id = ?1",
-        params![workspace_id],
-        |row| {
-            Ok(UiStateRow {
-                sidebar_width: row.get(0)?,
-                panel_height: row.get(1)?,
-                sidebar_visible: row.get::<_, Option<i64>>(2)?.map(|v| v != 0),
-                expanded_folder_paths: row.get(3)?,
-                active_sidebar_panel: row.get(4)?,
-                is_minimap_enabled: row.get::<_, Option<i64>>(5)?.map(|v| v != 0),
-            })
-        },
-    );
-
-    match result {
-        Ok(s) => Ok(s),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(UiStateRow::default()),
-        Err(e) => Err(e.to_string()),
-    }
+        match result {
+            Ok(s) => Ok(s),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(UiStateRow::default()),
+            Err(e) => Err(e.to_string()),
+        }
+    }).await
 }
 
-/// Save Tier 2 (UI State)
 #[tauri::command]
 pub async fn save_ui_state(
     workspace_id: String,
     ui: UiStateRow,
     state: tauri::State<'_, DbState>,
 ) -> Result<(), String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-    let now = now_secs();
-    let sidebar_visible_i: Option<i64> = ui.sidebar_visible.map(|b| b as i64);
-    let minimap_i: Option<i64> = ui.is_minimap_enabled.map(|b| b as i64);
-    conn.execute(
-        "INSERT INTO ui_state (workspace_id, sidebar_width, panel_height, sidebar_visible,
-          expanded_folder_paths, active_sidebar_panel, is_minimap_enabled, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
-         ON CONFLICT(workspace_id) DO UPDATE SET
-           sidebar_width=?2, panel_height=?3, sidebar_visible=?4,
-           expanded_folder_paths=?5, active_sidebar_panel=?6,
-           is_minimap_enabled=?7, updated_at=?8",
-        params![workspace_id, ui.sidebar_width, ui.panel_height, sidebar_visible_i,
-                ui.expanded_folder_paths, ui.active_sidebar_panel, minimap_i, now],
-    ).map_err(|e| e.to_string())?;
-    Ok(())
+    let wid = workspace_id.clone();
+    let u = ui.clone();
+    with_db(&state, move |conn| {
+        let now = now_secs();
+        let sidebar_visible_i: Option<i64> = u.sidebar_visible.map(|b| b as i64);
+        let minimap_i: Option<i64> = u.is_minimap_enabled.map(|b| b as i64);
+        conn.execute(
+            "INSERT INTO ui_state (workspace_id, sidebar_width, panel_height, sidebar_visible,
+              expanded_folder_paths, active_sidebar_panel, is_minimap_enabled, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+             ON CONFLICT(workspace_id) DO UPDATE SET
+               sidebar_width=?2, panel_height=?3, sidebar_visible=?4,
+               expanded_folder_paths=?5, active_sidebar_panel=?6,
+               is_minimap_enabled=?7, updated_at=?8",
+            params![wid, u.sidebar_width, u.panel_height, sidebar_visible_i,
+                    u.expanded_folder_paths, u.active_sidebar_panel, minimap_i, now],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
 }
 
-/// Load Tier 3 (Session State)
 #[tauri::command]
 pub async fn load_session_state(
     workspace_id: String,
     state: tauri::State<'_, DbState>,
 ) -> Result<SessionStateRow, String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
+    let wid = workspace_id.clone();
+    with_db(&state, move |conn| {
+        let result = conn.query_row(
+            "SELECT open_tabs_json, active_tab_id, scroll_positions_json, editor_snapshots_json
+             FROM session_state WHERE workspace_id = ?1",
+            params![wid],
+            |row| {
+                Ok(SessionStateRow {
+                    open_tabs_json: row.get(0)?,
+                    active_tab_id: row.get(1)?,
+                    scroll_positions_json: row.get(2)?,
+                    editor_snapshots_json: row.get(3)?,
+                })
+            },
+        );
 
-    let result = conn.query_row(
-        "SELECT open_tabs_json, active_tab_id, scroll_positions_json, editor_snapshots_json
-         FROM session_state WHERE workspace_id = ?1",
-        params![workspace_id],
-        |row| {
-            Ok(SessionStateRow {
-                open_tabs_json: row.get(0)?,
-                active_tab_id: row.get(1)?,
-                scroll_positions_json: row.get(2)?,
-                editor_snapshots_json: row.get(3)?,
-            })
-        },
-    );
-
-    match result {
-        Ok(s) => Ok(s),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(SessionStateRow::default()),
-        Err(e) => Err(e.to_string()),
-    }
+        match result {
+            Ok(s) => Ok(s),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(SessionStateRow::default()),
+            Err(e) => Err(e.to_string()),
+        }
+    }).await
 }
 
-/// Save Tier 3 (Session State) — can be called in background
 #[tauri::command]
 pub async fn save_session_state(
     workspace_id: String,
     session: SessionStateRow,
     state: tauri::State<'_, DbState>,
 ) -> Result<(), String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-    let now = now_secs();
-    conn.execute(
-        "INSERT INTO session_state (workspace_id, open_tabs_json, active_tab_id,
-          scroll_positions_json, editor_snapshots_json, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6)
-         ON CONFLICT(workspace_id) DO UPDATE SET
-           open_tabs_json=?2, active_tab_id=?3,
-           scroll_positions_json=?4, editor_snapshots_json=?5, updated_at=?6",
-        params![workspace_id, session.open_tabs_json, session.active_tab_id,
-                session.scroll_positions_json, session.editor_snapshots_json, now],
-    ).map_err(|e| e.to_string())?;
-    Ok(())
+    let wid = workspace_id.clone();
+    let sess = session.clone();
+    with_db(&state, move |conn| {
+        let now = now_secs();
+        conn.execute(
+            "INSERT INTO session_state (workspace_id, open_tabs_json, active_tab_id,
+              scroll_positions_json, editor_snapshots_json, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6)
+             ON CONFLICT(workspace_id) DO UPDATE SET
+               open_tabs_json=?2, active_tab_id=?3,
+               scroll_positions_json=?4, editor_snapshots_json=?5, updated_at=?6",
+            params![wid, sess.open_tabs_json, sess.active_tab_id,
+                    sess.scroll_positions_json, sess.editor_snapshots_json, now],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
 }
 
-// ============================================================
-// Section 1.4 + 6.1: IPC Batch Query
-// ============================================================
+// IPC Batch Query
 
-/// Execute multiple DB operations in a single IPC round-trip.
-/// Supported ops: "get_setting", "set_setting", "load_critical_state",
-///   "load_ui_state", "load_session_state", "load_workspace_state"
 #[tauri::command]
 pub async fn batch_query(
     operations: Vec<BatchOperation>,
     state: tauri::State<'_, DbState>,
 ) -> Result<Vec<BatchResult>, String> {
-    let lock = state.0.lock().unwrap();
-    let conn = lock.as_ref().ok_or("Database not initialized")?;
-
-    let mut results = Vec::with_capacity(operations.len());
-
-    for op in &operations {
-        let result = execute_batch_op(conn, op);
-        results.push(result);
-    }
-
-    Ok(results)
+    let ops = operations.clone();
+    with_db(&state, move |conn| {
+        let mut results = Vec::with_capacity(ops.len());
+        for op in &ops {
+            results.push(execute_batch_op(conn, op));
+        }
+        Ok(results)
+    }).await
 }
 
 fn execute_batch_op(conn: &Connection, op: &BatchOperation) -> BatchResult {
@@ -654,7 +687,6 @@ fn execute_batch_op(conn: &Connection, op: &BatchOperation) -> BatchResult {
         }
         "load_workspace_state" => {
             let workspace_id = op.args["workspace_id"].as_str().unwrap_or("").to_string();
-            // Collect rows in a block so stmt is dropped before we use the data
             let pairs_result: Result<Vec<(String, String)>, rusqlite::Error> = (|| {
                 let mut stmt = conn.prepare(
                     "SELECT key, value FROM workspace_state WHERE workspace_path = ?1"

@@ -10,8 +10,6 @@ export interface EditorTab {
   language: string;
   isPreview?: boolean;
   isPinned?: boolean;
-  cursor?: { line: number; column: number };
-  scroll?: { top: number; left: number };
   lastAccessed: number;
   isLargeFile?: boolean;
   isLoading?: boolean;
@@ -31,7 +29,7 @@ export type TabInput = {
   isUnsupported?: boolean;
 };
 
-// Section 4.4: Tab Suspension (LRU Eviction)
+// Tab Suspension (LRU Eviction)
 const SUSPEND_AFTER_MS = 300_000;   // 5 minutes without access → suspend
 const MAX_ACTIVE_TABS  = 8;         // Max tabs with loaded content in memory
 const DEBOUNCE_SAVE_MS = 1500;
@@ -41,6 +39,19 @@ function createEditorStore() {
   const activeTabId = writable<string | null>(null);
   const saveStatus = writable<string | null>(null);
   let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // PERF FIX: Separate cursor/scroll state from tab metadata.
+  // Previously, updateCursor/updateScroll called tabs.update()
+  // which rebuilt the entire tabs array every 500ms, causing
+  // tab bar and all subscribers to re-render unnecessarily.
+  //
+  // Now cursor/scroll positions are stored in separate Maps
+  // and exposed via a separate writable store. Tab bar does
+  // NOT subscribe to cursor changes.
+  const cursorPositions = new Map<string, { line: number; column: number }>();
+  const scrollPositions = new Map<string, { top: number; left: number }>();
+  // A lightweight signal that cursor/scroll consumers can subscribe to
+  const cursorSignal = writable<number>(0);
 
   const activeTab = derived([tabs, activeTabId], ([$tabs, $id]) =>
     $tabs.find(t => t.id === $id) || null
@@ -91,6 +102,10 @@ function createEditorStore() {
   }
 
   function closeTab(id: string) {
+    // Cleanup cursor/scroll data
+    cursorPositions.delete(id);
+    scrollPositions.delete(id);
+
     tabs.update(state => {
       const newTabs = state.filter(t => t.id !== id);
       activeTabId.update(current => {
@@ -150,26 +165,23 @@ function createEditorStore() {
     scheduleAutoSave(id);
   }
 
+  // PERF: cursor updates do NOT touch tabs store anymore
   function updateCursor(id: string, line: number, column: number) {
-    tabs.update(state =>
-      state.map(t => {
-        if (t.id === id) {
-          return { ...t, cursor: { line, column } };
-        }
-        return t;
-      })
-    );
+    cursorPositions.set(id, { line, column });
+    cursorSignal.update(n => n + 1);
   }
 
+  // PERF: scroll updates do NOT touch tabs store anymore
   function updateScroll(id: string, top: number, left: number) {
-    tabs.update(state =>
-      state.map(t => {
-        if (t.id === id) {
-          return { ...t, scroll: { top, left } };
-        }
-        return t;
-      })
-    );
+    scrollPositions.set(id, { top, left });
+  }
+
+  function getCursor(id: string): { line: number; column: number } | undefined {
+    return cursorPositions.get(id);
+  }
+
+  function getScroll(id: string): { top: number; left: number } | undefined {
+    return scrollPositions.get(id);
   }
 
   function markSaved(id: string) {
@@ -247,8 +259,7 @@ function createEditorStore() {
   }
 
   /**
-   * Section 4.4: LRU Tab Suspension
-   * If tab count with loaded content > MAX_ACTIVE_TABS,
+   * LRU Tab Suspension: If tab count with loaded content > MAX_ACTIVE_TABS,
    * suspend the Least Recently Used non-modified tabs.
    */
   function enforceMemoryLimit() {
@@ -264,7 +275,6 @@ function createEditorStore() {
       let inMemoryCount = state.filter(t => t.content !== null && !t.isModified && t.id !== activeId).length;
 
       for (const tab of candidates) {
-        // Suspend if either: over memory limit OR idle too long
         const isIdleTooLong = now - tab.lastAccessed > SUSPEND_AFTER_MS;
         const isOverLimit   = inMemoryCount > MAX_ACTIVE_TABS;
 
@@ -323,11 +333,30 @@ function createEditorStore() {
     return val;
   }
 
+  /**
+   * Get snapshot of cursor/scroll for all tabs (for workspace session save).
+   * Returns array of { id, cursor, scroll } objects.
+   */
+  function getCursorScrollSnapshot() {
+    const result: Array<{ id: string; cursor?: { line: number; column: number }; scroll?: { top: number; left: number } }> = [];
+    for (const [id, cursor] of cursorPositions) {
+      result.push({ id, cursor, scroll: scrollPositions.get(id) });
+    }
+    // Include tabs with scroll but no cursor
+    for (const [id, scroll] of scrollPositions) {
+      if (!cursorPositions.has(id)) {
+        result.push({ id, scroll });
+      }
+    }
+    return result;
+  }
+
   return {
     tabs: { subscribe: tabs.subscribe },
     activeTabId: { subscribe: activeTabId.subscribe },
     activeTab,
     saveStatus: { subscribe: saveStatus.subscribe },
+    cursorSignal: { subscribe: cursorSignal.subscribe },
     addTab,
     closeTab,
     setActiveTab,
@@ -335,6 +364,8 @@ function createEditorStore() {
     updateContent,
     updateCursor,
     updateScroll,
+    getCursor,
+    getScroll,
     markSaved,
     markTabDeleted,
     markTabConflict,
@@ -348,6 +379,7 @@ function createEditorStore() {
     enforceMemoryLimit,
     getTabsSnapshot,
     getActiveTabIdSnapshot,
+    getCursorScrollSnapshot,
   };
 }
 

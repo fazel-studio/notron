@@ -11,21 +11,29 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+#[tauri::command]
+async fn show_main_window(window: tauri::Window) {
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_pty::init())
         .setup(|app| {
-            // Section 2.2: initialize DB synchronously but with optimized PRAGMA
-            let conn = db::init_db(app.handle()).expect("Failed to initialize database");
-            app.manage(db::DbState(std::sync::Mutex::new(Some(conn))));
+            // Initialize DB with connection pool (replaces single Mutex<Connection>)
+            let pool = db::init_db(app.handle()).expect("Failed to initialize database");
+            app.manage(db::DbState(pool));
 
             let config = config::load_config(app.handle());
             app.manage(config::ConfigState(std::sync::Mutex::new(config)));
 
-            // Section 3.6: Initialize FS Watcher state
+            // Initialize FS Watcher state
             app.manage(fs_watcher::WatcherState::new());
 
             Ok(())
@@ -44,25 +52,28 @@ pub fn run() {
             db::save_workspace_sidebar_width,
             db::save_workspace_expanded_paths,
             db::save_workspace_session,
-            // ── Tiered State Commands (Section 1.1) ──
+            // ── Tiered State Commands ──
             db::load_critical_state,
             db::save_critical_state,
             db::load_ui_state,
             db::save_ui_state,
             db::load_session_state,
             db::save_session_state,
-            // ── IPC Batch Query (Section 1.4 + 6.1) ──
+            // ── IPC Batch Query ──
             db::batch_query,
             // ── Config ──
             config::get_config,
             config::set_config,
             // ── File Operations ──
             file_ops::open_file,
+            file_ops::open_file_with_meta,
             file_ops::read_file_binary,
+            file_ops::read_file_text,
             file_ops::read_file_chunked,
             file_ops::save_file,
             file_ops::read_directory,
             file_ops::read_directory_flat,
+            file_ops::read_directory_batch,
             file_ops::get_file_info,
             file_ops::file_exists,
             file_ops::is_large_file,
@@ -75,7 +86,7 @@ pub fn run() {
             file_ops::search_in_files,
             file_ops::search_in_files_stream,
             file_ops::cancel_search,
-            // ── FS Watcher (Section 3.6) ──
+            // ── FS Watcher ──
             fs_watcher::start_fs_watch,
             fs_watcher::stop_fs_watch,
             // ── Symbol Index ──
@@ -85,6 +96,7 @@ pub fn run() {
             symbol_index::goto_definition,
             symbol_index::find_references,
             symbol_index::rename_symbol,
+            show_main_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

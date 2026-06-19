@@ -16,8 +16,10 @@
       try {
         const sep = parentPath.includes('\\') ? '\\' : '/';
         const fullPath = `${parentPath}${sep}${val.trim()}`;
-        if (type === 'folder') await invoke('create_directory', { path: fullPath });
-        else await invoke('create_file', { path: fullPath });
+        const invokePromise = type === 'folder' 
+          ? invoke('create_directory', { path: fullPath })
+          : invoke('create_file', { path: fullPath });
+        await uiStore.withStatus(`Creating ${val.trim()}...`, invokePromise, 500);
         uiStore.triggerExplorerRefresh();
         uiStore.setCreatingItem(null);
       } catch (err) { alert(err); }

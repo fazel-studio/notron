@@ -31,7 +31,7 @@
   let debounceTimer: number | undefined;
   let searchVersion = 0;
 
-  // Debounced search with streaming (Bagian 6.2 - Streaming Hasil)
+  // Debounced search with streaming 
   $effect(() => {
     clearTimeout(debounceTimer);
     if (searchQuery.trim().length > 0 && $ui.explorerRoot) {
@@ -54,50 +54,51 @@
     filesScanned = 0;
     matchesFound = 0;
 
-    try {
-      let allResults: SearchResult[] = [];
-      let batch = 0;
+    await uiStore.withStatus(`Searching workspace...`, async () => {
+      try {
+        let allResults: SearchResult[] = [];
+        let batch = 0;
 
+        // Streaming: receive results in batches every 20 matches or 50ms
+        while (batch < 100) {
+          if (currentVersion !== searchVersion) break;
+          const res = await invoke<{ results: SearchResult[]; total_scanned: number }>('search_in_files_stream', {
+            root: $ui.explorerRoot,
+            pattern: searchQuery,
+            batchSize: 20,
+          });
 
-      // Streaming: receive results in batches every 20 matches or 50ms (Bagian 6.2)
-      while (batch < 100) {
-        if (currentVersion !== searchVersion) break;
-        const res = await invoke<{ results: SearchResult[]; total_scanned: number }>('search_in_files_stream', {
-          root: $ui.explorerRoot,
-          pattern: searchQuery,
-          batchSize: 20,
-        });
+          if (currentVersion !== searchVersion) break;
+          if (res && res.results) {
+            allResults = [...allResults, ...res.results];
+            matchesFound = allResults.length;
+            filesScanned = res.total_scanned || 0;
 
-        if (currentVersion !== searchVersion) break;
-        if (res && res.results) {
-          allResults = [...allResults, ...res.results];
-          matchesFound = allResults.length;
-          filesScanned = res.total_scanned || 0;
+            // Update results incrementally for user feedback
+            results = [...allResults];
+          }
 
-          // Update results incrementally for user feedback (Bagian 6.2)
-          results = [...allResults];
+          if (!res || !res.results || res.results.length < 20) break;
+          batch++;
+
+          // Yield to UI thread every batch
+          await new Promise(r => setTimeout(r, 0));
         }
 
-        if (!res || !res.results || res.results.length < 20) break;
-        batch++;
-
-        // Yield to UI thread every batch
-        await new Promise(r => setTimeout(r, 0));
+        if (currentVersion === searchVersion) {
+          results = allResults;
+        }
+      } catch (err) {
+        if (currentVersion === searchVersion) {
+          console.error(err);
+          results = [];
+        }
+      } finally {
+        if (currentVersion === searchVersion) {
+          isSearching = false;
+        }
       }
-
-      if (currentVersion === searchVersion) {
-        results = allResults;
-      }
-    } catch (err) {
-      if (currentVersion === searchVersion) {
-        console.error(err);
-        results = [];
-      }
-    } finally {
-      if (currentVersion === searchVersion) {
-        isSearching = false;
-      }
-    }
+    }, 500);
   }
 
   function handleCancel() {

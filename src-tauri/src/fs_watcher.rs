@@ -36,7 +36,6 @@ impl WatcherState {
 /// Start watching a directory root.
 /// Emits "fs-change" events to the frontend when files change.
 ///
-/// Section 3.6:
 ///   1. Rust detects event from FS Watcher
 ///   2. Rust calls app.emit("fs-change", payload) to frontend
 ///   3. Svelte receives event and calls cache.invalidate(changedPath)
@@ -64,7 +63,7 @@ pub async fn start_fs_watch(
     let root_clone = root.clone();
     let app_clone = app.clone();
 
-    // Section 5.3: Run in background thread using tokio::spawn
+    // Run in background thread using tokio::spawn
     tokio::spawn(async move {
         // Use notify-debouncer via tokio channels
         let (tx, mut rx) = tokio::sync::mpsc::channel::<FsChangePayload>(256);

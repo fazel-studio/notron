@@ -13,7 +13,11 @@
   import CloseTabDialog from './lib/components/CloseTabDialog.svelte';
   import WelcomeTab from './lib/components/WelcomeTab.svelte';
   import NewFileDialog from './lib/components/NewFileDialog.svelte';
+  import TrustModal from './lib/components/TrustModal.svelte';
+  import RecentFoldersModal from './lib/components/RecentFoldersModal.svelte';
   import Breadcrumbs from './lib/components/Breadcrumbs.svelte';
+  import TerminalPanel from './lib/components/TerminalPanel.svelte';
+  import { terminalStore } from './lib/stores/terminal';
   import { onMount } from 'svelte';
 
   const tabs = editorStore.tabs;
@@ -76,16 +80,28 @@
     items: [] as any[]
   });
 
-  function closeAllContextMenus() {
+  function closeAllContextMenus(e?: Event) {
+    if (e && (e.target as Element)?.closest?.('[data-notron-context-menu]')) return;
     tabCtxMenu.isOpen = false;
   }
 
-  $effect(() => {
-    window.addEventListener('click', closeAllContextMenus);
+  onMount(() => {
+    const switchHandler = async (e: Event) => {
+      const path = (e as CustomEvent).detail?.path;
+      if (path) {
+        await saveWorkspaceSession();
+        uiStore.setExplorerRoot(path);
+      }
+    };
+    window.addEventListener('request-workspace-switch', switchHandler);
+    window.addEventListener('click', closeAllContextMenus, { capture: true });
+    window.addEventListener('contextmenu', closeAllContextMenus, { capture: true });
     window.addEventListener('editor:action', closeAllContextMenus);
     window.addEventListener('close-context-menus', closeAllContextMenus);
     return () => {
-      window.removeEventListener('click', closeAllContextMenus);
+      window.removeEventListener('request-workspace-switch', switchHandler);
+      window.removeEventListener('click', closeAllContextMenus, { capture: true });
+      window.removeEventListener('contextmenu', closeAllContextMenus, { capture: true });
       window.removeEventListener('editor:action', closeAllContextMenus);
       window.removeEventListener('close-context-menus', closeAllContextMenus);
     };
@@ -158,8 +174,12 @@
         let content = '';
         const isImage = /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(fileName);
         if (!isImage) {
-          const bytes = await invoke<number[]>('read_file_binary', { path: selected });
-          content = new TextDecoder('utf-8').decode(new Uint8Array(bytes)).replace(/\r\n/g, '\n');
+          try {
+            content = await invoke<string>('read_file_text', { path: selected });
+          } catch (e) {
+            if (String(e) === '__BINARY__') content = '';
+            else throw e;
+          }
         }
         editorStore.addTab({
           id: `tab-${Date.now()}`, path: selected, name: fileName, content,
@@ -218,8 +238,9 @@
 
   $effect(() => {
     if (activeTab) {
-      currentCursorPos = activeTab.cursor
-        ? `Ln ${activeTab.cursor.line}, Col ${activeTab.cursor.column}`
+      const cursor = editorStore.getCursor(activeTab.id);
+      currentCursorPos = cursor
+        ? `Ln ${cursor.line}, Col ${cursor.column}`
         : 'Ln 1, Col 1';
     }
   });
@@ -240,12 +261,13 @@
       const session = {
         sidebarWidth: uiVal.sidebarWidth,
         isSidebarOpen: uiVal.isSidebarOpen,
-        expandedPaths: uiVal.expandedPaths,
+        expandedPaths: uiStore.getExpandedPathsSnapshot(),
         activeSidebarPanel: uiVal.activeSidebarPanel,
         isMinimapEnabled: uiVal.isMinimapEnabled,
         tabs: tabsSnapshot.map((t: any) => ({
           id: t.id, path: t.path, name: t.name, language: t.language,
-          isPreview: t.isPreview, isPinned: t.isPinned, cursor: t.cursor, scroll: t.scroll,
+          isPreview: t.isPreview, isPinned: t.isPinned, 
+          cursor: editorStore.getCursor(t.id), scroll: editorStore.getScroll(t.id),
           isModified: t.isModified,
         })),
         activeTabId: editorStore.getActiveTabIdSnapshot(),
@@ -265,7 +287,7 @@
             sidebar_width: uiVal.sidebarWidth,
             panel_height: null,
             sidebar_visible: uiVal.isSidebarOpen,
-            expanded_folder_paths: JSON.stringify(uiVal.expandedPaths),
+            expanded_folder_paths: JSON.stringify(uiStore.getExpandedPathsSnapshot()),
             active_sidebar_panel: uiVal.activeSidebarPanel,
             is_minimap_enabled: uiVal.isMinimapEnabled,
           },
@@ -289,10 +311,7 @@
   async function saveCursorScroll() {
     const explorerRoot = uiStore.getSnapshot().explorerRoot;
     if (!explorerRoot) return;
-    const snapshot = editorStore.getTabsSnapshot();
-    const cursorData = snapshot.map((t: any) => ({
-      id: t.id, cursor: t.cursor, scroll: t.scroll
-    }));
+    const cursorData = editorStore.getCursorScrollSnapshot();
     try {
       await invoke('save_workspace_state', {
         workspacePath: explorerRoot,
@@ -306,7 +325,7 @@
   async function saveExpandedState() {
     const explorerRoot = uiStore.getSnapshot().explorerRoot;
     if (!explorerRoot) return;
-    const paths = uiStore.getSnapshot().expandedPaths;
+    const paths = uiStore.getExpandedPathsSnapshot();
     try {
       await invoke('save_workspace_expanded_paths', {
         workspacePath: explorerRoot,
@@ -342,6 +361,7 @@
   async function stagedStartup() {
     // Tier 0: Shell renders immediately (appReady=false shows skeleton)
     appReady = false;
+    uiStore.setStatus("Loading Workspace State...", 0); // Indefinite until ready
 
     const root = uiStore.getSnapshot().explorerRoot;
 
@@ -363,12 +383,14 @@
         ops.push({ op: 'load_workspace_state', args: { workspace_id: root } });
       }
 
+      const fetchPromise = root
+          ? invoke<BatchResult[]>('batch_query', { operations: ops.slice(1) }).catch(() => [])
+          : Promise.resolve([] as BatchResult[]);
+
       // Fire config and batch in parallel
       const [configData, batchResults] = await Promise.all([
         invoke('get_config').catch(() => null),
-        root
-          ? invoke<BatchResult[]>('batch_query', { operations: ops.slice(1) }).catch(() => [])
-          : Promise.resolve([] as BatchResult[]),
+        fetchPromise
       ]);
 
       // Apply config
@@ -424,8 +446,15 @@
                 status: 'loaded',
               }));
               editorStore.setTabs(lazyTabs, parsed.activeTabId || null);
+            } else {
+              editorStore.setTabs([], null);
             }
-          } catch (e) { console.error('Failed to parse session state', e); }
+          } catch (e) { 
+            console.error('Failed to parse session state', e); 
+            editorStore.setTabs([], null);
+          }
+        } else {
+          editorStore.setTabs([], null);
         }
 
         // Restore cursor/scroll positions
@@ -439,16 +468,41 @@
             }
           } catch { /* ignore */ }
         }
+      } else {
+        editorStore.setTabs([], null);
+        uiStore.setExpandedPaths([]);
       }
     } catch (err) {
       console.error('Failed to load workspace state from SQLite:', err);
     }
 
-    // ── UI is now ready — show the actual app ──
     appReady = true;
+    uiStore.setStatus("Workspace Ready", 2000);
+    setTimeout(() => {
+      invoke('show_main_window').catch(e => console.error("Failed to show window", e));
+    }, 50);
 
-    // ── Active tab content load (Tier 3 background) ──
-    // Section 1.3: Only load the active tab content now
+    await loadActiveTabContent();
+
+    if ($tabs.length === 0) {
+      if (root) {
+        editorStore.addTab({
+          id: 'welcome', path: 'Welcome', name: 'Welcome',
+          content: 'Welcome to Notron', language: 'markdown', isPreview: true
+        });
+        editorStore.setActiveTab('welcome');
+      }
+    }
+
+    const idle = (window as any).requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 200));
+    idle(() => {
+      if (!CommandPaletteComponent) {
+        import('./lib/components/CommandPalette.svelte').then(m => CommandPaletteComponent = m.default);
+      }
+    });
+  }
+
+  async function loadActiveTabContent() {
     const currentActiveTab = editorStore.getTabsSnapshot().find(
       (t: any) => t.id === editorStore.getActiveTabIdSnapshot()
     );
@@ -458,45 +512,104 @@
       const path = currentActiveTab.path;
       editorStore.setTabLoading(tabId, true);
       try {
-        const bytes = await invoke<number[]>('read_file_binary', { path });
-        const uint8 = new Uint8Array(bytes);
-        if (isBinaryData(uint8)) {
+        const content = await invoke<string>('read_file_text', { path });
+        editorStore.setInitialContent(tabId, content);
+      } catch (err) {
+        if (String(err) === '__BINARY__') {
           editorStore.setTabUnsupported(tabId, true);
           editorStore.setInitialContent(tabId, '');
         } else {
-          const content = new TextDecoder('utf-8').decode(uint8).replace(/\r\n/g, '\n');
-          editorStore.setInitialContent(tabId, content);
+          console.error('Failed to load active tab content:', err);
         }
-      } catch (err) {
-        console.error('Failed to load active tab content:', err);
       }
       editorStore.setTabLoading(tabId, false);
     }
+  }
 
-    // ── Welcome tab if no tabs ──
-    if ($tabs.length === 0) {
-      editorStore.addTab({
-        id: 'welcome', path: 'Welcome', name: 'Welcome',
-        content: '', language: 'welcome', isPreview: true
-      });
-    }
+  async function loadWorkspaceState(root: string) {
+    uiStore.setStatus("Loading Workspace State...", 0);
+    try {
+      type BatchResult = { ok: boolean; data: any; error?: string };
+      const ops = [
+        { op: 'load_critical_state', args: { workspace_id: root } },
+        { op: 'load_ui_state', args: { workspace_id: root } },
+        { op: 'load_workspace_state', args: { workspace_id: root } },
+      ];
 
-    // ── Background: preload CommandPalette (requestIdleCallback) ──
-    const idle = (window as any).requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 200));
-    idle(() => {
-      if (!CommandPaletteComponent) {
-        import('./lib/components/CommandPalette.svelte').then(m => CommandPaletteComponent = m.default);
+      const fetchPromise = invoke<BatchResult[]>('batch_query', { operations: ops }).catch(() => []);
+      const batchResults = await fetchPromise;
+
+      const uiResult: BatchResult | undefined = batchResults[1];
+      if (uiResult?.ok && uiResult.data) {
+        const u = uiResult.data;
+        if (u.sidebar_width !== null && u.sidebar_width !== undefined)
+          uiStore.setSidebarWidth(Number(u.sidebar_width));
+        if (u.sidebar_visible !== null && u.sidebar_visible !== undefined)
+          uiStore.setSidebarOpen(Boolean(u.sidebar_visible));
+        if (u.active_sidebar_panel)
+          uiStore.setActiveSidebarPanel(u.active_sidebar_panel);
+        if (u.is_minimap_enabled !== null && u.is_minimap_enabled !== undefined)
+          uiStore.setMinimapEnabled(Boolean(u.is_minimap_enabled));
+        if (u.expanded_folder_paths) {
+          try { uiStore.setExpandedPaths(JSON.parse(u.expanded_folder_paths)); } catch {}
+        }
       }
-    });
+
+      const sessionResult: BatchResult | undefined = batchResults[2];
+      if (sessionResult?.ok && Array.isArray(sessionResult.data)) {
+        const stateMap = new Map<string, string>(sessionResult.data as [string, string][]);
+        const sessionStr = stateMap.get('session');
+        if (sessionStr) {
+          try {
+            const parsed = JSON.parse(sessionStr);
+            if (parsed.sidebarWidth !== undefined) uiStore.setSidebarWidth(parsed.sidebarWidth);
+            if (parsed.isSidebarOpen !== undefined) uiStore.setSidebarOpen(parsed.isSidebarOpen);
+            if (parsed.expandedPaths !== undefined) uiStore.setExpandedPaths(parsed.expandedPaths);
+            if (parsed.activeSidebarPanel !== undefined) uiStore.setActiveSidebarPanel(parsed.activeSidebarPanel);
+            if (parsed.isMinimapEnabled !== undefined) uiStore.setMinimapEnabled(parsed.isMinimapEnabled);
+
+            if (parsed.tabs !== undefined) {
+              const lazyTabs = parsed.tabs.map((t: any) => ({
+                ...t,
+                content: null,
+                originalContent: null,
+                lastAccessed: Date.now(),
+                status: 'loaded',
+              }));
+              editorStore.setTabs(lazyTabs, parsed.activeTabId || null);
+            } else {
+              editorStore.setTabs([], null);
+            }
+          } catch (e) {
+            console.error('Failed to parse session state', e);
+            editorStore.setTabs([], null);
+          }
+        } else {
+          editorStore.setTabs([], null);
+        }
+        
+        const cursorStr = stateMap.get('cursor_scroll');
+        if (cursorStr) {
+          try {
+            const cursorData = JSON.parse(cursorStr as string);
+            for (const item of cursorData) {
+              if (item.cursor) editorStore.updateCursor(item.id, item.cursor.line, item.cursor.column);
+              if (item.scroll) editorStore.updateScroll(item.id, item.scroll.top, item.scroll.left);
+            }
+          } catch { /* ignore */ }
+        }
+      } else {
+        editorStore.setTabs([], null);
+        uiStore.setExpandedPaths([]);
+      }
+    } catch (err) {
+      console.error('Failed to load workspace state:', err);
+    }
+    uiStore.setStatus("Workspace Ready", 2000);
+    await loadActiveTabContent();
   }
 
-  function isBinaryData(bytes: Uint8Array): boolean {
-    const len = Math.min(bytes.length, 8000);
-    for (let i = 0; i < len; i++) {
-      if (bytes[i] === 0) return true;
-    }
-    return false;
-  }
+
 
   // Guard set to prevent the $effect from re-triggering itself when setTabLoading updates the store
   const loadingTabIds = new Set<string>();
@@ -515,17 +628,15 @@
       const path = activeTab.path;
       loadingTabIds.add(tabId);
       editorStore.setTabLoading(tabId, true);
-      invoke<number[]>('read_file_binary', { path }).then(bytes => {
-        const uint8 = new Uint8Array(bytes);
-        if (isBinaryData(uint8)) {
+      invoke<string>('read_file_text', { path }).then(content => {
+        editorStore.setInitialContent(tabId, content);
+      }).catch(err => {
+        if (String(err) === '__BINARY__') {
           editorStore.setTabUnsupported(tabId, true);
           editorStore.setInitialContent(tabId, '');
         } else {
-          const content = new TextDecoder('utf-8').decode(uint8).replace(/\r\n/g, '\n');
-          editorStore.setInitialContent(tabId, content);
+          console.error("Failed to lazy load tab content:", err);
         }
-      }).catch(err => {
-        console.error("Failed to lazy load tab content:", err);
       }).finally(() => {
         editorStore.setTabLoading(tabId, false);
         loadingTabIds.delete(tabId);
@@ -570,8 +681,12 @@
     try {
       const selected = await open({ directory: true, multiple: false });
       if (selected && typeof selected === 'string') {
-        uiStore.setExplorerRoot(selected);
-        await saveWorkspaceSession();
+        if (!$ui.recentWorkspaces.includes(selected)) {
+          await saveWorkspaceSession();
+          uiStore.setPendingTrustPath(selected);
+        } else {
+          window.dispatchEvent(new CustomEvent('request-workspace-switch', { detail: { path: selected } }));
+        }
       }
     } catch (err) { console.error("Failed to open folder:", err); }
   }
@@ -579,7 +694,12 @@
   async function handleOpenFile() {
     try {
       const selected = await open({ multiple: false });
-      if (selected && typeof selected === 'string') uiStore.setExplorerRoot(selected);
+      if (selected && typeof selected === 'string') {
+        const name = selected.split(/[/\\]/).pop() || 'Unknown';
+        const id = `tab-${Date.now()}`;
+        editorStore.addTab({ id, path: selected, name, content: null, language: 'plaintext', isPreview: false });
+        editorStore.setActiveTab(id);
+      }
     } catch (err) { console.error("Failed to open file:", err); }
   }
 
@@ -609,36 +729,83 @@
   }
 
   function handleGlobalKeydown(e: KeyboardEvent) {
-    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'p') {
-      e.preventDefault(); isCommandPaletteOpen = true;
+    const isMac = navigator.userAgent.toLowerCase().includes('mac');
+    const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+    const key = e.key.toLowerCase();
+
+    // ── BLOKIR FITUR BAWAAN BROWSER ──
+    // 1. Find / Search
+    if ((cmdOrCtrl && (key === 'f' || key === 'g')) || e.key === 'F3') {
+      e.preventDefault();
+      // Notron search not fully global yet, but we block browser default
     }
-    if (e.ctrlKey && e.key.toLowerCase() === 'n') {
+    // 2. Print & Save
+    if (cmdOrCtrl && key === 'p') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        isCommandPaletteOpen = true; // Ctrl+Shift+P for command palette
+      } else {
+        isCommandPaletteOpen = true; // Temporary route Ctrl+P to command palette
+      }
+    }
+    if (cmdOrCtrl && !e.shiftKey && key === 's') {
+      e.preventDefault(); 
+      window.dispatchEvent(new CustomEvent('editor:save'));
+    }
+    if (cmdOrCtrl && e.shiftKey && key === 's') {
+      e.preventDefault(); 
+      window.dispatchEvent(new CustomEvent('editor:save-as'));
+    }
+    // 3. DevTools & View Source
+    if (e.key === 'F12' || 
+       (cmdOrCtrl && e.shiftKey && (key === 'i' || key === 'j')) || 
+       (cmdOrCtrl && key === 'u')) {
+      e.preventDefault();
+    }
+    // 4. Refresh / Reload
+    if (e.key === 'F5' || (cmdOrCtrl && key === 'r') || (cmdOrCtrl && e.shiftKey && key === 'r')) {
+      e.preventDefault();
+    }
+    // 5. Zooming Browser
+    if (cmdOrCtrl && (key === '+' || key === '=' || key === '-' || key === '0')) {
+      e.preventDefault();
+    }
+    // 6. Navigation History
+    if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+    }
+
+    // ── NOTRON CUSTOM SHORTCUTS ──
+    if (cmdOrCtrl && key === 'n') {
       e.preventDefault(); commands[0].action();
     }
-    if (e.ctrlKey && e.key.toLowerCase() === 'b') {
+    if (cmdOrCtrl && key === 'b') {
       e.preventDefault(); uiStore.toggleSidebar();
     }
-    if (e.ctrlKey && e.key.toLowerCase() === 'g') {
-      e.preventDefault(); isGoToLineOpen = true;
-    }
-    if (e.ctrlKey && e.key === ',') {
+    if (cmdOrCtrl && key === ',') {
       e.preventDefault(); openSettings();
     }
-    if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 's') {
-      e.preventDefault(); window.dispatchEvent(new CustomEvent('editor:save'));
-    }
-    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 's') {
-      e.preventDefault(); window.dispatchEvent(new CustomEvent('editor:save-as'));
-    }
   }
+
+  let lastLoadedRoot: string | null = null;
 
   onMount(() => {
     // Tahap 0: Theme already loaded from localStorage sync
     // Initialize UI from sync storage (localStorage for fast access)
     uiStore.initFromStorage();
+    terminalStore.initFromStorage();
 
     // Start staged startup
+    lastLoadedRoot = uiStore.getSnapshot().explorerRoot;
     stagedStartup().catch(console.error);
+  });
+
+  $effect(() => {
+    const root = $ui.explorerRoot;
+    if (appReady && root && root !== lastLoadedRoot) {
+      lastLoadedRoot = root;
+      loadWorkspaceState(root).catch(console.error);
+    }
   });
 
   // File watcher with proper debounce and filtering (Bagian 4.3)
@@ -695,21 +862,19 @@
                   editorStore.markTabDeleted(tab.id);
                   return;
                 }
-                const bytes = await invoke<number[]>('read_file_binary', { path: tab.path });
-                const uint8 = new Uint8Array(bytes);
-                const isBin = isBinaryData(uint8);
-                if (isBin) {
-                  editorStore.setTabUnsupported(tab.id, true);
-                }
-                const newContent = isBin ? '' : new TextDecoder('utf-8').decode(uint8).replace(/\r\n/g, '\n');
-                const latestTab = editorStore.getTabsSnapshot().find((t: any) => t.id === tab.id);
-                if (latestTab && !latestTab.isModified && newContent !== latestTab.content) {
-                  // Auto-reload if unmodified (Bagian 13.1)
-                  editorStore.setInitialContent(tab.id, newContent);
-                } else if (latestTab && latestTab.isModified && newContent !== latestTab.originalContent) {
-                  // External change with local modifications - set conflict status (Bagian 13.1)
-                  editorStore.markTabConflict(tab.id);
-                  console.warn(`External change detected for ${tab.path} while modified in editor`);
+                try {
+                  const content = await invoke<string>('read_file_text', { path: tab.path });
+                  const latestTab = editorStore.getTabsSnapshot().find((t: any) => t.id === tab.id);
+                  if (latestTab && !latestTab.isModified && content !== latestTab.content) {
+                    editorStore.setInitialContent(tab.id, content);
+                  } else if (latestTab && latestTab.isModified && content !== latestTab.originalContent) {
+                    editorStore.markTabConflict(tab.id);
+                    console.warn(`External change detected for ${tab.path} while modified in editor`);
+                  }
+                } catch (err) {
+                  if (String(err) === '__BINARY__') {
+                    editorStore.setTabUnsupported(tab.id, true);
+                  }
                 }
               } catch (err) {}
             });
@@ -764,15 +929,18 @@
   });
 
   // Debounced save for cursor/scroll changes
+  const cursorSignal = editorStore.cursorSignal;
   $effect(() => {
-    if (!activeTab?.cursor && !activeTab?.scroll) return;
+    $cursorSignal;
+    if (!activeTab) return;
     debouncedSaveCursorScroll();
   });
 
   // Debounced save for expanded paths
+  const expandedPathsStore = uiStore.expandedPaths;
   $effect(() => {
-    const paths = $ui.expandedPaths;
-    if (paths.length > 0) debouncedSaveExpanded();
+    const paths = $expandedPathsStore;
+    if (paths.size > 0) debouncedSaveExpanded();
   });
 
   // Global event listeners
@@ -810,11 +978,15 @@
     onDontSave={() => { if (closingTabId) { editorStore.closeTab(closingTabId); } closingTabId = null; debouncedSaveFullSession(); }}
     onSave={handleCloseSave}
   />
-  <NewFileDialog
-    isOpen={$ui.isNewFileDialogOpen}
-    onClose={() => uiStore.closeNewFileDialog()}
-    isFromWelcome={$ui.newFileDialogSource === 'welcome'}
-  />
+  
+<NewFileDialog 
+  isOpen={$ui.isNewFileDialogOpen}
+  isFromWelcome={$ui.newFileDialogSource === 'welcome'}
+  onClose={() => uiStore.closeNewFileDialog()} 
+/>
+
+<TrustModal />
+<RecentFoldersModal />
 
   <div class="h-8 flex items-center justify-between px-2 select-none bg-surface-2 text-primary">
     <div data-tauri-drag-region class="flex items-center h-full">
@@ -837,50 +1009,26 @@
 
   {#if !appReady}
     <div class="flex flex-1 overflow-hidden">
-      <div class="w-12 flex flex-col items-center py-0 justify-between z-10 border-r border-subtle bg-surface-2">
-        <div class="flex flex-col items-center gap-1 w-full mt-2">
-          <div class="w-6 h-6 rounded bg-hover mt-1 animate-pulse"></div>
-          <div class="w-6 h-6 rounded bg-hover mt-2 animate-pulse"></div>
-        </div>
-        <div class="w-6 h-6 rounded bg-hover mb-3 animate-pulse"></div>
-      </div>
-      <div class="flex flex-col border-r border-subtle bg-surface shrink-0">
-        <div class="h-9 flex items-center px-4">
-          <div class="h-3 w-20 rounded bg-hover animate-pulse"></div>
-        </div>
-        <div class="flex flex-col gap-2 p-2">
-          {#each [80, 60, 90, 50, 70] as w}
-            <div class="h-3 rounded bg-hover animate-pulse" style="width: {w}%"></div>
-          {/each}
-        </div>
-      </div>
+      <!-- Activity Bar Skeleton -->
+      <div class="w-12 flex flex-col items-center py-0 justify-between z-10 border-r border-subtle bg-surface-2 shrink-0"></div>
+
+      <!-- Sidebar Skeleton -->
+      {#if $ui.isSidebarOpen}
+        <div class="flex flex-col border-r border-subtle bg-surface shrink-0" style="width: {$ui.sidebarWidth}px"></div>
+      {/if}
+
+      <!-- Main Editor Area & Terminal Skeleton -->
       <div class="flex flex-1 flex-col overflow-hidden bg-canvas">
-        <div class="flex h-9 overflow-hidden shrink-0 bg-surface-2">
-          <div class="flex gap-0">
-            <div class="w-36 h-full border-r border-subtle flex items-center px-3 gap-2 border-t-2 border-t-indicator-active bg-canvas">
-              <div class="w-3.5 h-3.5 rounded-sm bg-hover animate-pulse shrink-0"></div>
-              <div class="h-2.5 flex-1 rounded bg-hover animate-pulse"></div>
-            </div>
-            <div class="w-36 h-full border-r border-subtle flex items-center px-3 gap-2">
-              <div class="w-3.5 h-3.5 rounded-sm bg-hover animate-pulse shrink-0"></div>
-              <div class="h-2.5 flex-1 rounded bg-hover animate-pulse"></div>
-            </div>
-          </div>
-        </div>
-        <div class="flex-1 relative overflow-hidden">
-          <div class="absolute inset-0 flex">
-            <div class="w-12 flex flex-col gap-4 pt-3 items-end pr-3 border-r border-subtle">
-              {#each Array(20) as _, i}
-                <div class="h-2 rounded bg-hover animate-pulse" style="width: {20 + (i % 3) * 5}px"></div>
-              {/each}
-            </div>
-            <div class="flex-1 flex flex-col gap-4 pt-3 pl-2">
-              {#each [60, 40, 80, 30, 70, 50, 90, 35, 65, 45, 75, 55, 85, 25, 60] as w}
-                <div class="h-2 rounded bg-hover animate-pulse" style="width: {w}%"></div>
-              {/each}
-            </div>
-          </div>
-        </div>
+        <!-- Editor Tabs Header Skeleton -->
+        <div class="h-9 border-b border-subtle bg-surface-2 shrink-0"></div>
+        
+        <!-- Editor Body Skeleton -->
+        <div class="flex-1 relative"></div>
+
+        <!-- Terminal Panel Skeleton -->
+        {#if $terminalStore.isVisible}
+          <div class="flex flex-col border-t border-subtle bg-surface-2 shrink-0" style="height: {$terminalStore.isMaximized ? 'calc(100vh - 2rem)' : `${$terminalStore.height}px`};"></div>
+        {/if}
       </div>
     </div>
   {:else}
@@ -952,12 +1100,12 @@
                     </span>
                     <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                       <Tooltip content="New File">
-                        <button aria-label="New File" onclick={() => uiStore.setCreatingItem({ type: 'file', parentPath: $ui.selectedExplorerPath || $ui.explorerRoot || '' })} class="p-1 rounded transition-colors hover:bg-hover text-icon-default hover:text-icon-active">
+                        <button aria-label="New File" onclick={(e) => { e.preventDefault(); e.stopPropagation(); document.dispatchEvent(new CustomEvent('notron-create-file')); }} class="p-1 rounded transition-colors hover:bg-hover text-icon-default hover:text-icon-active">
                           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
                         </button>
                       </Tooltip>
                       <Tooltip content="New Folder">
-                        <button aria-label="New Folder" onclick={() => uiStore.setCreatingItem({ type: 'folder', parentPath: $ui.selectedExplorerPath || $ui.explorerRoot || '' })} class="p-1 rounded transition-colors hover:bg-hover text-icon-default hover:text-icon-active">
+                        <button aria-label="New Folder" onclick={(e) => { e.preventDefault(); e.stopPropagation(); document.dispatchEvent(new CustomEvent('notron-create-folder')); }} class="p-1 rounded transition-colors hover:bg-hover text-icon-default hover:text-icon-active">
                           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><line x1="12" y1="10" x2="12" y2="16"/><line x1="9" y1="13" x2="15" y2="13"/></svg>
                         </button>
                       </Tooltip>
@@ -973,12 +1121,7 @@
                       </Tooltip>
                     </div>
                   </div>
-                  <div
-                    class="flex-1 flex flex-col overflow-y-auto p-2 outline-none transition-all {$ui.selectedExplorerPath === $ui.explorerRoot ? 'bg-selected ring-1 ring-inset ring-focus' : ''}"
-                    role="none"
-                    onclick={(e) => { if (e.target === e.currentTarget) uiStore.setSelectedExplorerPath($ui.explorerRoot); }}
-                    onkeydown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) uiStore.setSelectedExplorerPath($ui.explorerRoot); }}
-                  >
+                  <div class="flex-1 flex flex-col overflow-hidden outline-none">
                     <FileTree rootPath={$ui.explorerRoot} />
                   </div>
                 </div>
@@ -1096,7 +1239,7 @@
         <Breadcrumbs />
       {/if}
 
-      <div class="flex-1 relative overflow-hidden">
+      <div class="flex-1 relative overflow-hidden" class:hidden={$terminalStore.isMaximized}>
         {#if $tabs.length === 0}
 <div class="absolute inset-0 flex flex-col items-center justify-center gap-4 text-muted">
              <div class="flex flex-col gap-2">
@@ -1142,16 +1285,21 @@
           {/if}
         {/if}
       </div>
+      <TerminalPanel />
     </div>
   </div>
   {/if}
 
   <div class="h-6 flex items-center justify-between px-3 text-xs select-none border-t bg-surface-2 text-primary border-subtle">
-    <div class="flex items-center gap-4">
-      {#if $saveStatus}
-        <span class="text-muted">{$saveStatus}</span>
+    <div class="flex items-center gap-4 relative min-w-[200px]">
+      {#if $ui.globalStatus}
+        <span class="animate-in fade-in duration-200" title={$ui.globalStatus}>
+          {$ui.globalStatus.length > 40 ? $ui.globalStatus.slice(0, 40) + '...' : $ui.globalStatus}
+        </span>
+      {:else if $saveStatus}
+        <span class="text-muted animate-in fade-in duration-200">{$saveStatus}</span>
       {:else}
-        <span>Ready</span>
+        <span class="animate-in fade-in duration-200">Ready</span>
       {/if}
       {#if activeTab}<span>{activeTab.language}</span>{/if}
     </div>
@@ -1165,6 +1313,7 @@
 
 {#if tabCtxMenu.isOpen}
   <div
+    data-notron-context-menu="true"
     class="fixed min-w-[160px] rounded-md border p-1 shadow-md z-[100] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary"
     style="left: {tabCtxMenu.x}px; top: {tabCtxMenu.y}px;"
     role="presentation"

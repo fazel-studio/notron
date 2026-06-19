@@ -14,6 +14,23 @@
     {
       "identifier": "fs:allow-watch",
       "allow": [{ "path": "**" }]
+    },
+    "shell:default",
+    "pty:default",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "powershell",
+          "cmd": "powershell",
+          "args": true
+        },
+        {
+          "name": "cmd",
+          "cmd": "cmd",
+          "args": true
+        }
+      ]
     }
   ]
 }

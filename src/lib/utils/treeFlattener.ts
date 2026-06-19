@@ -53,7 +53,8 @@ export function flattenTree(
   expandedSet: Set<string>,
   childrenCache: Map<string, RawFileNode[]>,
   depth = 0,
-  creatingItem?: { type: 'file' | 'folder'; parentPath: string } | null
+  creatingItem?: { type: 'file' | 'folder'; parentPath: string } | null,
+  loadingPaths?: Set<string>
 ): FlatTreeNode[] {
   const result: FlatTreeNode[] = [];
 
@@ -70,11 +71,9 @@ export function flattenTree(
       has_children,
     });
 
-    // If this directory is expanded, recurse into its (cached) children
     if (isExpanded) {
-      // Section 3.3: Use cache first, fall back to node.children
       const children = childrenCache.get(node.path) ?? node.children ?? [];
-      const childFlat = flattenTree(children, expandedSet, childrenCache, depth + 1, creatingItem);
+      const childFlat = flattenTree(children, expandedSet, childrenCache, depth + 1, creatingItem, loadingPaths);
 
       if (creatingItem && creatingItem.parentPath === node.path) {
         if (creatingItem.type === 'folder') {
@@ -104,6 +103,17 @@ export function flattenTree(
             creating_type: 'file'
           });
         }
+      }
+
+      if (loadingPaths?.has(node.path) && children.length === 0) {
+        childFlat.unshift({
+          path: `__loading__${node.path}`,
+          name: 'Loading...',
+          depth: depth + 1,
+          is_dir: false,
+          isExpanded: false,
+          has_children: false,
+        });
       }
 
       for (const c of childFlat) result.push(c);

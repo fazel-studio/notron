@@ -62,7 +62,6 @@
 
   let editorEl: HTMLDivElement;
   let editorView: EditorView | null = null;
-  let isLoadingLang = $state(true);
   let isLargeFile = $state(false);
   let isDark = $derived($themeStore.isDark);
 
@@ -103,7 +102,6 @@
 
   async function loadLanguage() {
     if (isLargeFile) {
-      isLoadingLang = false;
       return;
     }
     const { getLanguageExtension } = await import('../utils/languageDetector');
@@ -113,7 +111,6 @@
         effects: langCompartment.reconfigure(ext)
       });
     }
-    isLoadingLang = false;
   }
 
   function setupEditor() {
@@ -122,19 +119,16 @@
       editorView = null;
     }
 
-    isLoadingLang = !isLargeFile;
-
     let cursorScrollTimeout: ReturnType<typeof setTimeout> | null = null;
 
-    // Section 4.1: Don't bind full text on every keystroke.
     // CodeMirror manages its own internal state (immutable document tree).
     // Svelte only needs the content at specific moments (see 4.2).
     let contentExtractTimer: ReturnType<typeof setTimeout> | null = null;
-    const CONTENT_DEBOUNCE_MS = 500; // Section 4.2: Extract only after user stops typing
+    const CONTENT_DEBOUNCE_MS = 500; // Extract only after user stops typing
 
     const updateListener = EditorView.updateListener.of((update) => {
       if (update.docChanged) {
-        // Section 4.2: Debounced extraction — don't extract on every keystroke
+        // Debounced extraction — don't extract on every keystroke
         if (contentExtractTimer) clearTimeout(contentExtractTimer);
         contentExtractTimer = setTimeout(() => {
           if (!editorView) return;
@@ -193,20 +187,20 @@
     const state = EditorState.create({ doc: content, extensions: extBase });
     editorView = new EditorView({ state, parent: editorEl });
 
-    const tabs = editorStore.getTabsSnapshot();
-    const tab = tabs.find((t: any) => t.id === tabId);
-    if (tab?.scroll) {
+    const scroll = editorStore.getScroll(tabId);
+    if (scroll) {
       requestAnimationFrame(() => {
-        if (editorView && tab.scroll) {
-          editorView.scrollDOM.scrollTop = tab.scroll.top;
-          editorView.scrollDOM.scrollLeft = tab.scroll.left;
+        if (editorView && scroll) {
+          editorView.scrollDOM.scrollTop = scroll.top;
+          editorView.scrollDOM.scrollLeft = scroll.left;
         }
       });
     }
-    if (tab?.cursor && !isLargeFile) {
+    const cursor = editorStore.getCursor(tabId);
+    if (cursor && !isLargeFile) {
       try {
-        const line = editorView.state.doc.line(tab.cursor.line);
-        const pos = Math.min(line.from + tab.cursor.column - 1, line.to);
+        const line = editorView.state.doc.line(cursor.line);
+        const pos = Math.min(line.from + cursor.column - 1, line.to);
         editorView.dispatch({
           selection: { anchor: pos },
           scrollIntoView: true
@@ -348,13 +342,11 @@
 </script>
 
 <div class="absolute inset-0 [&>div]:h-full [&_.cm-editor]:h-full" style={style}>
-  {#if isLoadingLang}
-    <div class="flex items-center justify-center h-full text-xs text-muted">Loading editor...</div>
-  {/if}
+
   {#if isLargeFile}
     <div class="absolute top-0 left-0 right-0 bg-yellow-900/50 text-yellow-300 text-[10px] px-3 py-1 text-center z-10">
       Large file — syntax highlighting and some features disabled for performance
     </div>
   {/if}
-  <div bind:this={editorEl} class="h-full" class:hidden={isLoadingLang}></div>
+  <div bind:this={editorEl} class="h-full"></div>
 </div>

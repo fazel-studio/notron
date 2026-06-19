@@ -13,11 +13,20 @@ interface UiState {
   newFileDialogSource: 'welcome' | 'menu' | null;
   explorerRefreshCounter: number;
   explorerCollapseCounter: number;
-  expandedPaths: string[];
   isMinimapEnabled: boolean;
   recentWorkspaces: string[];
   showDotFiles: boolean;
+  globalStatus: string | null;
+  pendingTrustPath: string | null;
+  isRecentFoldersModalOpen: boolean;
 }
+
+// PERF FIX: expandedPaths is now a SEPARATE writable<Set>.
+// Previously it was string[] inside UiState, meaning:
+//   1. Every toggleExpandedPath rebuilt the entire UiState object
+//   2. Array.includes() = O(n) per node render
+// Now: Set.has() = O(1), and changes only notify Set subscribers.
+const expandedPathsStore = writable<Set<string>>(new Set());
 
 function createUiStore() {
   const state = writable<UiState>({
@@ -33,18 +42,58 @@ function createUiStore() {
     newFileDialogSource: null,
     explorerRefreshCounter: 0,
     explorerCollapseCounter: 0,
-    expandedPaths: [],
     isMinimapEnabled: true,
     recentWorkspaces: [],
     showDotFiles: false,
+    globalStatus: null,
+    pendingTrustPath: null,
+    isRecentFoldersModalOpen: false,
   });
+
+  let globalStatusTimeout: ReturnType<typeof setTimeout> | null = null;
+  let operationCounter = 0;
 
   function update(fn: (s: UiState) => Partial<UiState>) {
     state.update(s => ({ ...s, ...fn(s) }));
   }
 
+  function setStatus(msg: string | null, timeoutMs: number = 3000) {
+    if (globalStatusTimeout) clearTimeout(globalStatusTimeout);
+    state.update(s => ({ ...s, globalStatus: msg }));
+    
+    if (msg && timeoutMs > 0) {
+      globalStatusTimeout = setTimeout(() => {
+        state.update(s => ({ ...s, globalStatus: null }));
+      }, timeoutMs);
+    }
+  }
+
+  async function withStatus<T>(msg: string, promiseOrFn: Promise<T> | (() => Promise<T>), delayMs: number = 500): Promise<T> {
+    const opId = ++operationCounter;
+    
+    // Set a timer to show the message ONLY if the operation takes longer than delayMs
+    const timer = setTimeout(() => {
+      if (operationCounter === opId) {
+        state.update(s => ({ ...s, globalStatus: msg }));
+      }
+    }, delayMs);
+
+    try {
+      const isFunc = typeof promiseOrFn === 'function';
+      return await (isFunc ? (promiseOrFn as Function)() : promiseOrFn);
+    } finally {
+      clearTimeout(timer);
+      if (operationCounter === opId) {
+        state.update(s => ({ ...s, globalStatus: null }));
+      }
+    }
+  }
+
   return {
     subscribe: state.subscribe,
+    // Expose expandedPaths as separate store for fine-grained reactivity
+    expandedPaths: { subscribe: expandedPathsStore.subscribe },
+
     initFromStorage: () => {
       const savedWorkspace = localStorage.getItem('last_workspace');
       const savedRecent = JSON.parse(localStorage.getItem('recent_workspaces') || '[]');
@@ -80,25 +129,48 @@ function createUiStore() {
     setClipboard: (item: UiState['clipboard']) => update(() => ({ clipboard: item })),
     openNewFileDialog: (source: 'welcome' | 'menu') => update(() => ({ isNewFileDialogOpen: true, newFileDialogSource: source })),
     closeNewFileDialog: () => update(() => ({ isNewFileDialogOpen: false, newFileDialogSource: null })),
+    openRecentFoldersModal: () => update(() => ({ isRecentFoldersModalOpen: true })),
+    closeRecentFoldersModal: () => update(() => ({ isRecentFoldersModalOpen: false })),
     triggerExplorerRefresh: () => update(s => ({ explorerRefreshCounter: s.explorerRefreshCounter + 1 })),
-    triggerExplorerCollapse: () => update(() => ({ explorerCollapseCounter: 0, expandedPaths: [] })),
+    triggerExplorerCollapse: () => {
+      expandedPathsStore.set(new Set());
+      update(() => ({ explorerCollapseCounter: 0 }));
+    },
     toggleMinimap: () => update(s => ({ isMinimapEnabled: !s.isMinimapEnabled })),
     setMinimapEnabled: (enabled: boolean) => update(() => ({ isMinimapEnabled: enabled })),
-    // Section 1.2: Tiered startup — save UI tier to new tables
     saveTierUiState: () => {
       // Delegates to the Tauri command; called by App.svelte effects
     },
-    setExpandedPaths: (paths: string[]) => update(() => ({ expandedPaths: paths })),
-    toggleExpandedPath: (path: string, isExpanded: boolean) => update(s => {
-      if (isExpanded) {
-        if (!s.expandedPaths.includes(path)) {
-          return { expandedPaths: [...s.expandedPaths, path] };
+
+    // ── expandedPaths operations (now using Set) ──
+    setExpandedPaths: (paths: string[]) => {
+      expandedPathsStore.set(new Set(paths));
+    },
+    setExpandedPathsSet: (pathSet: Set<string>) => {
+      expandedPathsStore.set(pathSet);
+    },
+    toggleExpandedPath: (path: string, isExpanded: boolean) => {
+      expandedPathsStore.update(s => {
+        const next = new Set(s);
+        if (isExpanded) {
+          next.add(path);
+        } else {
+          next.delete(path);
         }
-      } else {
-        return { expandedPaths: s.expandedPaths.filter(p => p !== path) };
-      }
-      return {};
-    }),
+        return next;
+      });
+    },
+    getExpandedPathsSnapshot: (): string[] => {
+      let val: Set<string> = new Set();
+      expandedPathsStore.subscribe(v => val = v)();
+      return Array.from(val);
+    },
+    getExpandedPathsSetSnapshot: (): Set<string> => {
+      let val: Set<string> = new Set();
+      expandedPathsStore.subscribe(v => val = v)();
+      return val;
+    },
+
     toggleShowDotFiles: () => update(s => {
       const newVal = !s.showDotFiles;
       localStorage.setItem('showDotFiles', String(newVal));
@@ -116,11 +188,20 @@ function createUiStore() {
         return { explorerRoot: path };
       }
     }),
+    clearRecentWorkspaces: () => update(s => {
+      const currentWorkspace = s.explorerRoot;
+      const newRecent = currentWorkspace ? [currentWorkspace] : [];
+      localStorage.setItem('recent_workspaces', JSON.stringify(newRecent));
+      return { recentWorkspaces: newRecent };
+    }),
+    setPendingTrustPath: (path: string | null) => update(() => ({ pendingTrustPath: path })),
     getSnapshot: (): UiState => {
       let val: UiState = null!;
       state.subscribe(v => val = v)();
       return val;
     },
+    setStatus,
+    withStatus,
   };
 }
 
