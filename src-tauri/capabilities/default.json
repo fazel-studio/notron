@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "core:window:default",
+    "core:window:allow-set-title",
     "opener:default",
     "dialog:default",
     "fs:default",
@@ -13,6 +14,10 @@
     "fs:write-all",
     {
       "identifier": "fs:allow-watch",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "fs:allow-exists",
       "allow": [{ "path": "**" }]
     },
     "shell:default",

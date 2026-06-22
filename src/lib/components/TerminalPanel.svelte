@@ -3,7 +3,7 @@
   import { uiStore } from '../stores/ui';
   import { editorStore } from '../stores/editor';
   import TerminalInstance from './TerminalInstance.svelte';
-  
+  import Tooltip from './Tooltip.svelte';
   const termStore = terminalStore;
   const { activeTabId } = editorStore;
   
@@ -77,56 +77,80 @@
       </div>
       <div class="flex items-center gap-1 text-icon-default relative">
         <div class="relative">
-          <button 
-            aria-label="New Terminal" 
-            onclick={() => isDropdownOpen = !isDropdownOpen} 
-            class="p-1 rounded hover:bg-hover hover:text-icon-active transition-colors flex items-center gap-0.5"
-            title="New Terminal"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-          </button>
+          <Tooltip content="New Terminal" side="top">
+            <button 
+              aria-label="New Terminal" 
+              onclick={() => isDropdownOpen = !isDropdownOpen} 
+              class="p-1 rounded hover:bg-hover hover:text-icon-active transition-colors flex items-center gap-0.5"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+          </Tooltip>
           
           {#if isDropdownOpen}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="fixed inset-0 z-[99]"
+              role="presentation"
+              onclick={() => isDropdownOpen = false}
+              oncontextmenu={(e) => { e.preventDefault(); isDropdownOpen = false; }}
+              onkeydown={(e) => { if (e.key === 'Escape') isDropdownOpen = false; }}
+            ></div>
             <div 
-              class="absolute top-full right-0 mt-1 min-w-[150px] bg-surface-2 border border-subtle shadow-md rounded flex flex-col z-50 text-secondary"
+              class="absolute top-full right-0 mt-1 min-w-[160px] rounded-md border p-1 shadow-md z-[100] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary flex flex-col"
             >
-              <button class="px-3 py-1.5 text-left text-xs hover:bg-selected hover:text-primary transition-colors cursor-pointer" onclick={() => createTerminal('powershell')}>PowerShell</button>
-              <button class="px-3 py-1.5 text-left text-xs hover:bg-selected hover:text-primary transition-colors cursor-pointer" onclick={() => createTerminal('cmd')}>Command Prompt</button>
+              <button 
+                class="flex items-center justify-between w-full px-2 py-1.5 text-xs rounded-sm cursor-pointer select-none outline-none transition-colors hover:bg-selected focus:bg-selected hover:text-primary focus:text-primary text-secondary" 
+                onclick={() => createTerminal('powershell')}
+              >
+                <span>PowerShell</span>
+              </button>
+              <button 
+                class="flex items-center justify-between w-full px-2 py-1.5 text-xs rounded-sm cursor-pointer select-none outline-none transition-colors hover:bg-selected focus:bg-selected hover:text-primary focus:text-primary text-secondary" 
+                onclick={() => createTerminal('cmd')}
+              >
+                <span>Command Prompt</span>
+              </button>
             </div>
           {/if}
         </div>
         
-        <button 
-          aria-label="Delete Active Terminal" 
-          onclick={() => $termStore.activeTerminalId && terminalStore.closeTerminal($termStore.activeTerminalId)} 
-          class="p-1 rounded hover:bg-hover hover:text-red-400 transition-colors"
-          title="Kill Terminal"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
-        </button>
-        <button 
-          aria-label="Maximize Terminal" 
-          onclick={() => terminalStore.toggleMaximize()} 
-          class="p-1 rounded hover:bg-hover hover:text-icon-active transition-colors"
-          title="Maximize Terminal Panel"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            {#if $termStore.isMaximized}
-              <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
-            {:else}
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-            {/if}
-          </svg>
-        </button>
-        <button 
-          aria-label="Close Terminal Panel" 
-          onclick={() => terminalStore.setVisibility(false)} 
-          class="p-1 rounded hover:bg-hover hover:text-icon-active transition-colors"
-          title="Hide Terminal"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
+        <Tooltip content="Kill Terminal" side="top">
+          <button 
+            aria-label="Delete Active Terminal" 
+            onclick={() => $termStore.activeTerminalId && terminalStore.closeTerminal($termStore.activeTerminalId)} 
+            class="p-1 rounded hover:bg-hover hover:text-red-400 transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+          </button>
+        </Tooltip>
+        
+        <Tooltip content="Maximize Terminal Panel" side="top">
+          <button 
+            aria-label="Maximize Terminal" 
+            onclick={() => terminalStore.toggleMaximize()} 
+            class="p-1 rounded hover:bg-hover hover:text-icon-active transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              {#if $termStore.isMaximized}
+                <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
+              {:else}
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              {/if}
+            </svg>
+          </button>
+        </Tooltip>
+        
+        <Tooltip content="Hide Terminal" side="top">
+          <button 
+            aria-label="Close Terminal Panel" 
+            onclick={() => terminalStore.setVisibility(false)} 
+            class="p-1 rounded hover:bg-hover hover:text-icon-active transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </Tooltip>
       </div>
     </div>
 

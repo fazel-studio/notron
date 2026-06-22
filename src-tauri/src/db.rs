@@ -75,7 +75,7 @@ pub struct BatchResult {
     pub error: Option<String>,
 }
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Initialize DB with connection pool (3 connections).
 /// PRAGMAs are applied per-connection via r2d2 customizer.
@@ -125,9 +125,21 @@ fn create_schema(conn: &Connection) -> SqlResult<()> {
     )?;
 
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS settings (
+        "CREATE TABLE IF NOT EXISTS global_settings (
             key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
+            value TEXT NOT NULL,
+            updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS workspace_settings (
+            workspace_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+            PRIMARY KEY (workspace_id, key)
         )",
         [],
     )?;
@@ -200,6 +212,16 @@ fn create_schema(conn: &Connection) -> SqlResult<()> {
         [],
     )?;
 
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS dirty_tab_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL,
+            content TEXT NOT NULL,
+            cursor_pos INTEGER NOT NULL
+        )",
+        [],
+    )?;
+
     let current_version: i64 = conn
         .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_version", [], |row| row.get(0))
         .unwrap_or(0);
@@ -256,6 +278,33 @@ fn run_migrations(conn: &Connection, from_version: i64) -> SqlResult<()> {
                 updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
             );
         ")?;
+    }
+    if from_version < 3 {
+        conn.execute_batch("
+            CREATE TABLE IF NOT EXISTS global_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+            CREATE TABLE IF NOT EXISTS workspace_settings (
+                workspace_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                PRIMARY KEY (workspace_id, key)
+            );
+        ")?;
+    }
+    if from_version < 4 {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dirty_tab_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL,
+                content TEXT NOT NULL,
+                cursor_pos INTEGER NOT NULL
+            )",
+            [],
+        )?;
     }
     conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?1)", params![SCHEMA_VERSION])?;
     Ok(())
@@ -339,7 +388,7 @@ pub async fn clear_recent_files(state: tauri::State<'_, DbState>) -> Result<(), 
 pub async fn get_setting(key: String, state: tauri::State<'_, DbState>) -> Result<Option<String>, String> {
     let k = key.clone();
     with_db(&state, move |conn| {
-        let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1").map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT value FROM global_settings WHERE key = ?1").map_err(|e| e.to_string())?;
         let mut rows = stmt.query(params![k]).map_err(|e| e.to_string())?;
         if let Some(row) = rows.next().map_err(|e| e.to_string())? {
             let value: String = row.get(0).map_err(|e| e.to_string())?;
@@ -356,7 +405,7 @@ pub async fn set_setting(key: String, value: String, state: tauri::State<'_, DbS
     let v = value.clone();
     with_db(&state, move |conn| {
         conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+            "INSERT INTO global_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
             params![k, v],
         ).map_err(|e| e.to_string())?;
         Ok(())
@@ -475,6 +524,91 @@ pub async fn save_workspace_session(
             params![wp, sj, now],
         ).map_err(|e| e.to_string())?;
         conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
+}
+
+// Tiered Settings Commands
+
+#[tauri::command]
+pub async fn load_global_settings(state: tauri::State<'_, DbState>) -> Result<std::collections::HashMap<String, Value>, String> {
+    with_db(&state, move |conn| {
+        let mut stmt = conn.prepare("SELECT key, value FROM global_settings").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }).map_err(|e| e.to_string())?;
+        
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            if let Ok((k, v)) = row {
+                let parsed: Value = serde_json::from_str(&v).unwrap_or(Value::Null);
+                map.insert(k, parsed);
+            }
+        }
+        Ok(map)
+    }).await
+}
+
+#[tauri::command]
+pub async fn load_workspace_settings(workspace_id: String, state: tauri::State<'_, DbState>) -> Result<std::collections::HashMap<String, Value>, String> {
+    let wid = workspace_id.clone();
+    with_db(&state, move |conn| {
+        let mut stmt = conn.prepare("SELECT key, value FROM workspace_settings WHERE workspace_id = ?1").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![wid], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }).map_err(|e| e.to_string())?;
+        
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            if let Ok((k, v)) = row {
+                let parsed: Value = serde_json::from_str(&v).unwrap_or(Value::Null);
+                map.insert(k, parsed);
+            }
+        }
+        Ok(map)
+    }).await
+}
+
+#[tauri::command]
+pub async fn save_global_setting(key: String, value: Value, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    let k = key.clone();
+    let v = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+    with_db(&state, move |conn| {
+        let now = now_secs();
+        conn.execute(
+            "INSERT INTO global_settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
+            params![k, v, now],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
+}
+
+#[tauri::command]
+pub async fn save_workspace_setting(workspace_id: String, key: String, value: Value, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    let wid = workspace_id.clone();
+    let k = key.clone();
+    let v = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+    with_db(&state, move |conn| {
+        let now = now_secs();
+        conn.execute(
+            "INSERT INTO workspace_settings (workspace_id, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(workspace_id, key) DO UPDATE SET value = ?3, updated_at = ?4",
+            params![wid, k, v, now],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
+}
+
+#[tauri::command]
+pub async fn delete_workspace_setting(workspace_id: String, key: String, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    let wid = workspace_id.clone();
+    let k = key.clone();
+    with_db(&state, move |conn| {
+        conn.execute(
+            "DELETE FROM workspace_settings WHERE workspace_id = ?1 AND key = ?2",
+            params![wid, k],
+        ).map_err(|e| e.to_string())?;
         Ok(())
     }).await
 }
@@ -649,6 +783,77 @@ pub async fn save_session_state(
                scroll_positions_json=?4, editor_snapshots_json=?5, updated_at=?6",
             params![wid, sess.open_tabs_json, sess.active_tab_id,
                     sess.scroll_positions_json, sess.editor_snapshots_json, now],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await
+}
+
+// Crash Recovery
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DirtyTabData {
+    pub path: String,
+    pub content: String,
+    pub cursor_pos: i64,
+}
+
+#[tauri::command]
+pub async fn save_dirty_tab_snapshots(tabs: Vec<DirtyTabData>, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    with_db(&state, move |conn| {
+        conn.execute("DELETE FROM dirty_tab_snapshots", []).map_err(|e| e.to_string())?;
+        
+        for tab in tabs {
+            conn.execute(
+                "INSERT INTO dirty_tab_snapshots (path, content, cursor_pos) VALUES (?1, ?2, ?3)",
+                params![tab.path, tab.content, tab.cursor_pos],
+            ).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }).await
+}
+
+#[tauri::command]
+pub async fn get_dirty_tab_snapshots(state: tauri::State<'_, DbState>) -> Result<Vec<DirtyTabData>, String> {
+    with_db(&state, move |conn| {
+        let mut stmt = conn.prepare("SELECT path, content, cursor_pos FROM dirty_tab_snapshots").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(DirtyTabData {
+                path: row.get(0)?,
+                content: row.get(1)?,
+                cursor_pos: row.get(2)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(results)
+    }).await
+}
+
+#[tauri::command]
+pub async fn check_crash_flag(state: tauri::State<'_, DbState>) -> Result<bool, String> {
+    with_db(&state, move |conn| {
+        let mut stmt = conn.prepare("SELECT value FROM global_settings WHERE key = 'crash_flag'").map_err(|e| e.to_string())?;
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let value: String = row.get(0).map_err(|e| e.to_string())?;
+            Ok(value == "true")
+        } else {
+            Ok(false)
+        }
+    }).await
+}
+
+#[tauri::command]
+pub async fn set_crash_flag(value: bool, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    let v = if value { "true" } else { "false" };
+    with_db(&state, move |conn| {
+        let now = now_secs();
+        conn.execute(
+            "INSERT INTO global_settings (key, value, updated_at) VALUES ('crash_flag', ?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = ?2",
+            params![v, now],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }).await

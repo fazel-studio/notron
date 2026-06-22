@@ -71,7 +71,7 @@
 
 <div
   bind:this={containerEl}
-  class="overflow-y-auto overflow-x-hidden h-full outline-none {className}"
+  class="hover-scrollbar overflow-y-auto overflow-x-hidden h-full outline-none {className}"
   role="presentation"
   onscroll={handleScroll}
 >

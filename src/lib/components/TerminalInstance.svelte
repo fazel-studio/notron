@@ -6,7 +6,7 @@
   import { themeStore } from '../stores/theme';
   import 'xterm/css/xterm.css';
 
-  let { type, cwd } = $props<{ tabId: string, type: 'powershell' | 'cmd', cwd: string }>();
+  let { tabId, type, cwd } = $props<{ tabId: string, type: 'powershell' | 'cmd', cwd: string }>();
 
   let isDark = $derived($themeStore.isDark);
 
@@ -46,8 +46,8 @@
         term.write(new TextDecoder().decode(data));
       });
 
-      ptyProcess.onExit((data: { exitCode: number }) => {
-        term.writeln(`\r\n[Process exited with code ${data.exitCode}]`);
+      ptyProcess.onExit(() => {
+        terminalStore.closeTerminal(tabId);
       });
 
       term.onData(data => {

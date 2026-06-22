@@ -1,65 +1,71 @@
 <script lang="ts">
-    import { Fzf } from 'fzf';
+  import Modal from './Modal.svelte';
+  import { paletteStore, type PaletteItem } from '../stores/palette';
+  import { 
+    FileText, Command as CmdIcon, CircleDot, Clock
+  } from 'lucide-svelte';
 
-  interface Command {
-    id: string;
-    name: string;
-    shortcut?: string;
-    action: () => void;
-  }
-
-  let { isOpen, commands, onClose }: { isOpen: boolean; commands: Command[]; onClose: () => void } = $props();
+  let { isOpen, onClose, initialQuery = '' }: { isOpen: boolean; onClose: () => void; initialQuery?: string } = $props();
 
   let query = $state('');
   let selectedIndex = $state(0);
   let inputEl: HTMLInputElement | undefined = $state();
-  const MAX_RESULTS = 15;
+  
+  let filteredItems = $derived.by(() => {
+    if (!$paletteStore.isLoaded) return [];
+    
+    let isCommandMode = query.startsWith('>');
+    let actualQuery = isCommandMode ? query.slice(1).trim() : query.trim();
 
+    let pool = $paletteStore.items.filter((i: any) => isCommandMode ? i.category === 'command' : i.category !== 'command');
 
+    if (!actualQuery) return pool.slice(0, 15);
+    if (!$paletteStore.fzfInstance) return [];
 
-  // Use fzf for fuzzy search 
-  let filteredCommands = $derived.by(() => {
-    if (!query.trim()) return commands.slice(0, MAX_RESULTS);
-    const fuzzy = new Fzf(commands, {
-      selector: (item: Command) => item.name,
-    });
-    const results = fuzzy.find(query);
-    return results.slice(0, MAX_RESULTS).map((r: any) => r.item);
+    const results = $paletteStore.fzfInstance.find(actualQuery);
+    return results
+      .map((r: any) => r.item)
+      .filter((item: any) => isCommandMode ? item.category === 'command' : item.category !== 'command');
   });
 
-  function handleSelect(cmd: Command) {
-    cmd.action();
+  function handleSelect(item: PaletteItem) {
+    item.action();
     onClose();
   }
 
   function handleKeydown(e: KeyboardEvent) {
     if (!isOpen) return;
-    if (e.key === 'Escape') { e.preventDefault(); onClose(); }
-    if (e.key === 'ArrowDown') { e.preventDefault(); selectedIndex = (selectedIndex + 1) % filteredCommands.length; }
-    if (e.key === 'ArrowUp') { e.preventDefault(); selectedIndex = (selectedIndex - 1 + filteredCommands.length) % filteredCommands.length; }
-    if (e.key === 'Enter') { e.preventDefault(); if (filteredCommands[selectedIndex]) handleSelect(filteredCommands[selectedIndex]); }
+    // Escape is handled by Modal, but let's keep arrow keys and enter
+    if (e.key === 'ArrowDown') { e.preventDefault(); selectedIndex = (selectedIndex + 1) % filteredItems.length; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); selectedIndex = (selectedIndex - 1 + filteredItems.length) % filteredItems.length; }
+    if (e.key === 'Enter') { e.preventDefault(); if (filteredItems[selectedIndex]) handleSelect(filteredItems[selectedIndex]); }
   }
 
   $effect(() => {
     if (isOpen) {
-      query = '';
+      query = initialQuery;
       selectedIndex = 0;
       requestAnimationFrame(() => inputEl?.focus());
     }
   });
+
+  function getIcon(category: string) {
+    switch (category) {
+      case 'file': return FileText;
+      case 'symbol': return CircleDot;
+      case 'recent': return Clock;
+      default: return CmdIcon;
+    }
+  }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
 
-{#if isOpen}
-  <div class="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] bg-black/50 backdrop-blur-sm" role="presentation" onclick={onClose} onkeydown={(e) => { if (e.key === 'Escape') onClose(); }}>
-    <div
-      role="presentation"
-      class="w-full max-w-lg rounded-xl shadow-2xl overflow-hidden border bg-surface border-subtle text-primary"
-      onclick={(e) => e.stopPropagation()}
-    >
-      <div class="flex items-center px-4 py-3 border-b border-subtle">
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-icon-default"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+<Modal {isOpen} title="Command Palette" widthClass="max-w-xl" {onClose}>
+  {#snippet children()}
+    <div class="flex flex-col h-full">
+      <div class="flex items-center px-4 py-3 border-b border-subtle shrink-0">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-icon-default shrink-0"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
         <input
           bind:this={inputEl}
           class="flex-1 bg-transparent border-none outline-none px-3 text-sm text-primary placeholder-muted"
@@ -68,11 +74,12 @@
           oninput={() => selectedIndex = 0}
         />
       </div>
-      <div class="max-h-80 overflow-y-auto py-2">
-        {#if filteredCommands.length === 0}
-          <div class="px-4 py-3 text-sm text-center text-muted">No commands found</div>
+      <div class="h-[460px] overflow-y-auto py-2 scrollbar-hide flex flex-col">
+        {#if filteredItems.length === 0}
+          <div class="px-4 py-3 text-sm text-center text-muted flex-1 flex items-center justify-center">No items found</div>
         {:else}
-          {#each filteredCommands as cmd, i (cmd.id)}
+          {#each filteredItems as cmd, i (cmd.id)}
+            {@const Icon = getIcon(cmd.category)}
             <div
               role="option"
               tabindex="0"
@@ -85,14 +92,29 @@
               onkeydown={(e) => { if (e.key === 'Enter') handleSelect(cmd); }}
               onmouseenter={() => selectedIndex = i}
             >
-              <span class="text-sm">{cmd.name}</span>
+              <div class="flex items-center gap-3 overflow-hidden">
+                <span class="text-muted shrink-0">
+                  <Icon size={14} />
+                </span>
+                <div class="flex flex-col truncate">
+                  <span class="text-sm truncate">{cmd.label}</span>
+                  {#if cmd.description}
+                    <span class="text-[10px] text-muted truncate">{cmd.description}</span>
+                  {/if}
+                </div>
+              </div>
               {#if cmd.shortcut}
-                  <kbd class="text-xs px-2 py-0.5 rounded bg-surface-2 text-muted">{cmd.shortcut}</kbd>
+                  <kbd class="text-xs px-2 py-0.5 rounded bg-surface-2 text-muted shrink-0">{cmd.shortcut}</kbd>
               {/if}
             </div>
           {/each}
         {/if}
       </div>
     </div>
-  </div>
-{/if}
+  {/snippet}
+</Modal>
+
+<style>
+  .scrollbar-hide::-webkit-scrollbar { display: none; }
+  .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+</style>

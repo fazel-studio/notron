@@ -1,8 +1,9 @@
 <script lang="ts">
   import Modal from './Modal.svelte';
-  import { settingsStore } from '../stores/settings';
+  import Select from './Select.svelte';
+  import { settingsStore } from '../stores/settings.svelte';
   import { themeStore } from '../stores/theme';
-  import { invoke } from '@tauri-apps/api/core';
+
 
   let { isOpen, onClose }: { isOpen: boolean; onClose: () => void } = $props();
 
@@ -59,14 +60,11 @@
 
   function handleSave(key: string, value: any) {
     // Update store immediately (synchronous) so UI reacts instantly
-    settingsStore.update(key as any, value);
+    settingsStore.updateSetting(key as any, value);
     // Apply theme directly - bypass the $effect chain in App.svelte
     if (key === 'theme') {
       themeStore.setTheme(value as string);
     }
-    // Persist to backend in the background
-    const snap = settingsStore.getSnapshot();
-    invoke('set_config', { config: snap }).catch(err => console.error("Failed to save settings", err));
   }
 
   function scrollToSetting(id: string) {
@@ -154,15 +152,12 @@
                 <label for="theme" class="font-medium text-primary block">Theme</label>
                 <p class="text-xs text-muted mt-0.5">Controls the overall color scheme of the application.</p>
               </div>
-              <select id="theme"
-                class="rounded p-1.5 text-sm outline-none w-44 border bg-canvas border-subtle text-primary focus:border-focus"
-                value={$settingsStore.theme}
-                onchange={(e) => handleSave('theme', (e.target as HTMLSelectElement).value)}
-              >
-                <option value="light">Light</option>
-                <option value="dark">Dark</option>
-                <option value="system">System Default</option>
-              </select>
+              <Select id="theme"
+                class="w-44"
+                options={[{value: 'light', label: 'Light'}, {value: 'dark', label: 'Dark'}, {value: 'system', label: 'System Default'}]}
+                value={settingsStore.effectiveSettings.theme}
+                onchange={(v) => handleSave('theme', v)}
+              />
             </div>
 
             <div id="setting-fontFamily" class="flex items-center justify-between py-2">
@@ -172,19 +167,19 @@
               </div>
               <input id="fontFamily"
                 class="rounded p-1.5 text-sm outline-none w-56 border bg-canvas border-subtle text-primary focus:border-focus"
-                value={$settingsStore.font_family}
+                value={settingsStore.effectiveSettings.font_family}
                 oninput={(e) => handleSave('font_family', (e.target as HTMLInputElement).value)}
               />
             </div>
 
             <div id="setting-fontSize" class="flex items-center justify-between py-2">
               <div>
-                <label for="fontSize" class="font-medium text-primary block">Font Size <span class="text-muted font-normal">({$settingsStore.font_size}px)</span></label>
+                <label for="fontSize" class="font-medium text-primary block">Font Size <span class="text-muted font-normal">({settingsStore.effectiveSettings.font_size}px)</span></label>
                 <p class="text-xs text-muted mt-0.5">The font size used in the editor. Min 10px, Max 32px.</p>
               </div>
               <div class="flex items-center gap-2 w-44">
-                <input id="fontSize" type="range" min="10" max="32" class="flex-1" value={$settingsStore.font_size} oninput={(e) => handleSave('font_size', parseInt((e.target as HTMLInputElement).value))} />
-                <span class="text-xs text-muted w-8 text-right">{$settingsStore.font_size}</span>
+                <input id="fontSize" type="range" min="10" max="32" class="flex-1" value={settingsStore.effectiveSettings.font_size} oninput={(e) => handleSave('font_size', parseInt((e.target as HTMLInputElement).value))} />
+                <span class="text-xs text-muted w-8 text-right">{settingsStore.effectiveSettings.font_size}</span>
               </div>
             </div>
 
@@ -193,15 +188,12 @@
                 <label for="iconTheme" class="font-medium text-primary block">Icon Theme</label>
                 <p class="text-xs text-muted mt-0.5">File icons displayed in the explorer sidebar.</p>
               </div>
-              <select id="iconTheme"
-                class="rounded p-1.5 text-sm outline-none w-44 border bg-canvas border-subtle text-primary focus:border-focus"
-                value={$settingsStore.icon_theme || 'default'}
-                onchange={(e) => handleSave('icon_theme', (e.target as HTMLSelectElement).value)}
-              >
-                <option value="off">Off (Text Only)</option>
-                <option value="default">Default (Lucide)</option>
-                <option value="advance">Advance (Material)</option>
-              </select>
+              <Select id="iconTheme"
+                class="w-44"
+                options={[{value: 'off', label: 'Disable'}, {value: 'default', label: 'Enable'}]}
+                value={settingsStore.effectiveSettings.icon_theme || 'default'}
+                onchange={(v) => handleSave('icon_theme', v)}
+              />
             </div>
           {/if}
 
@@ -218,7 +210,7 @@
               </div>
               <input id="tabSize" type="number" min="2" max="8"
                 class="rounded p-1.5 text-sm outline-none w-24 border bg-canvas border-subtle text-primary focus:border-focus"
-                value={$settingsStore.tab_size}
+                value={settingsStore.effectiveSettings.tab_size}
                 oninput={(e) => handleSave('tab_size', parseInt((e.target as HTMLInputElement).value))} />
             </div>
 
@@ -231,11 +223,11 @@
                 id="wordWrap"
                 role="switch"
                 aria-label="Toggle Word Wrap"
-                aria-checked={$settingsStore.word_wrap}
-                onclick={() => handleSave('word_wrap', !$settingsStore.word_wrap)}
-                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {$settingsStore.word_wrap ? 'bg-blue-600' : 'bg-surface-2 border border-subtle'}"
+                aria-checked={settingsStore.effectiveSettings.word_wrap}
+                onclick={() => handleSave('word_wrap', !settingsStore.effectiveSettings.word_wrap)}
+                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {settingsStore.effectiveSettings.word_wrap ? 'bg-blue-600' : 'bg-surface-2 border border-subtle'}"
               >
-                <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform {$settingsStore.word_wrap ? 'translate-x-4' : 'translate-x-0.5'}"></span>
+                <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform {settingsStore.effectiveSettings.word_wrap ? 'translate-x-4' : 'translate-x-0.5'}"></span>
               </button>
             </div>
 
@@ -248,11 +240,11 @@
                 id="lineNumbers"
                 role="switch"
                 aria-label="Toggle Line Numbers"
-                aria-checked={$settingsStore.line_numbers}
-                onclick={() => handleSave('line_numbers', !$settingsStore.line_numbers)}
-                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {$settingsStore.line_numbers ? 'bg-blue-600' : 'bg-surface-2 border border-subtle'}"
+                aria-checked={settingsStore.effectiveSettings.line_numbers}
+                onclick={() => handleSave('line_numbers', !settingsStore.effectiveSettings.line_numbers)}
+                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {settingsStore.effectiveSettings.line_numbers ? 'bg-blue-600' : 'bg-surface-2 border border-subtle'}"
               >
-                <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform {$settingsStore.line_numbers ? 'translate-x-4' : 'translate-x-0.5'}"></span>
+                <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform {settingsStore.effectiveSettings.line_numbers ? 'translate-x-4' : 'translate-x-0.5'}"></span>
               </button>
             </div>
           {/if}
@@ -272,23 +264,23 @@
                 id="autoSaveToggle"
                 role="switch"
                 aria-label="Toggle Auto Save"
-                aria-checked={$settingsStore.auto_save}
-                onclick={() => handleSave('auto_save', !$settingsStore.auto_save)}
-                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {$settingsStore.auto_save ? 'bg-blue-600' : 'bg-surface-2 border border-subtle'}"
+                aria-checked={settingsStore.effectiveSettings.auto_save}
+                onclick={() => handleSave('auto_save', !settingsStore.effectiveSettings.auto_save)}
+                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {settingsStore.effectiveSettings.auto_save ? 'bg-blue-600' : 'bg-surface-2 border border-subtle'}"
               >
-                <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform {$settingsStore.auto_save ? 'translate-x-4' : 'translate-x-0.5'}"></span>
+                <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform {settingsStore.effectiveSettings.auto_save ? 'translate-x-4' : 'translate-x-0.5'}"></span>
               </button>
             </div>
 
-            {#if $settingsStore.auto_save}
+            {#if settingsStore.effectiveSettings.auto_save}
               <div id="setting-autoSaveDelay" class="flex items-center justify-between py-2">
                 <div>
-                  <label for="autoSaveDelay" class="font-medium text-primary block">Auto Save Delay <span class="text-muted font-normal">({$settingsStore.auto_save_delay_ms}ms)</span></label>
+                  <label for="autoSaveDelay" class="font-medium text-primary block">Auto Save Delay <span class="text-muted font-normal">({settingsStore.effectiveSettings.auto_save_delay_ms}ms)</span></label>
                   <p class="text-xs text-muted mt-0.5">How long to wait after the last change before auto-saving.</p>
                 </div>
                 <div class="flex items-center gap-2 w-44">
-                  <input id="autoSaveDelay" type="range" min="500" max="10000" step="500" class="flex-1" value={$settingsStore.auto_save_delay_ms} oninput={(e) => handleSave('auto_save_delay_ms', parseInt((e.target as HTMLInputElement).value))} />
-                  <span class="text-xs text-muted w-12 text-right">{$settingsStore.auto_save_delay_ms}ms</span>
+                  <input id="autoSaveDelay" type="range" min="500" max="10000" step="500" class="flex-1" value={settingsStore.effectiveSettings.auto_save_delay_ms} oninput={(e) => handleSave('auto_save_delay_ms', parseInt((e.target as HTMLInputElement).value))} />
+                  <span class="text-xs text-muted w-12 text-right">{settingsStore.effectiveSettings.auto_save_delay_ms}ms</span>
                 </div>
               </div>
             {/if}
@@ -305,15 +297,12 @@
                 <label for="defaultEncoding" class="font-medium text-primary block">Default Encoding</label>
                 <p class="text-xs text-muted mt-0.5">The character encoding used when reading and writing files.</p>
               </div>
-              <select id="defaultEncoding"
-                class="rounded p-1.5 text-sm outline-none w-44 border bg-canvas border-subtle text-primary focus:border-focus"
-                value={$settingsStore.default_encoding}
-                onchange={(e) => handleSave('default_encoding', (e.target as HTMLSelectElement).value)}
-              >
-                <option value="UTF-8">UTF-8</option>
-                <option value="UTF-16">UTF-16</option>
-                <option value="ISO-8859-1">ISO-8859-1</option>
-              </select>
+              <Select id="defaultEncoding"
+                class="w-44"
+                options={['UTF-8', 'UTF-16', 'ISO-8859-1']}
+                value={settingsStore.effectiveSettings.default_encoding}
+                onchange={(v) => handleSave('default_encoding', v)}
+              />
             </div>
           {/if}
 

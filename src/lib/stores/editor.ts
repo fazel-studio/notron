@@ -1,4 +1,12 @@
 import { writable, derived } from 'svelte/store';
+import { invoke } from '@tauri-apps/api/core';
+import { getHumanReadableError } from '../utils/error';
+
+export interface ClosedTabEntry {
+  path: string;
+  cursorPos?: { line: number; column: number; endColumn?: number };
+  scrollTop?: { top: number; left: number };
+}
 
 export interface EditorTab {
   id: string;
@@ -14,7 +22,9 @@ export interface EditorTab {
   isLargeFile?: boolean;
   isLoading?: boolean;
   isUnsupported?: boolean;
+  autoSavePaused?: boolean;
   status?: 'active' | 'loaded' | 'suspended' | 'modified' | 'deleted' | 'conflict';
+  undoHistory?: any;
 }
 
 export type TabInput = {
@@ -27,7 +37,10 @@ export type TabInput = {
   isLargeFile?: boolean;
   isLoading?: boolean;
   isUnsupported?: boolean;
+  undoHistory?: any;
 };
+
+// Removed duplicate invoke
 
 // Tab Suspension (LRU Eviction)
 const SUSPEND_AFTER_MS = 300_000;   // 5 minutes without access → suspend
@@ -38,7 +51,8 @@ function createEditorStore() {
   const tabs = writable<EditorTab[]>([]);
   const activeTabId = writable<string | null>(null);
   const saveStatus = writable<string | null>(null);
-  let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  const closedTabStack: ClosedTabEntry[] = [];
+  let autoSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   // PERF FIX: Separate cursor/scroll state from tab metadata.
   // Previously, updateCursor/updateScroll called tabs.update()
@@ -48,7 +62,7 @@ function createEditorStore() {
   // Now cursor/scroll positions are stored in separate Maps
   // and exposed via a separate writable store. Tab bar does
   // NOT subscribe to cursor changes.
-  const cursorPositions = new Map<string, { line: number; column: number }>();
+  const cursorPositions = new Map<string, { line: number; column: number; endColumn?: number }>();
   const scrollPositions = new Map<string, { top: number; left: number }>();
   // A lightweight signal that cursor/scroll consumers can subscribe to
   const cursorSignal = writable<number>(0);
@@ -78,6 +92,7 @@ function createEditorStore() {
         isModified: false,
         isPreview: input.isPreview ?? false,
         isUnsupported: input.isUnsupported ?? false,
+        undoHistory: input.undoHistory,
         lastAccessed: Date.now(),
         status: input.content !== null ? 'active' : 'loaded',
       };
@@ -102,6 +117,20 @@ function createEditorStore() {
   }
 
   function closeTab(id: string) {
+    // Save to closed tab stack before closing
+    tabs.update(state => {
+      const tab = state.find(t => t.id === id);
+      if (tab && tab.path && !tab.path.startsWith('Untitled')) {
+        closedTabStack.push({
+          path: tab.path,
+          cursorPos: cursorPositions.get(id),
+          scrollTop: scrollPositions.get(id),
+        });
+        if (closedTabStack.length > 10) closedTabStack.shift();
+      }
+      return state;
+    });
+
     // Cleanup cursor/scroll data
     cursorPositions.delete(id);
     scrollPositions.delete(id);
@@ -166,9 +195,15 @@ function createEditorStore() {
   }
 
   // PERF: cursor updates do NOT touch tabs store anymore
-  function updateCursor(id: string, line: number, column: number) {
-    cursorPositions.set(id, { line, column });
+  function updateCursor(id: string, line: number, column: number, endColumn?: number) {
+    cursorPositions.set(id, { line, column, endColumn });
     cursorSignal.update(n => n + 1);
+  }
+
+  function updateUndoHistory(id: string, history: any) {
+    tabs.update(state =>
+      state.map(t => (t.id === id ? { ...t, undoHistory: history } : t))
+    );
   }
 
   // PERF: scroll updates do NOT touch tabs store anymore
@@ -176,7 +211,7 @@ function createEditorStore() {
     scrollPositions.set(id, { top, left });
   }
 
-  function getCursor(id: string): { line: number; column: number } | undefined {
+  function getCursor(id: string): { line: number; column: number; endColumn?: number } | undefined {
     return cursorPositions.get(id);
   }
 
@@ -189,7 +224,7 @@ function createEditorStore() {
       state.map(t => {
         if (t.id === id) {
           return {
-            ...t, originalContent: t.content, isModified: false,
+            ...t, originalContent: t.content, isModified: false, autoSavePaused: false,
             status: t.content !== null ? 'active' : 'loaded',
           };
         }
@@ -295,14 +330,28 @@ function createEditorStore() {
   }
 
   function scheduleAutoSave(tabId: string) {
-    if (autoSaveTimer) clearTimeout(autoSaveTimer);
-    autoSaveTimer = setTimeout(() => {
+    if (autoSaveTimers.has(tabId)) clearTimeout(autoSaveTimers.get(tabId)!);
+    
+    const timer = setTimeout(async () => {
+      autoSaveTimers.delete(tabId);
       const snapshot = getTabsSnapshot();
       const tab = snapshot.find(t => t.id === tabId);
-      if (tab && tab.isModified && !tab.path.startsWith('Untitled') && tab.content !== null) {
+      if (tab && tab.isModified && !tab.path.startsWith('Untitled') && tab.content !== null && !tab.autoSavePaused) {
         saveStatus.set('Saving...');
+        try {
+          await invoke('save_file', { path: tab.path, content: tab.content });
+          markSaved(tabId);
+          saveStatus.set('Saved');
+          setTimeout(() => clearSaveStatus(), 2000);
+        } catch (err) {
+          console.error('Auto-save failed:', err);
+          saveStatus.set(`Save failed: ${getHumanReadableError(err)}`);
+          tabs.update(state => state.map(t => t.id === tabId ? { ...t, autoSavePaused: true } : t));
+        }
       }
     }, DEBOUNCE_SAVE_MS);
+    
+    autoSaveTimers.set(tabId, timer);
   }
 
   function clearSaveStatus() {
@@ -318,6 +367,12 @@ function createEditorStore() {
   function setTabUnsupported(id: string, unsupported: boolean) {
     tabs.update(state =>
       state.map(t => t.id === id ? { ...t, isUnsupported: unsupported } : t)
+    );
+  }
+
+  function pauseAutoSave(id: string) {
+    tabs.update(state =>
+      state.map(t => t.id === id ? { ...t, autoSavePaused: true } : t)
     );
   }
 
@@ -338,7 +393,7 @@ function createEditorStore() {
    * Returns array of { id, cursor, scroll } objects.
    */
   function getCursorScrollSnapshot() {
-    const result: Array<{ id: string; cursor?: { line: number; column: number }; scroll?: { top: number; left: number } }> = [];
+    const result: Array<{ id: string; cursor?: { line: number; column: number; endColumn?: number }; scroll?: { top: number; left: number } }> = [];
     for (const [id, cursor] of cursorPositions) {
       result.push({ id, cursor, scroll: scrollPositions.get(id) });
     }
@@ -349,6 +404,66 @@ function createEditorStore() {
       }
     }
     return result;
+  }
+
+  function updateTabPath(oldPath: string, newPath: string) {
+    // Migrate cursor/scroll data
+    if (cursorPositions.has(oldPath)) {
+      cursorPositions.set(newPath, cursorPositions.get(oldPath)!);
+      cursorPositions.delete(oldPath);
+    }
+    if (scrollPositions.has(oldPath)) {
+      scrollPositions.set(newPath, scrollPositions.get(oldPath)!);
+      scrollPositions.delete(oldPath);
+    }
+
+    tabs.update(state =>
+      state.map(t => {
+        if (t.path === oldPath) {
+          const name = newPath.split(/[/\\]/).pop() || t.name;
+          return { ...t, id: newPath, path: newPath, name };
+        }
+        return t;
+      })
+    );
+    activeTabId.update(current => current === oldPath ? newPath : current);
+  }
+
+  async function reopenClosedTab() {
+    const entry = closedTabStack.pop();
+    if (!entry) return;
+    
+    const fileName = entry.path.split(/[/\\]/).pop() || 'Unknown';
+    let content = '';
+    const isImage = /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(fileName);
+    if (!isImage) {
+      try {
+        content = await invoke<string>('read_file_text', { path: entry.path });
+      } catch (e) {
+        if (String(e) === '__BINARY__') content = '';
+        else return; // If file doesn't exist anymore, abort
+      }
+    }
+    
+    let language = 'plaintext';
+    if (isImage) language = 'image';
+    else {
+      try { language = await invoke<string>('detect_language', { path: entry.path }); } catch {}
+    }
+    
+    const id = `tab-${Date.now()}`;
+    addTab({
+      id,
+      path: entry.path,
+      name: fileName,
+      content,
+      language,
+      isPreview: false
+    });
+    setActiveTab(id);
+    
+    if (entry.cursorPos) updateCursor(id, entry.cursorPos.line, entry.cursorPos.column, entry.cursorPos.endColumn);
+    if (entry.scrollTop) updateScroll(id, entry.scrollTop.top, entry.scrollTop.left);
   }
 
   return {
@@ -364,6 +479,7 @@ function createEditorStore() {
     updateContent,
     updateCursor,
     updateScroll,
+    updateUndoHistory,
     getCursor,
     getScroll,
     markSaved,
@@ -380,6 +496,9 @@ function createEditorStore() {
     getTabsSnapshot,
     getActiveTabIdSnapshot,
     getCursorScrollSnapshot,
+    updateTabPath,
+    reopenClosedTab,
+    pauseAutoSave,
   };
 }
 

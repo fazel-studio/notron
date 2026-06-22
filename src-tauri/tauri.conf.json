@@ -12,12 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "notron",
+        "title": "Notron",
         "width": 800,
         "height": 600,
         "minWidth": 600,
         "minHeight": 400,
-        "maximized": true,
+        "maximized": false,
         "decorations": false,
         "visible": false,
         "backgroundColor": "#1e1e1e"

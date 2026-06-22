@@ -1,8 +1,7 @@
 <script lang="ts">
   import { editorStore } from '../stores/editor';
   import { uiStore } from '../stores/ui';
-    import { settingsStore } from '../stores/settings';
-  import { getMaterialFileIcon, getMaterialFolderIcon } from '../utils/iconMap';
+    import { settingsStore } from '../stores/settings.svelte';
   import { getFileSymbols, type SymbolLocation } from '../utils/symbolEngine';
   import { invoke } from '@tauri-apps/api/core';
   import { 
@@ -276,14 +275,12 @@
         onmouseleave={() => handlePathHoverEnd(i)}
       >
         {#if i === pathParts.length - 1}
-           <span class="text-accent flex items-center justify-center">
-             {#if $settingsStore.icon_theme === 'advance'}
-               <img src="/icons/material/{getMaterialFileIcon(part)}.svg" class="w-3 h-3 object-contain" alt="" />
-             {:else if $settingsStore.icon_theme === 'default' || !$settingsStore.icon_theme}
-               {@const Icon = ICON_MAP[part.split('.').pop()?.toLowerCase() || ''] || File}
-               <Icon size={12} />
-             {/if}
-           </span>
+             <span class="text-accent flex items-center justify-center">
+               {#if settingsStore.effectiveSettings.icon_theme === 'default' || !settingsStore.effectiveSettings.icon_theme}
+                 {@const Icon = ICON_MAP[part.split('.').pop()?.toLowerCase() || ''] || File}
+                 <Icon size={12} />
+               {/if}
+             </span>
         {/if}
         {part}
       </button>
@@ -355,9 +352,7 @@
               </div>
               <span class="shrink-0 flex items-center justify-center {item.is_dir ? 'text-accent' : 'text-muted'}">
                 {#if item.is_dir}
-                  {#if $settingsStore.icon_theme === 'advance'}
-                    <img src="/icons/material/{getMaterialFolderIcon(item.name)}.svg" class="w-4 h-4 object-contain" alt="" />
-                  {:else if $settingsStore.icon_theme === 'default' || !$settingsStore.icon_theme}
+                  {#if settingsStore.effectiveSettings.icon_theme === 'default' || !settingsStore.effectiveSettings.icon_theme}
                     {#if item.isExpanded}
                       <FolderOpen size={14} />
                     {:else}
@@ -366,9 +361,7 @@
                   {/if}
                 {:else}
                   <span class="shrink-0 flex items-center justify-center text-muted">
-                    {#if $settingsStore.icon_theme === 'advance'}
-                      <img src="/icons/material/{getMaterialFileIcon(item.name)}.svg" class="w-4 h-4 object-contain" alt="" />
-                    {:else if $settingsStore.icon_theme === 'default' || !$settingsStore.icon_theme}
+                    {#if settingsStore.effectiveSettings.icon_theme === 'default' || !settingsStore.effectiveSettings.icon_theme}
                       {@const Icon = ICON_MAP[item.name.split('.').pop()?.toLowerCase() || ''] || File}
                       <Icon size={14} />
                     {/if}

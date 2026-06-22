@@ -19,6 +19,15 @@ interface UiState {
   globalStatus: string | null;
   pendingTrustPath: string | null;
   isRecentFoldersModalOpen: boolean;
+  searchQuery: string;
+  replaceQuery: string;
+  isFileSearchOpen: boolean;
+  fileSearchQuery: string;
+  fileReplaceQuery: string;
+  searchRefreshCounter: number;
+  searchCollapseCounter: number;
+  searchResultCount: number;
+  toasts: { id: string; type: 'success' | 'alert'; title: string; message?: string }[];
 }
 
 // PERF FIX: expandedPaths is now a SEPARATE writable<Set>.
@@ -27,13 +36,16 @@ interface UiState {
 //   2. Array.includes() = O(n) per node render
 // Now: Set.has() = O(1), and changes only notify Set subscribers.
 const expandedPathsStore = writable<Set<string>>(new Set());
+const selectedPathsStore = writable<Set<string>>(new Set());
 
 function createUiStore() {
   const state = writable<UiState>({
-    isSidebarOpen: true,
-    sidebarWidth: 240,
+    isSidebarOpen: typeof window !== 'undefined' ? localStorage.getItem('isSidebarOpen') !== 'false' : true,
+    sidebarWidth: typeof window !== 'undefined' ? parseInt(localStorage.getItem('sidebarWidth') || '240', 10) : 240,
     activeSidebarPanel: 'explorer',
-    explorerRoot: null,
+    explorerRoot: typeof window !== 'undefined' 
+      ? (window.location.search.includes('clean=true') ? null : (localStorage.getItem('last_workspace') || null)) 
+      : null,
     selectedExplorerPath: null,
     creatingItem: null,
     clipboard: null,
@@ -43,11 +55,20 @@ function createUiStore() {
     explorerRefreshCounter: 0,
     explorerCollapseCounter: 0,
     isMinimapEnabled: true,
-    recentWorkspaces: [],
-    showDotFiles: false,
+    recentWorkspaces: typeof window !== 'undefined' ? JSON.parse(localStorage.getItem('recent_workspaces') || '[]') : [],
+    showDotFiles: typeof window !== 'undefined' ? localStorage.getItem('showDotFiles') === 'true' : false,
     globalStatus: null,
     pendingTrustPath: null,
     isRecentFoldersModalOpen: false,
+    searchQuery: '',
+    replaceQuery: '',
+    isFileSearchOpen: false,
+    fileSearchQuery: '',
+    fileReplaceQuery: '',
+    searchRefreshCounter: 0,
+    searchCollapseCounter: 0,
+    searchResultCount: 0,
+    toasts: [],
   });
 
   let globalStatusTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -66,6 +87,27 @@ function createUiStore() {
         state.update(s => ({ ...s, globalStatus: null }));
       }, timeoutMs);
     }
+  }
+
+  function addToast(title: string, type: 'success' | 'alert' = 'success', message?: string) {
+    const id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+    state.update(s => {
+      const newToasts = [...s.toasts, { id, type, title, message }];
+      if (newToasts.length > 5) {
+        newToasts.shift(); // Remove the oldest toast
+      }
+      return { ...s, toasts: newToasts };
+    });
+    
+    if (type === 'success') {
+      setTimeout(() => {
+        removeToast(id);
+      }, 5000);
+    }
+  }
+
+  function removeToast(id: string) {
+    state.update(s => ({ ...s, toasts: s.toasts.filter(t => t.id !== id) }));
   }
 
   async function withStatus<T>(msg: string, promiseOrFn: Promise<T> | (() => Promise<T>), delayMs: number = 500): Promise<T> {
@@ -136,6 +178,16 @@ function createUiStore() {
       expandedPathsStore.set(new Set());
       update(() => ({ explorerCollapseCounter: 0 }));
     },
+    setSearchQuery: (q: string) => update(() => ({ searchQuery: q })),
+    setReplaceQuery: (q: string) => update(() => ({ replaceQuery: q })),
+    setFileSearchOpen: (isOpen: boolean) => update(() => ({ isFileSearchOpen: isOpen })),
+    setFileSearchQuery: (q: string) => update(() => ({ fileSearchQuery: q })),
+    setFileReplaceQuery: (q: string) => update(() => ({ fileReplaceQuery: q })),
+    triggerSearchRefresh: () => update(s => ({ searchRefreshCounter: s.searchRefreshCounter + 1 })),
+    triggerSearchCollapseAll: () => update(s => ({ searchCollapseCounter: s.searchCollapseCounter + 1 })),
+    setSearchResultCount: (count: number) => update(() => ({ searchResultCount: count })),
+    addToast,
+    removeToast,
     toggleMinimap: () => update(s => ({ isMinimapEnabled: !s.isMinimapEnabled })),
     setMinimapEnabled: (enabled: boolean) => update(() => ({ isMinimapEnabled: enabled })),
     saveTierUiState: () => {
@@ -169,6 +221,39 @@ function createUiStore() {
       let val: Set<string> = new Set();
       expandedPathsStore.subscribe(v => val = v)();
       return val;
+    },
+
+    // ── selectedPaths operations for multi-select ──
+    selectedPaths: { subscribe: selectedPathsStore.subscribe },
+    setSelectedPaths: (paths: string[]) => {
+      selectedPathsStore.set(new Set(paths));
+    },
+    setSelectedPathsSet: (pathSet: Set<string>) => {
+      selectedPathsStore.set(pathSet);
+    },
+    toggleSelectedPath: (path: string, isSelected: boolean) => {
+      selectedPathsStore.update(s => {
+        const next = new Set(s);
+        if (isSelected) {
+          next.add(path);
+        } else {
+          next.delete(path);
+        }
+        return next;
+      });
+    },
+    getSelectedPathsSnapshot: (): string[] => {
+      let val: Set<string> = new Set();
+      selectedPathsStore.subscribe(v => val = v)();
+      return Array.from(val);
+    },
+    getSelectedPathsSetSnapshot: (): Set<string> => {
+      let val: Set<string> = new Set();
+      selectedPathsStore.subscribe(v => val = v)();
+      return val;
+    },
+    clearSelectedPaths: () => {
+      selectedPathsStore.set(new Set());
     },
 
     toggleShowDotFiles: () => update(s => {

@@ -4,6 +4,7 @@
     import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open, save } from '@tauri-apps/plugin-dialog';
   import { invoke } from '@tauri-apps/api/core';
+  import { getHumanReadableError } from '../utils/error';
   import { terminalStore } from '../stores/terminal';
 
   const tabs = editorStore.tabs;
@@ -26,7 +27,14 @@
     closeAll();
   }
 
-  function handleNewWindow() { alert("New Window is not implemented yet"); }
+  async function handleNewWindow() { 
+    try {
+      await invoke('open_new_window');
+      closeAll();
+    } catch (e) {
+      console.error('Failed to open new window', e);
+    }
+  }
 
   async function handleOpenFile() {
     try {
@@ -57,6 +65,10 @@
     try {
       const selected = await open({ directory: true, multiple: false });
       if (selected && typeof selected === 'string') {
+        if (selected === uiStore.getSnapshot().explorerRoot) {
+          closeAll();
+          return;
+        }
         if (!$ui.recentWorkspaces.includes(selected)) {
           uiStore.setPendingTrustPath(selected);
         } else {
@@ -77,13 +89,20 @@
           await invoke('save_file', { path: selected, content: activeTab.content });
           editorStore.closeTab(activeTab.id);
           editorStore.addTab({ ...activeTab, id: selected, path: selected, name: fileName });
-        } catch (err) { console.error(err); }
+        } catch (err) {
+          console.error(err);
+          uiStore.addToast('Save Failed', 'alert', getHumanReadableError(err));
+        }
       }
     } else {
       try {
         await invoke('save_file', { path: activeTab.path, content: activeTab.content });
         editorStore.markSaved(activeTab.id);
-      } catch (err) { console.error(err); }
+        uiStore.addToast('Saved manually', 'success');
+      } catch (err) {
+        console.error(err);
+        uiStore.addToast('Save Failed', 'alert', getHumanReadableError(err));
+      }
     }
     closeAll();
   }
@@ -97,7 +116,11 @@
         const fileName = selected.split(/[/\\]/).pop() || 'Unknown';
         editorStore.closeTab(activeTab.id);
         editorStore.addTab({ ...activeTab, id: `tab-${Date.now()}`, path: selected, name: fileName });
-      } catch (err) { console.error(err); }
+        uiStore.addToast('Saved manually', 'success');
+      } catch (err) {
+        console.error(err);
+        uiStore.addToast('Save Failed', 'alert', getHumanReadableError(err));
+      }
     }
     closeAll();
   }
@@ -155,6 +178,7 @@
         { label: 'Paste', action: () => document.execCommand('paste'), sep: true },
         { label: 'Find', action: () => dispatchEditorAction('find'), disabled: isDisabled },
         { label: 'Replace', action: () => dispatchEditorAction('replace'), disabled: isDisabled, sep: true },
+        { label: 'Reopen Closed Tab', action: () => editorStore.reopenClosedTab(), sep: true },
         { label: 'Find in Files', action: openSearch },
         { label: 'Replace in Files', action: openSearch }
       ]
@@ -171,6 +195,14 @@
     },
     {
       label: 'Terminal', items: [
+        { 
+          label: 'Open Terminal', 
+          disabled: () => $terminalStore.terminals.length === 0 || $terminalStore.isVisible,
+          action: () => { 
+            terminalStore.setVisibility(true); 
+            closeAll(); 
+          } 
+        },
         { label: 'New Terminal', action: () => { 
             const cwd = uiStore.getSnapshot().explorerRoot || '';
             terminalStore.newTerminal('powershell', cwd); 
@@ -181,8 +213,10 @@
     },
     {
       label: 'View', items: [
+        { label: 'Command Palette', action: () => { window.dispatchEvent(new CustomEvent('open-command-palette')); closeAll(); }, sep: true },
         { label: 'Explorer', action: openExplorer },
-        { label: 'Search', action: openSearch, sep: true },
+        { label: 'Search', action: openSearch },
+        { label: 'Smart Search', action: () => { window.dispatchEvent(new CustomEvent('open-smart-search')); closeAll(); }, sep: true },
         { label: 'Welcome Page', action: () => {
             const w = $tabs.find((t: any) => t.language === 'welcome');
             if (w) editorStore.setActiveTab(w.id);

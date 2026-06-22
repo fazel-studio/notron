@@ -1,8 +1,8 @@
 <script module>
   import { keymap, highlightSpecialChars, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine } from '@codemirror/view';
   import { EditorState } from '@codemirror/state';
-  import { defaultKeymap, history, historyKeymap, undo, redo, selectAll, copyLineUp, copyLineDown, moveLineUp, moveLineDown } from '@codemirror/commands';
-  import { searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search';
+  import { defaultKeymap, history, historyKeymap, undo, redo, selectAll, copyLineUp, copyLineDown, moveLineUp, moveLineDown, historyField } from '@codemirror/commands';
+  import { highlightSelectionMatches } from '@codemirror/search';
   import { bracketMatching, foldKeymap, indentOnInput, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
   import { closeBrackets, autocompletion, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete';
   import { EditorView } from '@codemirror/view';
@@ -10,8 +10,9 @@
   const COMMON_EXTENSIONS = [
     EditorView.theme({
       "&": { backgroundColor: "transparent !important", height: "100%" },
-      ".cm-gutters": { backgroundColor: "transparent !important", border: "none" },
-      ".cm-scroller": { overflow: "auto !important" }
+      ".cm-gutters": { backgroundColor: "var(--bg-canvas) !important", borderRight: "1px solid var(--border-subtle) !important", paddingLeft: "12px !important", paddingRight: "0px !important" },
+      ".cm-lineNumbers .cm-gutterElement": { paddingRight: "8px !important" },
+      ".cm-scroller": { overflow: "auto !important", overscrollBehaviorX: "none !important" }
     }),
     highlightSpecialChars(),
     history(),
@@ -29,7 +30,6 @@
     highlightSelectionMatches(),
     keymap.of([
       ...defaultKeymap,
-      ...searchKeymap,
       ...historyKeymap,
       ...foldKeymap,
       ...completionKeymap,
@@ -45,15 +45,18 @@
 </script>
 
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, mount, unmount } from 'svelte';
+  import { Compartment } from '@codemirror/state';
   import { lineNumbers, highlightActiveLineGutter } from '@codemirror/view';
   import { foldGutter } from '@codemirror/language';
-  import { Compartment } from '@codemirror/state';
   import { lintGutter } from '@codemirror/lint';
+  import HorizontalScrollbar from './HorizontalScrollbar.svelte';
+  import EditorSearchWidget from './EditorSearchWidget.svelte';
+  import EditorFoldMarker from './EditorFoldMarker.svelte';
   import { oneDark } from '@codemirror/theme-one-dark';
   import { showMinimap } from '@replit/codemirror-minimap';
   import { invoke } from '@tauri-apps/api/core';
-  import { settingsStore } from '../stores/settings';
+  import { settingsStore } from '../stores/settings.svelte';
   import { editorStore } from '../stores/editor';
   import { uiStore } from '../stores/ui';
   import { themeStore } from '../stores/theme';
@@ -61,9 +64,49 @@
   let { tabId, content, filePath }: { tabId: string; content: string; filePath: string } = $props();
 
   let editorEl: HTMLDivElement;
-  let editorView: EditorView | null = null;
+  let editorView = $state<EditorView | null>(null);
+  let scrollDOM: HTMLElement | null = $state(null);
   let isLargeFile = $state(false);
   let isDark = $derived($themeStore.isDark);
+  let gutterWidth = $state(0);
+  let docChangedCount = $state(0);
+  let searchWidget = $state<ReturnType<typeof EditorSearchWidget> | null>(null);
+  
+  const tabsStore = editorStore.tabs;
+  let currentTab = $derived($tabsStore.find((t: any) => t.id === tabId));
+  let tabStatus = $derived(currentTab?.status);
+  
+  const foldMarkers = new Set<{ app: any, marker: HTMLElement }>();
+
+  const customFoldGutter = foldGutter({
+    markerDOM: (open) => {
+      const marker = document.createElement("span");
+      marker.className = "custom-fold-marker-wrapper";
+      marker.style.display = "flex";
+      marker.style.width = "100%";
+      marker.style.height = "100%";
+      
+      const app = mount(EditorFoldMarker, {
+        target: marker,
+        props: { open }
+      });
+      foldMarkers.add({ app, marker });
+
+      // Strip native title from parent so it doesn't conflict with Tooltip
+      setTimeout(() => {
+        const parent = marker.parentElement;
+        if (parent) {
+          parent.removeAttribute("title");
+          const observer = new MutationObserver(() => {
+            if (parent.hasAttribute("title")) parent.removeAttribute("title");
+          });
+          observer.observe(parent, { attributes: true, attributeFilter: ["title"] });
+        }
+      }, 0);
+
+      return marker;
+    }
+  });
 
   const lightTheme = EditorView.theme({
     "&.cm-editor": { backgroundColor: "transparent !important" },
@@ -128,6 +171,7 @@
 
     const updateListener = EditorView.updateListener.of((update) => {
       if (update.docChanged) {
+        docChangedCount++; // Trigger search match updates
         // Debounced extraction — don't extract on every keystroke
         if (contentExtractTimer) clearTimeout(contentExtractTimer);
         contentExtractTimer = setTimeout(() => {
@@ -138,7 +182,25 @@
         }, CONTENT_DEBOUNCE_MS);
       }
 
+      if (update.viewportChanged || update.docChanged || update.geometryChanged) {
+        for (const item of foldMarkers) {
+          if (!item.marker.isConnected) {
+            unmount(item.app);
+            foldMarkers.delete(item);
+          }
+        }
+      }
+
       if (update.selectionSet || update.geometryChanged) {
+        // Measure gutter width efficiently on geometry change
+        if (update.geometryChanged && editorEl) {
+          const gutters = editorEl.querySelector('.cm-gutters');
+          if (gutters) {
+            const w = (gutters as HTMLElement).offsetWidth;
+            if (gutterWidth !== w) gutterWidth = w;
+          }
+        }
+
         if (cursorScrollTimeout) clearTimeout(cursorScrollTimeout);
         cursorScrollTimeout = setTimeout(() => {
           if (!editorView) return;
@@ -154,6 +216,15 @@
 
     let extBase = [
       ...(isLargeFile ? COMMON_EXTENSIONS_LARGE_FILE : COMMON_EXTENSIONS),
+      keymap.of([{
+        key: 'Mod-f',
+        run: () => {
+          uiStore.setFileSearchOpen(true);
+          // Wait for DOM to render the widget if it wasn't open
+          setTimeout(() => searchWidget?.focusInput(), 10);
+          return true;
+        }
+      }]),
       EditorView.domEventHandlers({
         click: (event) => {
           if (event.altKey) {
@@ -165,27 +236,53 @@
       updateListener,
       langCompartment.of([]),
       themeCompartment.of(isDark ? oneDark : lightTheme),
-      lineNumbersCompartment.of($settings.line_numbers ? [lineNumbers(), foldGutter(), highlightActiveLineGutter()] : []),
-      wordWrapCompartment.of($settings.word_wrap ? EditorView.lineWrapping : []),
-      tabSizeCompartment.of(EditorState.tabSize.of($settings.tab_size)),
+      lineNumbersCompartment.of(settings.effectiveSettings.line_numbers ? [
+        lineNumbers(), 
+        customFoldGutter, 
+        highlightActiveLineGutter()
+      ] : []),
+      wordWrapCompartment.of(settings.effectiveSettings.word_wrap ? EditorView.lineWrapping : []),
+      tabSizeCompartment.of(EditorState.tabSize.of(settings.effectiveSettings.tab_size)),
       gutterCompartment.of([lintGutter()]),
-      minimapCompartment.of(!isLargeFile ? [
+      minimapCompartment.of(!isLargeFile && $ui.isMinimapEnabled ? [
         showMinimap.of({
-          create: () => {
+          create: (view) => {
             const dom = document.createElement('div');
             dom.className = 'cm-minimap-container';
-            dom.style.display = $ui.isMinimapEnabled ? '' : 'none';
+            // FORCE it out of the scroller to guarantee it sits on top of text
+            setTimeout(() => {
+              if (view.dom) {
+                view.dom.appendChild(dom);
+              }
+            }, 50);
             minimapDom = dom;
             return { dom };
           },
-          displayText: 'blocks',
-          showOverlay: 'mouse-over'
+          displayText: 'characters',
+          showOverlay: 'always'
         })
       ] : []),
     ];
 
-    const state = EditorState.create({ doc: content, extensions: extBase });
+    const tabData = editorStore.getTabsSnapshot().find(t => t.id === tabId);
+    let state;
+    if (tabData && tabData.undoHistory && !isLargeFile) {
+      try {
+        state = EditorState.fromJSON(
+          { doc: content, history: tabData.undoHistory },
+          { extensions: extBase },
+          { history: historyField }
+        );
+      } catch (e) {
+        console.warn('Failed to restore history', e);
+        state = EditorState.create({ doc: content, extensions: extBase });
+      }
+    } else {
+      state = EditorState.create({ doc: content, extensions: extBase });
+    }
+    
     editorView = new EditorView({ state, parent: editorEl });
+    scrollDOM = editorView.scrollDOM;
 
     const scroll = editorStore.getScroll(tabId);
     if (scroll) {
@@ -200,9 +297,10 @@
     if (cursor && !isLargeFile) {
       try {
         const line = editorView.state.doc.line(cursor.line);
-        const pos = Math.min(line.from + cursor.column - 1, line.to);
+        const anchor = Math.min(line.from + cursor.column - 1, line.to);
+        const head = cursor.endColumn ? Math.min(line.from + cursor.endColumn - 1, line.to) : anchor;
         editorView.dispatch({
-          selection: { anchor: pos },
+          selection: { anchor, head },
           scrollIntoView: true
         });
       } catch {}
@@ -220,15 +318,15 @@
   });
 
   $effect(() => {
-    const ln = $settings.line_numbers;
+    const ln = settings.effectiveSettings.line_numbers;
     if (!editorView) return;
     editorView.dispatch({
-      effects: lineNumbersCompartment.reconfigure(ln ? [lineNumbers(), foldGutter(), highlightActiveLineGutter()] : [])
+      effects: lineNumbersCompartment.reconfigure(ln ? [lineNumbers(), customFoldGutter, highlightActiveLineGutter()] : [])
     });
   });
 
   $effect(() => {
-    const wrap = $settings.word_wrap;
+    const wrap = settings.effectiveSettings.word_wrap;
     if (!editorView) return;
     editorView.dispatch({
       effects: wordWrapCompartment.reconfigure(wrap ? EditorView.lineWrapping : [])
@@ -236,7 +334,7 @@
   });
 
   $effect(() => {
-    const ts = $settings.tab_size;
+    const ts = settings.effectiveSettings.tab_size;
     if (!editorView) return;
     editorView.dispatch({
       effects: tabSizeCompartment.reconfigure(EditorState.tabSize.of(ts))
@@ -305,14 +403,18 @@
     else if (action === 'copyLineDown') copyLineDown(editorView);
     else if (action === 'moveLineUp') moveLineUp(editorView);
     else if (action === 'moveLineDown') moveLineDown(editorView);
-    else if (action === 'find') openSearchPanel(editorView);
-    else if (action === 'replace') openSearchPanel(editorView);
+    else if (action === 'find') uiStore.setFileSearchOpen(true);
+    else if (action === 'replace') uiStore.setFileSearchOpen(true);
     else if (action === 'goto' && customEvent.detail?.line !== undefined) {
       const lineNum = customEvent.detail.line;
       if (lineNum > 0 && lineNum <= editorView.state.doc.lines) {
         const line = editorView.state.doc.line(lineNum);
+        const col = customEvent.detail.column || 1;
+        const endCol = customEvent.detail.endColumn || col;
+        const anchor = Math.min(line.from + col - 1, line.to);
+        const head = Math.min(line.from + endCol - 1, line.to);
         editorView.dispatch({
-          selection: { anchor: line.from, head: line.from },
+          selection: { anchor, head },
           scrollIntoView: true
         });
         editorView.focus();
@@ -320,7 +422,12 @@
     }
   }
 
-  let style = $derived(`font-size: ${$settings.font_size}px; font-family: ${$settings.font_family};`);
+  function handleEditorMouseOver() {
+    // Left empty as we handle tooltip in markerDOM now
+  }
+
+  let style = $derived(`font-size: ${settings.effectiveSettings.font_size}px; font-family: ${settings.effectiveSettings.font_family};`);
+  let rightGap = $derived((!isLargeFile && $ui.isMinimapEnabled) ? 164 : 0);
 
   onMount(() => {
     setupEditor();
@@ -330,6 +437,14 @@
   onDestroy(() => {
     window.removeEventListener('editor:action', handleAction);
     if (editorView) {
+      if (!isLargeFile) {
+        try {
+          const serializedHistory = editorView.state.toJSON({ history: historyField }).history;
+          editorStore.updateUndoHistory(tabId, serializedHistory);
+        } catch (e) {
+          console.warn('Failed to serialize history', e);
+        }
+      }
       editorStore.updateContent(tabId, editorView.state.doc.toString());
       const pos = editorView.state.selection.main.head;
       const line = editorView.state.doc.lineAt(pos);
@@ -338,15 +453,51 @@
       editorView.destroy();
       editorView = null;
     }
+    
+    // Clean up all fold markers on destroy
+    for (const item of foldMarkers) {
+      unmount(item.app);
+    }
+    foldMarkers.clear();
   });
 </script>
 
-<div class="absolute inset-0 [&>div]:h-full [&_.cm-editor]:h-full" style={style}>
+<div class="absolute inset-0 [&_.cm-editor]:h-full editor-wrapper" style={style} role="none" onmouseover={handleEditorMouseOver} onfocus={() => {}}>
 
   {#if isLargeFile}
     <div class="absolute top-0 left-0 right-0 bg-yellow-900/50 text-yellow-300 text-[10px] px-3 py-1 text-center z-10">
       Large file — syntax highlighting and some features disabled for performance
     </div>
   {/if}
-  <div bind:this={editorEl} class="h-full"></div>
+  {#if tabStatus === 'deleted'}
+    <div class="absolute top-0 left-0 right-0 bg-red-900/50 text-red-200 text-xs px-3 py-2 text-center z-10 flex justify-center items-center gap-4">
+      <span>This file has been deleted from disk.</span>
+      <button class="bg-red-700/80 hover:bg-red-600 px-3 py-1 rounded cursor-pointer" onclick={() => editorStore.closeTab(tabId)}>Close Tab</button>
+    </div>
+  {:else if tabStatus === 'conflict'}
+    <div class="absolute top-0 left-0 right-0 bg-orange-900/50 text-orange-200 text-xs px-3 py-2 text-center z-10 flex justify-center items-center gap-4">
+      <span>This file has been modified by another program. You have unsaved changes.</span>
+      <button class="bg-orange-700/80 hover:bg-orange-600 px-3 py-1 rounded cursor-pointer" onclick={() => editorStore.markSaved(tabId)}>Ignore</button>
+      <button class="bg-surface-3 hover:bg-surface-4 px-3 py-1 rounded cursor-pointer" onclick={() => {
+        if (!currentTab) return;
+        invoke('read_file_text', { path: currentTab.path }).then((content) => {
+          editorStore.setInitialContent(tabId, content as string);
+        }).catch(() => {});
+      }}>Reload from Disk</button>
+    </div>
+  {/if}
+  <div bind:this={editorEl} class="h-full relative editor-container {tabStatus === 'deleted' || tabStatus === 'conflict' ? 'pt-8' : ''}"></div>
+  
+  {#if scrollDOM}
+    <HorizontalScrollbar target={scrollDOM} leftGap={gutterWidth} rightGap={rightGap} />
+  {/if}
+    
+  {#if $uiStore.isFileSearchOpen}
+    <EditorSearchWidget 
+      bind:this={searchWidget} 
+      {editorView} 
+      onDocChanged={docChangedCount} 
+      {rightGap}
+    />
+  {/if}
 </div>

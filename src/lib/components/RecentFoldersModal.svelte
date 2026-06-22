@@ -7,6 +7,10 @@
   let isOpen = $derived($ui.isRecentFoldersModalOpen);
 
   async function handleOpenRecent(path: string) {
+    if (path === uiStore.getSnapshot().explorerRoot) {
+      uiStore.closeRecentFoldersModal();
+      return;
+    }
     try {
       const doesExist = await exists(path);
       if (!doesExist) { alert(`Path not found: ${path}`); return; }

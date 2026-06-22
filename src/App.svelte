@@ -5,7 +5,8 @@
   import { watch } from '@tauri-apps/plugin-fs';
   import { editorStore } from './lib/stores/editor';
   import { uiStore } from './lib/stores/ui';
-  import { settingsStore } from './lib/stores/settings';
+  import { getHumanReadableError } from './lib/utils/error';
+  import { settingsStore } from './lib/stores/settings.svelte';
   import { themeStore } from './lib/stores/theme';
   import FileTree from './lib/components/FileTree.svelte';
   import Tooltip from './lib/components/Tooltip.svelte';
@@ -17,7 +18,11 @@
   import RecentFoldersModal from './lib/components/RecentFoldersModal.svelte';
   import Breadcrumbs from './lib/components/Breadcrumbs.svelte';
   import TerminalPanel from './lib/components/TerminalPanel.svelte';
+  import SmartSearchModal from './lib/components/SmartSearchModal.svelte';
+  import ToastContainer from './lib/components/ToastContainer.svelte';
   import { terminalStore } from './lib/stores/terminal';
+  import { paletteStore, type PaletteItem } from './lib/stores/palette';
+  import { navigationStore } from './lib/stores/navigation';
   import { onMount } from 'svelte';
 
   const tabs = editorStore.tabs;
@@ -27,6 +32,7 @@
 
   let closingTabId = $state<string | null>(null);
   let isCommandPaletteOpen = $state(false);
+  let commandPaletteInitialQuery = $state('');
   let isSettingsOpen = $state(false);
   let isGoToLineOpen = $state(false);
   let appReady = $state(false);
@@ -40,13 +46,29 @@
   let ImageViewerComponent = $state<any>(null);
   let EditorComponent = $state<any>(null);
 
+  let showSmartSearchModal = $state(false);
   let activeTab = $derived($tabs.find((t: any) => t.id === $activeTabId) || null);
   let isDark = $derived($themeStore.isDark);
 
+  $effect(() => {
+    const workspacePath = $ui.explorerRoot;
+    const folderName = workspacePath ? workspacePath.split(/[/\\]/).pop() : null;
+    let windowTitle = "Notron";
+
+    if (folderName && activeTab?.name) {
+      windowTitle = `${activeTab.name} - ${folderName} - Notron`;
+    } else if (folderName) {
+      windowTitle = `${folderName} - Notron`;
+    }
+
+    document.title = windowTitle;
+    getCurrentWindow().setTitle(windowTitle).catch(() => {});
+  });
+
   // Sync settings theme to themeStore
   $effect(() => {
-    if ($settingsStore.theme) {
-      themeStore.setTheme($settingsStore.theme);
+    if (settingsStore.effectiveSettings.theme) {
+      themeStore.setTheme(settingsStore.effectiveSettings.theme);
     }
   });
 
@@ -98,12 +120,37 @@
     window.addEventListener('contextmenu', closeAllContextMenus, { capture: true });
     window.addEventListener('editor:action', closeAllContextMenus);
     window.addEventListener('close-context-menus', closeAllContextMenus);
+    
+    const openSmartSearchHandler = () => showSmartSearchModal = true;
+    window.addEventListener('open-smart-search', openSmartSearchHandler);
+
+    const focusHandler = async () => {
+      if (!appReady) return;
+      const currentTabs = editorStore.getTabsSnapshot();
+      const paths = currentTabs.filter((t: any) => !t.path.startsWith('Untitled') && t.status !== 'deleted').map((t: any) => t.path);
+      if (paths.length === 0) return;
+      
+      try {
+        const metadata = await invoke<any[]>('get_files_metadata', { paths });
+        const existingPaths = new Set(metadata.map(m => m.path));
+        
+        currentTabs.forEach((tab: any) => {
+          if (!tab.path.startsWith('Untitled') && tab.status !== 'deleted' && !existingPaths.has(tab.path)) {
+            editorStore.markTabDeleted(tab.id);
+          }
+        });
+      } catch (err) { console.error('Focus sync failed:', err); }
+    };
+    window.addEventListener('focus', focusHandler);
+
     return () => {
       window.removeEventListener('request-workspace-switch', switchHandler);
       window.removeEventListener('click', closeAllContextMenus, { capture: true });
       window.removeEventListener('contextmenu', closeAllContextMenus, { capture: true });
       window.removeEventListener('editor:action', closeAllContextMenus);
       window.removeEventListener('close-context-menus', closeAllContextMenus);
+      window.removeEventListener('open-smart-search', openSmartSearchHandler);
+      window.removeEventListener('focus', focusHandler);
     };
   });
 
@@ -257,6 +304,18 @@
     try {
       const uiVal = uiStore.getSnapshot();
       const tabsSnapshot = editorStore.getTabsSnapshot();
+      const termVal = terminalStore.getSnapshot();
+
+      const validTabs = tabsSnapshot.filter((t: any) => 
+        t.path.startsWith('Untitled') || 
+        t.language === 'welcome' ||
+        t.path.toLowerCase().startsWith(explorerRoot.toLowerCase())
+      );
+      const validTabIds = new Set(validTabs.map((t: any) => t.id));
+      let activeTabId = editorStore.getActiveTabIdSnapshot();
+      if (activeTabId && !validTabIds.has(activeTabId)) {
+        activeTabId = validTabs.length > 0 ? validTabs[0].id : null;
+      }
 
       const session = {
         sidebarWidth: uiVal.sidebarWidth,
@@ -264,13 +323,21 @@
         expandedPaths: uiStore.getExpandedPathsSnapshot(),
         activeSidebarPanel: uiVal.activeSidebarPanel,
         isMinimapEnabled: uiVal.isMinimapEnabled,
-        tabs: tabsSnapshot.map((t: any) => ({
+        searchQuery: uiVal.searchQuery,
+        replaceQuery: uiVal.replaceQuery,
+        terminals: termVal.terminals,
+        activeTerminalId: termVal.activeTerminalId,
+        terminalVisible: termVal.isVisible,
+        terminalMaximized: termVal.isMaximized,
+        terminalHeight: termVal.height,
+        tabs: validTabs.map((t: any) => ({
           id: t.id, path: t.path, name: t.name, language: t.language,
           isPreview: t.isPreview, isPinned: t.isPinned, 
           cursor: editorStore.getCursor(t.id), scroll: editorStore.getScroll(t.id),
           isModified: t.isModified,
+          content: t.isModified ? t.content : undefined,
         })),
-        activeTabId: editorStore.getActiveTabIdSnapshot(),
+        activeTabId,
       };
 
       // Section 1.1: Save to both legacy table AND tiered tables in parallel
@@ -301,6 +368,13 @@
             scroll_positions_json: null,
             editor_snapshots_json: null,
           },
+        }).catch(() => {}),
+        invoke('save_dirty_tab_snapshots', {
+          tabs: session.tabs.filter((t: any) => t.isModified && t.content !== undefined).map((t: any) => ({
+            path: t.path,
+            content: t.content,
+            cursor_pos: t.cursor?.line || 0,
+          }))
         }).catch(() => {}),
       ]);
     } catch (err) {
@@ -359,98 +433,78 @@
   // Section 1.4 + 6.1: IPC Batching — all startup queries in ONE round-trip
   // ============================================================
   async function stagedStartup() {
-    // Tier 0: Shell renders immediately (appReady=false shows skeleton)
+    // Phase 0: Shell renders immediately (appReady=false shows skeleton)
+    // Theme + dimensions already loaded from localStorage (sync)
     appReady = false;
-    uiStore.setStatus("Loading Workspace State...", 0); // Indefinite until ready
 
     const root = uiStore.getSnapshot().explorerRoot;
 
-    // ── Tier 1 + Tier 2 + Config: Single IPC round-trip via batch_query ──
-    // This replaces N separate invoke() calls with ONE call.
     try {
-      type BatchResult = { ok: boolean; data: any; error?: string };
-
-      const ops: Array<{ op: string; args: Record<string, unknown> }> = [
-        { op: 'get_setting', args: { key: '__config__' } }, // signal to load config separately
-      ];
-
-      if (root) {
-        // Tier 1 — Critical State (fastest)
-        ops.push({ op: 'load_critical_state', args: { workspace_id: root } });
-        // Tier 2 — UI State
-        ops.push({ op: 'load_ui_state', args: { workspace_id: root } });
-        // Legacy session (Tier 3 compat)
-        ops.push({ op: 'load_workspace_state', args: { workspace_id: root } });
-      }
-
-      const fetchPromise = root
-          ? invoke<BatchResult[]>('batch_query', { operations: ops.slice(1) }).catch(() => [])
-          : Promise.resolve([] as BatchResult[]);
-
-      // Fire config and batch in parallel
-      const [configData, batchResults] = await Promise.all([
-        invoke('get_config').catch(() => null),
-        fetchPromise
-      ]);
+      // Phase 2: Single IPC round-trip for ALL startup state
+      const startupState = await invoke<{
+        config: any;
+        critical: any;
+        ui_state: any | null;
+        session_pairs: [string, string][];
+      }>('load_startup_state', { workspaceId: root || null });
 
       // Apply config
-      if (configData) settingsStore.setSettings(configData);
+      await settingsStore.loadAllSettings(root || undefined);
 
-      // Apply Tier 1 (Critical State) — fastest, apply immediately
-      const criticalResult: BatchResult | undefined = batchResults[0];
-      if (criticalResult?.ok && criticalResult.data) {
-        // Critical state is informational only for now
-        // (window geometry is managed by Tauri natively)
-      }
-
-      // Apply Tier 2 (UI State)
-      const uiResult: BatchResult | undefined = batchResults[1];
-      if (uiResult?.ok && uiResult.data) {
-        const u = uiResult.data;
-        if (u.sidebar_width !== null && u.sidebar_width !== undefined)
-          uiStore.setSidebarWidth(Number(u.sidebar_width));
-        if (u.sidebar_visible !== null && u.sidebar_visible !== undefined)
-          uiStore.setSidebarOpen(Boolean(u.sidebar_visible));
-        if (u.active_sidebar_panel)
-          uiStore.setActiveSidebarPanel(u.active_sidebar_panel);
-        if (u.is_minimap_enabled !== null && u.is_minimap_enabled !== undefined)
-          uiStore.setMinimapEnabled(Boolean(u.is_minimap_enabled));
+      // Apply UI state from DB (overrides localStorage if available)
+      if (startupState.ui_state) {
+        const u = startupState.ui_state;
+        if (u.sidebar_width != null) uiStore.setSidebarWidth(Number(u.sidebar_width));
+        if (u.sidebar_visible != null) uiStore.setSidebarOpen(Boolean(u.sidebar_visible));
+        if (u.active_sidebar_panel) uiStore.setActiveSidebarPanel(u.active_sidebar_panel);
+        if (u.is_minimap_enabled != null) uiStore.setMinimapEnabled(Boolean(u.is_minimap_enabled));
         if (u.expanded_folder_paths) {
           try { uiStore.setExpandedPaths(JSON.parse(u.expanded_folder_paths)); } catch {}
         }
       }
 
-      // Apply Tier 3 (Session / legacy workspace state)
-      const sessionResult: BatchResult | undefined = batchResults[2];
-      if (sessionResult?.ok && Array.isArray(sessionResult.data)) {
-        const stateMap = new Map<string, string>(sessionResult.data as [string, string][]);
+      // Apply session state (tabs, cursors)
+      if (startupState.session_pairs && startupState.session_pairs.length > 0) {
+        const stateMap = new Map<string, string>(startupState.session_pairs);
         const sessionStr = stateMap.get('session');
         if (sessionStr) {
           try {
             const parsed = JSON.parse(sessionStr);
+            // Apply layout overrides from session
             if (parsed.sidebarWidth !== undefined) uiStore.setSidebarWidth(parsed.sidebarWidth);
             if (parsed.isSidebarOpen !== undefined) uiStore.setSidebarOpen(parsed.isSidebarOpen);
             if (parsed.expandedPaths !== undefined) uiStore.setExpandedPaths(parsed.expandedPaths);
             if (parsed.activeSidebarPanel !== undefined) uiStore.setActiveSidebarPanel(parsed.activeSidebarPanel);
             if (parsed.isMinimapEnabled !== undefined) uiStore.setMinimapEnabled(parsed.isMinimapEnabled);
+            if (parsed.searchQuery !== undefined) uiStore.setSearchQuery(parsed.searchQuery);
+            if (parsed.replaceQuery !== undefined) uiStore.setReplaceQuery(parsed.replaceQuery);
+            
+            // Apply terminal state ONLY if terminals exist in this workspace
+            if (parsed.terminals && parsed.terminals.length > 0) {
+              terminalStore.setTerminals(parsed.terminals, parsed.activeTerminalId || null);
+              if (parsed.terminalVisible !== undefined) terminalStore.setVisibility(parsed.terminalVisible);
+              if (parsed.terminalMaximized !== undefined) terminalStore.setMaximize(parsed.terminalMaximized);
+              if (parsed.terminalHeight !== undefined) terminalStore.setHeight(parsed.terminalHeight);
+            } else {
+              terminalStore.setTerminals([], null);
+              terminalStore.setVisibility(false);
+            }
 
-            // Section 1.3: Lazy Tab Initialization
-            // Only 1 CodeMirror mounted (active tab). Others are metadata only.
-            if (parsed.tabs !== undefined) {
+            // Phase 3: Lazy Tab Initialization
+            if (parsed.tabs && parsed.tabs.length > 0) {
               const lazyTabs = parsed.tabs.map((t: any) => ({
                 ...t,
-                // All tabs start with null content — CodeMirror not mounted yet
-                content: null,
+                content: t.isModified && t.content !== undefined ? t.content : null,
                 originalContent: null,
                 lastAccessed: Date.now(),
-                status: 'loaded',
+                status: t.isModified && t.content !== undefined ? 'modified' : 'loaded',
               }));
               editorStore.setTabs(lazyTabs, parsed.activeTabId || null);
             } else {
               editorStore.setTabs([], null);
             }
-          } catch (e) { 
-            console.error('Failed to parse session state', e); 
+          } catch (e) {
+            console.error('Failed to parse session state', e);
             editorStore.setTabs([], null);
           }
         } else {
@@ -461,7 +515,7 @@
         const cursorStr = stateMap.get('cursor_scroll');
         if (cursorStr) {
           try {
-            const cursorData = JSON.parse(cursorStr as string);
+            const cursorData = JSON.parse(cursorStr);
             for (const item of cursorData) {
               if (item.cursor) editorStore.updateCursor(item.id, item.cursor.line, item.cursor.column);
               if (item.scroll) editorStore.updateScroll(item.id, item.scroll.top, item.scroll.left);
@@ -473,31 +527,78 @@
         uiStore.setExpandedPaths([]);
       }
     } catch (err) {
-      console.error('Failed to load workspace state from SQLite:', err);
+      console.error('Startup state load failed:', err);
+      editorStore.setTabs([], null);
     }
 
     appReady = true;
-    uiStore.setStatus("Workspace Ready", 2000);
     setTimeout(() => {
-      invoke('show_main_window').catch(e => console.error("Failed to show window", e));
+      invoke('show_main_window').catch(e => console.error('Failed to show window', e));
     }, 50);
 
+    // Phase 3: Load active tab content + show welcome if no tabs
     await loadActiveTabContent();
 
     if ($tabs.length === 0) {
       if (root) {
         editorStore.addTab({
           id: 'welcome', path: 'Welcome', name: 'Welcome',
-          content: 'Welcome to Notron', language: 'markdown', isPreview: true
+          content: 'Welcome to Notron', language: 'welcome', isPreview: true
         });
         editorStore.setActiveTab('welcome');
       }
     }
 
+    // Phase 4: Crash Recovery Check
+    try {
+      const crashFlag = await invoke<boolean>('check_crash_flag');
+      if (crashFlag) {
+        try {
+          const dirtySnapshots = await invoke<any[]>('get_dirty_tab_snapshots');
+          if (dirtySnapshots && dirtySnapshots.length > 0) {
+            dirtySnapshots.forEach(snap => {
+              const name = snap.path.split(/[/\\]/).pop() || 'Unknown';
+              const id = snap.path;
+              // Check if already in tabs
+              const existingTab = editorStore.getTabsSnapshot().find((t: any) => t.id === id);
+              if (!existingTab) {
+                editorStore.addTab({
+                  id, path: snap.path, name, content: snap.content, language: 'plaintext', isPreview: false
+                });
+              } else {
+                editorStore.setInitialContent(id, snap.content);
+              }
+              // Mark as modified so it can be saved again
+              editorStore.updateContent(id, snap.content);
+            });
+            uiStore.addToast('Session restored', 'success', 'after unexpected close');
+          } else {
+            uiStore.addToast('Session restored', 'success', 'after unexpected close');
+          }
+        } catch(e) {}
+      }
+      // Set flag to true to indicate running state
+      await invoke('set_crash_flag', { value: true });
+    } catch (e) {
+      console.error('Failed to check/set crash flag', e);
+    }
+
+    // Phase 5: Background tasks via requestIdleCallback
+    scheduleBackgroundTasks();
+  }
+
+  function scheduleBackgroundTasks() {
     const idle = (window as any).requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 200));
+    // Prefetch CommandPalette component
     idle(() => {
       if (!CommandPaletteComponent) {
         import('./lib/components/CommandPalette.svelte').then(m => CommandPaletteComponent = m.default);
+      }
+    });
+    // Prefetch Editor component
+    idle(() => {
+      if (!EditorComponent) {
+        import('./lib/components/Editor.svelte').then(m => EditorComponent = m.default);
       }
     });
   }
@@ -527,37 +628,28 @@
   }
 
   async function loadWorkspaceState(root: string) {
-    uiStore.setStatus("Loading Workspace State...", 0);
+    appReady = false; // Show skeleton during switch
     try {
-      type BatchResult = { ok: boolean; data: any; error?: string };
-      const ops = [
-        { op: 'load_critical_state', args: { workspace_id: root } },
-        { op: 'load_ui_state', args: { workspace_id: root } },
-        { op: 'load_workspace_state', args: { workspace_id: root } },
-      ];
+      const startupState = await invoke<{
+        config: any;
+        critical: any;
+        ui_state: any | null;
+        session_pairs: [string, string][];
+      }>('load_startup_state', { workspaceId: root || null });
 
-      const fetchPromise = invoke<BatchResult[]>('batch_query', { operations: ops }).catch(() => []);
-      const batchResults = await fetchPromise;
-
-      const uiResult: BatchResult | undefined = batchResults[1];
-      if (uiResult?.ok && uiResult.data) {
-        const u = uiResult.data;
-        if (u.sidebar_width !== null && u.sidebar_width !== undefined)
-          uiStore.setSidebarWidth(Number(u.sidebar_width));
-        if (u.sidebar_visible !== null && u.sidebar_visible !== undefined)
-          uiStore.setSidebarOpen(Boolean(u.sidebar_visible));
-        if (u.active_sidebar_panel)
-          uiStore.setActiveSidebarPanel(u.active_sidebar_panel);
-        if (u.is_minimap_enabled !== null && u.is_minimap_enabled !== undefined)
-          uiStore.setMinimapEnabled(Boolean(u.is_minimap_enabled));
+      if (startupState.ui_state) {
+        const u = startupState.ui_state;
+        if (u.sidebar_width != null) uiStore.setSidebarWidth(Number(u.sidebar_width));
+        if (u.sidebar_visible != null) uiStore.setSidebarOpen(Boolean(u.sidebar_visible));
+        if (u.active_sidebar_panel) uiStore.setActiveSidebarPanel(u.active_sidebar_panel);
+        if (u.is_minimap_enabled != null) uiStore.setMinimapEnabled(Boolean(u.is_minimap_enabled));
         if (u.expanded_folder_paths) {
           try { uiStore.setExpandedPaths(JSON.parse(u.expanded_folder_paths)); } catch {}
         }
       }
 
-      const sessionResult: BatchResult | undefined = batchResults[2];
-      if (sessionResult?.ok && Array.isArray(sessionResult.data)) {
-        const stateMap = new Map<string, string>(sessionResult.data as [string, string][]);
+      if (startupState.session_pairs && startupState.session_pairs.length > 0) {
+        const stateMap = new Map<string, string>(startupState.session_pairs);
         const sessionStr = stateMap.get('session');
         if (sessionStr) {
           try {
@@ -567,14 +659,26 @@
             if (parsed.expandedPaths !== undefined) uiStore.setExpandedPaths(parsed.expandedPaths);
             if (parsed.activeSidebarPanel !== undefined) uiStore.setActiveSidebarPanel(parsed.activeSidebarPanel);
             if (parsed.isMinimapEnabled !== undefined) uiStore.setMinimapEnabled(parsed.isMinimapEnabled);
+            if (parsed.searchQuery !== undefined) uiStore.setSearchQuery(parsed.searchQuery);
+            if (parsed.replaceQuery !== undefined) uiStore.setReplaceQuery(parsed.replaceQuery);
+
+            if (parsed.terminals && parsed.terminals.length > 0) {
+              terminalStore.setTerminals(parsed.terminals, parsed.activeTerminalId || null);
+              if (parsed.terminalVisible !== undefined) terminalStore.setVisibility(parsed.terminalVisible);
+              if (parsed.terminalMaximized !== undefined) terminalStore.setMaximize(parsed.terminalMaximized);
+              if (parsed.terminalHeight !== undefined) terminalStore.setHeight(parsed.terminalHeight);
+            } else {
+              terminalStore.setTerminals([], null);
+              terminalStore.setVisibility(false);
+            }
 
             if (parsed.tabs !== undefined) {
               const lazyTabs = parsed.tabs.map((t: any) => ({
                 ...t,
-                content: null,
+                content: t.isModified && t.content !== undefined ? t.content : null,
                 originalContent: null,
                 lastAccessed: Date.now(),
-                status: 'loaded',
+                status: t.isModified && t.content !== undefined ? 'modified' : 'loaded',
               }));
               editorStore.setTabs(lazyTabs, parsed.activeTabId || null);
             } else {
@@ -591,7 +695,7 @@
         const cursorStr = stateMap.get('cursor_scroll');
         if (cursorStr) {
           try {
-            const cursorData = JSON.parse(cursorStr as string);
+            const cursorData = JSON.parse(cursorStr);
             for (const item of cursorData) {
               if (item.cursor) editorStore.updateCursor(item.id, item.cursor.line, item.cursor.column);
               if (item.scroll) editorStore.updateScroll(item.id, item.scroll.top, item.scroll.left);
@@ -605,7 +709,7 @@
     } catch (err) {
       console.error('Failed to load workspace state:', err);
     }
-    uiStore.setStatus("Workspace Ready", 2000);
+    appReady = true; // Hide skeleton after load completes
     await loadActiveTabContent();
   }
 
@@ -667,20 +771,38 @@
     isSettingsOpen = true;
   }
 
-  const commands = [
+  const baseCommands: PaletteItem[] = [
     {
-      id: 'new-file', name: 'New File', shortcut: 'Ctrl+N',
-      action: handleNewTextFile
+      id: 'new-file', label: 'New File', category: 'command', shortcut: 'Ctrl+N',
+      action: handleNewTextFile, keywords: ['create', 'buat', 'file baru']
     },
-    { id: 'toggle-sidebar', name: 'Toggle Sidebar', shortcut: 'Ctrl+B', action: () => uiStore.toggleSidebar() },
-    { id: 'settings', name: 'Settings', shortcut: 'Ctrl+,', action: openSettings },
-    { id: 'go-to-line', name: 'Go to Line', shortcut: 'Ctrl+G', action: () => isGoToLineOpen = true }
+    { id: 'toggle-sidebar', label: 'Toggle Sidebar', category: 'command', shortcut: 'Ctrl+B', action: () => uiStore.toggleSidebar() },
+    { id: 'settings', label: 'Settings', category: 'command', shortcut: 'Ctrl+,', action: openSettings },
+    { id: 'go-to-line', label: 'Go to Line', category: 'command', shortcut: 'Ctrl+G', action: () => isGoToLineOpen = true }
   ];
+
+  $effect(() => {
+    const root = $ui.explorerRoot;
+    if (appReady && root) {
+      paletteStore.loadWorkspaceFiles(
+        root,
+        baseCommands,
+        (path) => {
+          const name = path.split(/[/\\]/).pop() || 'Unknown';
+          editorStore.addTab({ id: path, path, name, content: null, language: 'plaintext', isPreview: false });
+          editorStore.setActiveTab(path);
+        }
+      );
+    } else if (appReady && !root) {
+      paletteStore.initItems(baseCommands);
+    }
+  });
 
   async function handleOpenFolder() {
     try {
       const selected = await open({ directory: true, multiple: false });
       if (selected && typeof selected === 'string') {
+        if (selected === uiStore.getSnapshot().explorerRoot) return;
         if (!$ui.recentWorkspaces.includes(selected)) {
           await saveWorkspaceSession();
           uiStore.setPendingTrustPath(selected);
@@ -743,9 +865,11 @@
     if (cmdOrCtrl && key === 'p') {
       e.preventDefault();
       if (e.shiftKey) {
-        isCommandPaletteOpen = true; // Ctrl+Shift+P for command palette
+        commandPaletteInitialQuery = '>';
+        isCommandPaletteOpen = true; 
       } else {
-        isCommandPaletteOpen = true; // Temporary route Ctrl+P to command palette
+        commandPaletteInitialQuery = '';
+        isCommandPaletteOpen = true; 
       }
     }
     if (cmdOrCtrl && !e.shiftKey && key === 's') {
@@ -773,17 +897,29 @@
     // 6. Navigation History
     if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
       e.preventDefault();
+      import('./lib/stores/navigation').then(m => {
+        if (e.key === 'ArrowLeft') m.navigationStore.navigateBack();
+        else m.navigationStore.navigateForward();
+      });
+    }
+    // 7. Reopen Closed Tab
+    if (cmdOrCtrl && e.shiftKey && key === 't') {
+      e.preventDefault();
+      editorStore.reopenClosedTab();
     }
 
     // ── NOTRON CUSTOM SHORTCUTS ──
     if (cmdOrCtrl && key === 'n') {
-      e.preventDefault(); commands[0].action();
+      e.preventDefault(); baseCommands[0].action();
     }
     if (cmdOrCtrl && key === 'b') {
       e.preventDefault(); uiStore.toggleSidebar();
     }
     if (cmdOrCtrl && key === ',') {
       e.preventDefault(); openSettings();
+    }
+    if (cmdOrCtrl && key === 'g') {
+      e.preventDefault(); isGoToLineOpen = true;
     }
   }
 
@@ -884,7 +1020,30 @@
     }, 1500);
 
     // Save session on beforeunload
-    const handleBeforeUnload = () => { saveWorkspaceSession(); };
+    const handleBeforeUnload = () => {
+      saveWorkspaceSession();
+      // Save critical config for next startup skeleton
+      const uiVal = uiStore.getSnapshot();
+      const termVal = terminalStore.getSnapshot();
+      invoke('save_critical_config', {
+        config: {
+          theme: $themeStore.theme || 'system',
+          window_width: window.innerWidth,
+          window_height: window.innerHeight,
+          window_x: null,
+          window_y: null,
+          window_maximized: true,
+          sidebar_width: uiVal.sidebarWidth,
+          sidebar_visible: uiVal.isSidebarOpen,
+          terminal_visible: termVal.isVisible,
+          terminal_height: termVal.height,
+          active_workspace: uiVal.explorerRoot || null,
+        }
+      }).catch(() => {});
+
+      // Clear crash flag on normal close
+      invoke('set_crash_flag', { value: false }).catch(() => {});
+    };
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
@@ -899,23 +1058,25 @@
 
   // Auto-save with debounce (Bagian 5.4)
   $effect(() => {
-    if (!$settingsStore.auto_save) return;
+    if (!settingsStore.effectiveSettings.auto_save) return;
     const modifiedTabs = $tabs.filter((t: any) => t.isModified && t.content !== null && !t.path.startsWith('Untitled'));
     if (modifiedTabs.length === 0) return;
 
     const timer = setTimeout(async () => {
       for (const tab of modifiedTabs) {
         try {
-          if (tab.content !== null) {
+          if (tab.content !== null && !tab.autoSavePaused) {
             await invoke('save_file', { path: tab.path, content: tab.content });
             editorStore.markSaved(tab.id);
           }
         } catch (err) {
           console.error("Auto save failed for", tab.path, err);
+          uiStore.addToast('Auto Save Failed', 'alert', getHumanReadableError(err));
+          editorStore.pauseAutoSave(tab.id);
         }
       }
       editorStore.clearSaveStatus();
-    }, $settingsStore.auto_save_delay_ms || 1500);
+    }, settingsStore.effectiveSettings.auto_save_delay_ms || 1500);
 
     return () => clearTimeout(timer);
   });
@@ -948,9 +1109,15 @@
     window.addEventListener('keydown', handleGlobalKeydown);
     const preventCM = (e: MouseEvent) => e.preventDefault();
     window.addEventListener('contextmenu', preventCM);
+    const openCmd = () => {
+      commandPaletteInitialQuery = '>';
+      isCommandPaletteOpen = true;
+    };
+    window.addEventListener('open-command-palette', openCmd);
     return () => {
       window.removeEventListener('keydown', handleGlobalKeydown);
       window.removeEventListener('contextmenu', preventCM);
+      window.removeEventListener('open-command-palette', openCmd);
     };
   });
 </script>
@@ -958,43 +1125,46 @@
 <div class="h-screen w-screen flex flex-col overflow-hidden bg-canvas text-primary"
   class:dark={isDark}
 >
-  {#if CommandPaletteComponent && isCommandPaletteOpen}
-    <CommandPaletteComponent isOpen={true} {commands} onClose={() => isCommandPaletteOpen = false} />
-  {/if}
 
-  {#if SettingsPageComponent && isSettingsOpen}
-    <SettingsPageComponent isOpen={true} onClose={() => isSettingsOpen = false} />
-  {/if}
-
-  {#if GoToLineComponent && isGoToLineOpen}
-    <GoToLineComponent isOpen={true} onClose={() => isGoToLineOpen = false} onGoToLine={(line: number) => {
-      window.dispatchEvent(new CustomEvent('editor:action', { detail: { action: 'goto', line } }));
-    }} />
-  {/if}
-  <CloseTabDialog
-    isOpen={!!closingTabId}
-    fileName={$tabs.find((t: any) => t.id === closingTabId)?.name || 'Untitled'}
-    onCancel={() => closingTabId = null}
-    onDontSave={() => { if (closingTabId) { editorStore.closeTab(closingTabId); } closingTabId = null; debouncedSaveFullSession(); }}
-    onSave={handleCloseSave}
-  />
-  
-<NewFileDialog 
-  isOpen={$ui.isNewFileDialogOpen}
-  isFromWelcome={$ui.newFileDialogSource === 'welcome'}
-  onClose={() => uiStore.closeNewFileDialog()} 
-/>
-
-<TrustModal />
-<RecentFoldersModal />
 
   <div class="h-8 flex items-center justify-between px-2 select-none bg-surface-2 text-primary">
-    <div data-tauri-drag-region class="flex items-center h-full">
+    <div data-tauri-drag-region class="flex items-center h-full flex-1">
       <img src="/notron.png" alt="Notron Logo" class="w-4 h-4 ml-1 pointer-events-none" />
       <TitleMenuBar />
     </div>
-    <div data-tauri-drag-region class="text-xs opacity-70 pointer-events-none h-full flex items-center">{activeTab?.name || ''}</div>
-    <div class="flex items-center">
+    <div data-tauri-drag-region class="h-full flex items-center justify-center flex-1">
+      <div class="flex items-center gap-1">
+        <button 
+          class="p-1 rounded transition-colors hover:bg-hover text-icon-default hover:text-icon-active disabled:opacity-50 disabled:cursor-not-allowed"
+          onclick={() => navigationStore.navigateBack()}
+          title="Go Back (Alt+LeftArrow)"
+          disabled={$navigationStore.backStack.length === 0}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
+        <button 
+          class="p-1 rounded transition-colors hover:bg-hover text-icon-default hover:text-icon-active disabled:opacity-50 disabled:cursor-not-allowed"
+          onclick={() => navigationStore.navigateForward()}
+          title="Go Forward (Alt+RightArrow)"
+          disabled={$navigationStore.forwardStack.length === 0}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+
+        <button 
+          class="flex items-center justify-center w-72 h-6 px-3 mx-2 rounded-md border border-subtle bg-surface hover:bg-hover transition-colors text-xs text-secondary hover:text-primary cursor-pointer shadow-sm nodrag"
+          onclick={() => {
+            commandPaletteInitialQuery = '';
+            isCommandPaletteOpen = true;
+          }}
+          title="Search files (Ctrl+P)"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-2 opacity-70"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+          <span class="truncate">{$ui.explorerRoot ? $ui.explorerRoot.split(/[/\\]/).pop() : 'Notron'}</span>
+        </button>
+      </div>
+    </div>
+    <div class="flex items-center justify-end flex-1">
       <button aria-label="Minimize" onclick={() => getCurrentWindow().minimize()} class="p-2 bg-transparent transition-colors hover:bg-hover text-icon-default hover:text-icon-active">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
@@ -1010,24 +1180,24 @@
   {#if !appReady}
     <div class="flex flex-1 overflow-hidden">
       <!-- Activity Bar Skeleton -->
-      <div class="w-12 flex flex-col items-center py-0 justify-between z-10 border-r border-subtle bg-surface-2 shrink-0"></div>
+      <div class="w-12 shrink-0 border-r border-subtle bg-surface-2"></div>
 
       <!-- Sidebar Skeleton -->
       {#if $ui.isSidebarOpen}
-        <div class="flex flex-col border-r border-subtle bg-surface shrink-0" style="width: {$ui.sidebarWidth}px"></div>
+        <div class="shrink-0 border-r border-subtle bg-surface" style="width: {$ui.sidebarWidth}px"></div>
       {/if}
 
       <!-- Main Editor Area & Terminal Skeleton -->
       <div class="flex flex-1 flex-col overflow-hidden bg-canvas">
         <!-- Editor Tabs Header Skeleton -->
-        <div class="h-9 border-b border-subtle bg-surface-2 shrink-0"></div>
+        <div class="h-9 shrink-0 border-b border-subtle bg-surface-2"></div>
         
         <!-- Editor Body Skeleton -->
-        <div class="flex-1 relative"></div>
+        <div class="flex-1 bg-canvas"></div>
 
         <!-- Terminal Panel Skeleton -->
         {#if $terminalStore.isVisible}
-          <div class="flex flex-col border-t border-subtle bg-surface-2 shrink-0" style="height: {$terminalStore.isMaximized ? 'calc(100vh - 2rem)' : `${$terminalStore.height}px`};"></div>
+          <div class="shrink-0 border-t border-subtle bg-surface-2" style="height: {$terminalStore.isMaximized ? 'calc(100vh - 2rem)' : `${$terminalStore.height}px`};"></div>
         {/if}
       </div>
     </div>
@@ -1087,15 +1257,34 @@
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
               </button>
             </Tooltip>
+          {:else if $ui.activeSidebarPanel === 'search'}
+            {@const canSearchAction = $ui.searchQuery.length > 0 && $ui.searchResultCount > 0}
+            <div class="flex items-center gap-0.5">
+              <Tooltip content="Smart Search">
+                <button aria-label="Smart Search" onclick={() => showSmartSearchModal = true} class="p-1 rounded transition-colors hover:bg-hover text-accent hover:text-accent/90">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/></svg>
+                </button>
+              </Tooltip>
+              <Tooltip content="Refresh">
+                <button aria-label="Refresh" onclick={() => uiStore.triggerSearchRefresh()} class="p-1 rounded transition-colors hover:bg-hover text-icon-default" disabled={!canSearchAction} class:opacity-50={!canSearchAction} class:cursor-not-allowed={!canSearchAction} class:hover:text-icon-active={canSearchAction}>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                </button>
+              </Tooltip>
+              <Tooltip content="Collapse All">
+                <button aria-label="Collapse All" onclick={() => uiStore.triggerSearchCollapseAll()} class="p-1 rounded transition-colors hover:bg-hover text-icon-default" disabled={!canSearchAction} class:opacity-50={!canSearchAction} class:cursor-not-allowed={!canSearchAction} class:hover:text-icon-active={canSearchAction}>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+                </button>
+              </Tooltip>
+            </div>
           {/if}
         </div>
-        <div class="flex-1 overflow-y-auto text-sm">
+        <div class="flex-1 overflow-y-auto text-sm hover-scrollbar">
           {#if $ui.activeSidebarPanel === 'explorer'}
             <div class="flex flex-col h-full">
               {#if $ui.explorerRoot}
                 <div class="flex flex-col h-full">
-                  <div class="group flex items-center justify-between px-4 py-2 border-b border-subtle">
-                    <span class="text-xs font-semibold uppercase truncate pr-2 text-primary">
+                  <div class="group h-7 flex items-center justify-between px-4 border-b border-subtle shrink-0 bg-surface">
+                    <span class="text-[11px] font-semibold uppercase truncate pr-2 text-primary">
                       {$ui.explorerRoot.split(/[/\\]/).pop() || 'WORKSPACE'}
                     </span>
                     <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
@@ -1145,11 +1334,9 @@
     {/if}
 
     <div class="flex flex-1 flex-col overflow-hidden bg-canvas">
-      <div class="flex h-9 overflow-hidden shrink-0 bg-surface-2">
-        <div role="region" aria-label="Tabs" class="flex-1 flex overflow-x-auto scrollbar-hide" oncontextmenu={handleEmptyTabAreaContextMenu}>
-          {#if $tabs.length === 0}
-            <div class="flex-1 flex items-center justify-center text-sm text-muted">No tabs open</div>
-          {:else}
+      {#if $tabs.length > 0}
+        <div class="flex h-9 overflow-hidden shrink-0 bg-surface-2">
+          <div role="region" aria-label="Tabs" class="flex-1 flex overflow-x-auto scrollbar-hide" oncontextmenu={handleEmptyTabAreaContextMenu}>
             {#each $tabs as tab (tab.id)}
               <div
                 role="tab"
@@ -1208,35 +1395,35 @@
                 {/if}
               </div>
             {/each}
+          </div>
+
+          {#if activeTab && activeTab.path.toLowerCase().endsWith('.md')}
+            <div class="flex items-center shrink-0 px-2 border-l border-subtle bg-surface-2">
+              <Tooltip content="Open Preview">
+                <button
+                  aria-label="Open Preview"
+                  onclick={() => {
+                    editorStore.addTab({
+                      id: `${activeTab.id}-preview`,
+                      path: activeTab.path,
+                      name: `${activeTab.name} (Preview)`,
+                      content: activeTab.content,
+                      language: 'markdown-preview',
+                      isPreview: false
+                    });
+                  }}
+                  class="p-1.5 rounded-md transition-colors text-icon-default hover:text-icon-active hover:bg-hover"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
+              </Tooltip>
+            </div>
           {/if}
         </div>
 
-        {#if activeTab && activeTab.path.toLowerCase().endsWith('.md')}
-          <div class="flex items-center shrink-0 px-2 border-l border-subtle bg-surface-2">
-            <Tooltip content="Open Preview">
-              <button
-                aria-label="Open Preview"
-                onclick={() => {
-                  editorStore.addTab({
-                    id: `${activeTab.id}-preview`,
-                    path: activeTab.path,
-                    name: `${activeTab.name} (Preview)`,
-                    content: activeTab.content,
-                    language: 'markdown-preview',
-                    isPreview: false
-                  });
-                }}
-                class="p-1.5 rounded-md transition-colors text-icon-default hover:text-icon-active hover:bg-hover"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-              </button>
-            </Tooltip>
-          </div>
+        {#if !(activeTab && (activeTab.path.startsWith('Untitled') || activeTab.language === 'settings'))}
+          <Breadcrumbs />
         {/if}
-      </div>
-
-      {#if !(activeTab && (activeTab.path.startsWith('Untitled') || activeTab.language === 'settings'))}
-        <Breadcrumbs />
       {/if}
 
       <div class="flex-1 relative overflow-hidden" class:hidden={$terminalStore.isMaximized}>
@@ -1311,6 +1498,42 @@
   </div>
 </div>
 
+{#if CommandPaletteComponent && isCommandPaletteOpen}
+  <CommandPaletteComponent isOpen={true} onClose={() => isCommandPaletteOpen = false} initialQuery={commandPaletteInitialQuery} />
+{/if}
+
+{#if SettingsPageComponent && isSettingsOpen}
+  <SettingsPageComponent isOpen={true} onClose={() => isSettingsOpen = false} />
+{/if}
+
+{#if GoToLineComponent && isGoToLineOpen}
+  <GoToLineComponent isOpen={true} onClose={() => isGoToLineOpen = false} onGoToLine={(line: number) => {
+    import('./lib/stores/navigation').then(m => {
+      if (activeTab) {
+        m.navigationStore.recordNavigation({ path: activeTab.path, line, col: 1 });
+      }
+    });
+    window.dispatchEvent(new CustomEvent('editor:action', { detail: { action: 'goto', line } }));
+  }} />
+{/if}
+
+<CloseTabDialog
+  isOpen={!!closingTabId}
+  fileName={$tabs.find((t: any) => t.id === closingTabId)?.name || 'Untitled'}
+  onCancel={() => closingTabId = null}
+  onDontSave={() => { if (closingTabId) { editorStore.closeTab(closingTabId); } closingTabId = null; debouncedSaveFullSession(); }}
+  onSave={handleCloseSave}
+/>
+
+<NewFileDialog 
+  isOpen={$ui.isNewFileDialogOpen}
+  isFromWelcome={$ui.newFileDialogSource === 'welcome'}
+  onClose={() => uiStore.closeNewFileDialog()} 
+/>
+
+<TrustModal />
+<RecentFoldersModal />
+
 {#if tabCtxMenu.isOpen}
   <div
     data-notron-context-menu="true"
@@ -1342,6 +1565,8 @@
     {/each}
   </div>
 {/if}
+<ToastContainer />
+<SmartSearchModal isOpen={showSmartSearchModal} onClose={() => showSmartSearchModal = false} />
 
 <style>
   .scrollbar-hide::-webkit-scrollbar { display: none; }

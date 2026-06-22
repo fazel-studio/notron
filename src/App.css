@@ -149,10 +149,17 @@ body {
   margin: 0;
   padding: 0;
   overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-.cm-content, .cm-line, input, textarea, [contenteditable="true"], .selectable, .prose * {
+img, a {
+  -webkit-user-drag: none;
+}
+
+.cm-content, .cm-line, input, textarea, [contenteditable="true"], .selectable, .prose *, .xterm * {
   user-select: text !important;
+  -webkit-user-select: text !important;
 }
 
 div:not(.cm-content):not(.cm-line):not(.selectable)::selection {
@@ -170,44 +177,75 @@ button, [role="button"], [role="menuitem"], [role="tab"] {
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb);
-  border: 3px solid transparent;
-  background-clip: padding-box;
-  border-radius: 10px;
+  background: var(--scrollbar-thumb, rgba(120, 120, 120, 0.4));
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--scrollbar-thumb-hover);
+  background: var(--scrollbar-thumb-hover, rgba(120, 120, 120, 0.7));
 }
 
 .cm-minimap-container {
   cursor: pointer;
-  max-width: 150px;
-  height: 100%;
-}
-
-.cm-editor:has(.cm-minimap) .cm-scroller {
-  padding-right: 155px !important;
-}
-
-.cm-editor {
-  position: relative;
-}
-.cm-editor .cm-minimap {
   position: absolute !important;
-  right: 0;
-  top: 0;
-  bottom: 0;
+  right: 14px !important;
+  top: 0 !important;
+  bottom: 0 !important;
   width: 150px;
+  max-width: 150px;
   overflow: hidden;
   pointer-events: auto;
-  z-index: 999 !important;
-  background-color: var(--bg-canvas) !important;
+  z-index: 10 !important;
+  background-color: var(--bg-canvas, #18181b) !important;
   border-left: 1px solid var(--border-subtle);
+  box-shadow: -2px 0 5px rgba(0,0,0,0.1);
 }
+
+.cm-scroller::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+.cm-editor:hover .cm-scroller::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb, rgba(120, 120, 120, 0.4));
+}
+.cm-editor:hover .cm-scroller::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover, rgba(120, 120, 120, 0.7));
+}
+
+.hover-scrollbar::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+.hover-scrollbar:hover::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb, rgba(120, 120, 120, 0.4));
+}
+.hover-scrollbar:hover::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover, rgba(120, 120, 120, 0.7));
+}
+
+.cm-editor:has(.cm-minimap-container:not([style*="display: none"])) .cm-content {
+  margin-right: 164px !important;
+}
+
+.cm-scroller::-webkit-scrollbar:horizontal {
+  display: none !important;
+}
+
+.cm-editor .cm-scroller {
+  /* No extra padding, the scroller itself is now narrowed by the editor padding! */
+}
+
+/* ── Drag cursor states ── */
+body.is-dragging * {
+  cursor: grabbing !important;
+}
+body.is-dragging [data-node-path].drop-valid {
+  cursor: copy !important;
+}
+body.is-dragging [data-node-path]:not(.drop-valid) {
+  cursor: no-drop !important;
+}
+

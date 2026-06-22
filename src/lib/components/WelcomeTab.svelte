@@ -8,6 +8,7 @@
   const ui = uiStore;
 
   async function handleOpenRecent(path: string) {
+    if (path === uiStore.getSnapshot().explorerRoot) return;
     try {
       const doesExist = await exists(path);
       if (!doesExist) { alert(`Path not found: ${path}`); return; }
@@ -45,6 +46,7 @@
     try {
       const selected = await open({ directory: true, multiple: false });
       if (selected && typeof selected === 'string') {
+        if (selected === uiStore.getSnapshot().explorerRoot) return;
         if (!$ui.recentWorkspaces.includes(selected)) {
           uiStore.setPendingTrustPath(selected);
         } else {

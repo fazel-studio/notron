@@ -1,9 +1,14 @@
 use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use encoding_rs::Encoding;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
+use std::collections::HashMap;
+use tokio::sync::Mutex;
+use tauri::{AppHandle, State, Emitter};
+use chardetng::EncodingDetector;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FileContent {
@@ -22,18 +27,14 @@ pub struct FileOpenMeta {
     pub is_large: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SearchResult {
     pub path: String,
     pub line: usize,
     pub text: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct SearchBatchResult {
-    pub results: Vec<SearchResult>,
-    pub total_scanned: usize,
-}
+
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FileInfo {
@@ -41,6 +42,14 @@ pub struct FileInfo {
     pub extension: String,
     pub size: u64,
     pub last_modified: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FileMetadata {
+    pub path: String,
+    pub size: u64,
+    pub modified: Option<u64>,
+    pub is_dir: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -58,22 +67,56 @@ const CHUNK_THRESHOLD_LOW: u64  = 512 * 1024;   // 500KB — load chunked
 const CHUNK_THRESHOLD_HIGH: u64 = 5 * 1024 * 1024; // 5MB — disable syntax highlight
 const INITIAL_CHUNK_SIZE: usize = 100 * 1024;    // 100KB first chunk
 
-static SEARCH_CANCELLED: AtomicBool = AtomicBool::new(false);
+pub struct SearchRegistry {
+    pub active_searches: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchOptions {
+    pub case_sensitive: bool,
+    #[allow(dead_code)]
+    pub use_regex: bool,
+}
+
+#[derive(Serialize, Clone)]
+pub struct SearchBatchPayload {
+    pub results: Vec<SearchResult>,
+    pub files_scanned: usize,
+    pub total_matches: usize,
+    pub is_done: bool,
+}
 
 #[tauri::command]
 pub async fn open_file(path: String) -> Result<FileContent, String> {
     let bytes = fs::read(&path).await.map_err(|e| e.to_string())?;
     let size = bytes.len() as u64;
 
-    let default_encoding = encoding_rs::UTF_8;
-    let (cow, encoding_used, _) = default_encoding.decode(&bytes);
+    if let Ok(content) = String::from_utf8(bytes.clone()) {
+        let line_count = content.lines().count();
+        return Ok(FileContent {
+            content,
+            encoding: "UTF-8".to_string(),
+            size,
+            line_count,
+        });
+    }
 
+    let (encoding, _confidence, _) = Encoding::for_bom(&bytes)
+        .map(|(e, _)| (e, 1.0, false))
+        .unwrap_or_else(|| {
+            let mut detector = EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
+            detector.feed(&bytes, true);
+            (detector.guess(None, chardetng::Utf8Detection::Allow), 0.5, false)
+        });
+
+    let (cow, _, _) = encoding.decode(&bytes);
     let content = cow.into_owned();
     let line_count = content.lines().count();
 
     Ok(FileContent {
         content,
-        encoding: encoding_used.name().to_string(),
+        encoding: encoding.name().to_string(),
         size,
         line_count,
     })
@@ -251,7 +294,22 @@ fn is_ignored_dir(name: &str) -> bool {
 }
 
 fn is_dot_file(name: &str) -> bool {
-    name.starts_with('.') && name != ".."
+    name.starts_with('.') && name != ".." && name != "."
+}
+
+#[allow(dead_code)]
+pub fn resolve_symlink_safe(path: &Path, workspace_root: &Path) -> Option<std::path::PathBuf> {
+    let resolved = std::fs::canonicalize(path).ok()?;
+  
+    if resolved == path.parent()? || resolved.starts_with(path) {
+        return None;
+    }
+  
+    if !resolved.starts_with(workspace_root) {
+        return None;
+    }
+  
+    Some(resolved)
 }
 
 /// Reads ONE level of a directory (non-recursive) for lazy loading.
@@ -425,179 +483,150 @@ pub async fn file_exists(path: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub async fn cancel_search() -> Result<(), String> {
-    SEARCH_CANCELLED.store(true, Ordering::SeqCst);
+pub async fn cancel_search(
+    token: Option<String>,
+    registry: State<'_, SearchRegistry>,
+) -> Result<(), String> {
+    if let Some(t) = token {
+        if let Some(flag) = registry.active_searches.lock().await.get(&t) {
+            flag.store(true, Ordering::Relaxed);
+        }
+    } else {
+        for flag in registry.active_searches.lock().await.values() {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
     Ok(())
 }
 
-#[tauri::command]
-pub async fn search_in_files(root: String, pattern: String, batch_size: Option<usize>) -> Result<Vec<SearchResult>, String> {
-    SEARCH_CANCELLED.store(false, Ordering::SeqCst);
-    
-    tokio::task::spawn_blocking(move || {
-        let mut results = Vec::new();
-        let root_path = Path::new(&root);
-        let max_batch = batch_size.unwrap_or(20);
-
-        if !root_path.exists() { return Ok(results); }
-
-        let ignored_extensions = [
-            "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg",
-            "woff", "woff2", "ttf", "eot", "otf",
-            "mp3", "mp4", "avi", "mov", "mkv",
-            "zip", "tar", "gz", "bz2", "7z", "rar",
-            "pdf", "doc", "docx", "xls", "xlsx",
-            "lock",
-        ];
-
-        for entry in walkdir::WalkDir::new(root_path)
-            .into_iter()
-            .filter_entry(|e| {
-                let name = e.file_name().to_string_lossy();
-                !is_ignored_dir(&name) && !is_dot_file(&name)
-            })
-            .flatten() {
-
-            if SEARCH_CANCELLED.load(Ordering::SeqCst) {
-                return Ok(results);
+fn collect_files_by_priority(workspace_path: &str) -> Vec<std::path::PathBuf> {
+    let mut priority_3 = vec![]; // root
+    let mut priority_4 = vec![]; // level 1
+    let mut priority_5 = vec![]; // level 2+
+  
+    for entry in walkdir::WalkDir::new(workspace_path)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !is_ignored_dir(&name) && !is_dot_file(&name)
+        })
+        .filter_map(|e| e.ok())
+    {
+        if entry.file_type().is_file() {
+            let path = entry.path().to_path_buf();
+            let depth = entry.depth();
+          
+            let ext = path.extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let ignored_extensions = [
+                "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg",
+                "woff", "woff2", "ttf", "eot", "otf",
+                "mp3", "mp4", "avi", "mov", "mkv",
+                "zip", "tar", "gz", "bz2", "7z", "rar",
+                "pdf", "doc", "docx", "xls", "xlsx",
+                "lock", "min.js", "min.css", "map",
+            ];
+            if ignored_extensions.contains(&ext.as_str()) { continue; }
+            if let Ok(metadata) = std::fs::metadata(&path) {
+                if metadata.len() > 5_000_000 { continue; }
             }
-
-            if entry.file_type().is_file() {
-                let path_str = entry.path().to_string_lossy();
-                if path_str.len() > 5_000_000 { continue; }
-
-                let ext = entry.path().extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                if ignored_extensions.contains(&ext.as_str()) { continue; }
-
-                if let Ok(metadata) = entry.path().metadata() {
-                    if metadata.len() > LARGE_FILE_THRESHOLD * 5 { continue; }
-                }
-
-                let content = std::fs::read_to_string(entry.path()).unwrap_or_default();
-                let pattern_lower = pattern.to_lowercase();
-                let mut line_num = 1;
-                for line in content.lines() {
-                    if line.to_lowercase().contains(&pattern_lower) {
-                        results.push(SearchResult {
-                            path: entry.path().to_string_lossy().into_owned(),
-                            line: line_num,
-                            text: line.trim().to_string(),
-                        });
-                        if results.len() >= max_batch {
-                            return Ok(results);
-                        }
-                    }
-                    line_num += 1;
-                }
+          
+            match depth {
+                1 => priority_3.push(path),
+                2 => priority_4.push(path),
+                _ => priority_5.push(path),
             }
         }
-        Ok(results)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    }
+  
+    [priority_3, priority_4, priority_5].concat()
 }
 
-/// Streaming search that returns results in batches with progress info (Bagian 6.2)
 #[tauri::command]
-pub async fn search_in_files_stream(root: String, pattern: String, batch_size: Option<usize>) -> Result<SearchBatchResult, String> {
-    SEARCH_CANCELLED.store(false, Ordering::SeqCst);
+pub async fn search_workspace(
+    query: String,
+    workspace_path: String,
+    cancel_token: String,
+    options: SearchOptions,
+    app: AppHandle,
+    registry: State<'_, SearchRegistry>,
+) -> Result<(), String> {
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    registry.active_searches.lock().await
+        .insert(cancel_token.clone(), cancel_flag.clone());
+  
+    let registry_clone = registry.inner().active_searches.clone();
     
     tokio::task::spawn_blocking(move || {
-        let mut results = Vec::new();
-        let root_path = Path::new(&root);
-        let max_batch = batch_size.unwrap_or(20);
-        let mut total_scanned: usize = 0;
+        let files_by_priority = collect_files_by_priority(&workspace_path);
+        let mut batch_results: Vec<SearchResult> = Vec::new();
+        let mut last_emit = std::time::Instant::now();
+        let mut files_scanned = 0;
+        let mut total_matches = 0;
+        let query_lower = if options.case_sensitive { query.clone() } else { query.to_lowercase() };
 
-        if !root_path.exists() {
-            return Ok(SearchBatchResult { results, total_scanned });
-        }
-
-        let ignored_extensions = [
-            "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg",
-            "woff", "woff2", "ttf", "eot", "otf",
-            "mp3", "mp4", "avi", "mov", "mkv",
-            "zip", "tar", "gz", "bz2", "7z", "rar",
-            "pdf", "doc", "docx", "xls", "xlsx",
-            "lock", "min.js", "min.css", "map",
-        ];
-
-        // Prioritize: open tabs > recently opened > root files (Bagian 6.4)
-        let root_path_obj = root_path.to_path_buf();
-        let mut entries: Vec<_> = walkdir::WalkDir::new(&root_path_obj)
-            .into_iter()
-            .filter_entry(|e| {
-                let name = e.file_name().to_string_lossy();
-                !is_ignored_dir(&name) && !is_dot_file(&name)
-            })
-            .flatten()
-            .filter(|e| e.file_type().is_file())
-            .collect();
-
-        entries.sort_by(|a, b| {
-            let a_depth = a.path().ancestors().count();
-            let b_depth = b.path().ancestors().count();
-            a_depth.cmp(&b_depth)
-        });
-
-        for entry in &entries {
-            if SEARCH_CANCELLED.load(Ordering::SeqCst) {
-                return Ok(SearchBatchResult { results, total_scanned });
+        for file_path in files_by_priority {
+            if cancel_flag.load(Ordering::Relaxed) {
+                break;
             }
-
-            let path_str = entry.path().to_string_lossy();
-            if path_str.len() > 5_000_000 { total_scanned += 1; continue; }
-
-            // Exclude binary files by checking first 4 magic bytes (Bagian 6.5)
-            if let Ok(mut file) = std::fs::File::open(entry.path()) {
+          
+            files_scanned += 1;
+            
+            // Basic exclusion
+            if let Ok(mut file) = std::fs::File::open(&file_path) {
                 let mut magic = [0u8; 4];
                 if file.read_exact(&mut magic).is_ok() {
-                    if magic.starts_with(&[0x7f, 0x45, 0x4c, 0x46]) // ELF
-                        || magic.starts_with(&[0x4d, 0x5a]) // PE
-                        || magic.starts_with(&[0x89, 0x50, 0x4e, 0x47]) // PNG
-                        || magic.starts_with(&[0xff, 0xd8, 0xff]) // JPEG
-                        || magic.starts_with(&[0x47, 0x49, 0x46]) // GIF
-                    {
-                        total_scanned += 1;
+                    if magic.starts_with(&[0x7f, 0x45, 0x4c, 0x46]) || magic.starts_with(&[0x4d, 0x5a]) || magic.starts_with(&[0x89, 0x50, 0x4e, 0x47]) || magic.starts_with(&[0xff, 0xd8, 0xff]) || magic.starts_with(&[0x47, 0x49, 0x46]) {
                         continue;
                     }
                 }
             }
-
-            let ext = entry.path().extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            if ignored_extensions.contains(&ext.as_str()) { total_scanned += 1; continue; }
-
-            if let Ok(metadata) = entry.path().metadata() {
-                if metadata.len() > LARGE_FILE_THRESHOLD * 5 { total_scanned += 1; continue; }
-            }
-
-            total_scanned += 1;
-            let content = std::fs::read_to_string(entry.path()).unwrap_or_default();
-            let pattern_lower = pattern.to_lowercase();
-            let mut line_num = 1;
-            for line in content.lines() {
-                if line.to_lowercase().contains(&pattern_lower) {
-                    results.push(SearchResult {
-                        path: entry.path().to_string_lossy().into_owned(),
-                        line: line_num,
-                        text: line.trim().to_string(),
-                    });
-                    if results.len() >= max_batch {
-                        return Ok(SearchBatchResult { results, total_scanned });
+            
+            if let Ok(content) = std::fs::read_to_string(&file_path) {
+                let mut line_num = 1;
+                for line in content.lines() {
+                    let text_to_check = if options.case_sensitive { line.to_string() } else { line.to_lowercase() };
+                    if text_to_check.contains(&query_lower) {
+                        batch_results.push(SearchResult {
+                            path: file_path.to_string_lossy().into_owned(),
+                            line: line_num,
+                            text: line.to_string(),
+                        });
+                        total_matches += 1;
                     }
+                    line_num += 1;
                 }
-                line_num += 1;
+            }
+          
+            let should_emit = last_emit.elapsed().as_millis() >= 50 || batch_results.len() >= 20;
+          
+            if should_emit && !batch_results.is_empty() {
+                let payload = SearchBatchPayload {
+                    results: std::mem::take(&mut batch_results),
+                    files_scanned,
+                    total_matches,
+                    is_done: false,
+                };
+                let _ = app.emit("search-batch", payload);
+                last_emit = std::time::Instant::now();
             }
         }
-        Ok(SearchBatchResult { results, total_scanned })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+      
+        let payload = SearchBatchPayload {
+            results: batch_results,
+            files_scanned,
+            total_matches,
+            is_done: true,
+        };
+        let _ = app.emit("search-batch", payload);
+        
+        let mut searches = registry_clone.blocking_lock();
+        searches.remove(&cancel_token);
+    });
+  
+    Ok(())
 }
 
 #[tauri::command]
@@ -626,4 +655,93 @@ pub async fn detect_language(path: String) -> String {
         "php" => "php",
         _ => "plaintext",
     }.to_string()
+}
+
+/// List all files in the workspace
+#[tauri::command]
+pub async fn list_all_files(path: String, exclude_dirs: Option<Vec<String>>) -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut results = Vec::new();
+        let excludes = exclude_dirs.unwrap_or_default();
+        
+        let walker = walkdir::WalkDir::new(&path).into_iter();
+
+        for entry in walker.filter_entry(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') && name.len() > 1 {
+                return false;
+            }
+            if e.file_type().is_dir() {
+                if excludes.iter().any(|ex| ex == &name) {
+                    return false;
+                }
+            }
+            true
+        }) {
+            if let Ok(entry) = entry {
+                if entry.file_type().is_file() {
+                    results.push(entry.path().to_string_lossy().to_string());
+                }
+            }
+        }
+        Ok(results)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Batch read multiple files in one IPC call (Phase 4: restore other tabs)
+#[tauri::command]
+pub async fn batch_read_files(
+    paths: Vec<String>,
+) -> Result<std::collections::HashMap<String, Option<String>>, String> {
+    use std::collections::HashMap;
+    let mut result = HashMap::new();
+
+    let handles: Vec<_> = paths.into_iter().map(|path| {
+        let p = path.clone();
+        (path, tokio::spawn(async move {
+            tokio::fs::read(&p).await.ok().and_then(|bytes| {
+                // Check if binary
+                if bytes.iter().take(8192).any(|&b| b == 0) {
+                    return None;
+                }
+                String::from_utf8(bytes).ok()
+            })
+        }))
+    }).collect();
+
+    for (path, handle) in handles {
+        match handle.await {
+            Ok(content) => { result.insert(path, content); }
+            Err(_) => { result.insert(path, None); }
+        }
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn get_files_metadata(paths: Vec<String>) -> Result<Vec<FileMetadata>, String> {
+    let mut handles = Vec::new();
+    for path in paths {
+        let p = path.clone();
+        handles.push(tokio::spawn(async move {
+            tokio::fs::metadata(&p).await.map(|m| FileMetadata {
+                path: p,
+                size: m.len(),
+                modified: m.modified().ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs()),
+                is_dir: m.is_dir(),
+            })
+        }));
+    }
+  
+    let mut results = Vec::new();
+    for handle in handles {
+        if let Ok(Ok(meta)) = handle.await {
+            results.push(meta);
+        }
+    }
+    Ok(results)
 }

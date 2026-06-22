@@ -78,3 +78,87 @@ pub fn set_config(config: AppConfig, state: tauri::State<ConfigState>, app_handl
     
     Ok(())
 }
+
+// ── Critical Config (Phase 0: Pre-render sync read) ──
+
+/// Pre-render critical config read synchronously from a small JSON file.
+/// NOT from SQLite — SQLite is too slow for pre-render.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CriticalConfig {
+    pub theme: String,
+    pub window_width: u32,
+    pub window_height: u32,
+    pub window_x: Option<i32>,
+    pub window_y: Option<i32>,
+    pub window_maximized: bool,
+    pub sidebar_width: u32,
+    pub sidebar_visible: bool,
+    pub terminal_visible: bool,
+    pub terminal_height: u32,
+    pub active_workspace: Option<String>,
+}
+
+impl Default for CriticalConfig {
+    fn default() -> Self {
+        Self {
+            theme: "system".to_string(),
+            window_width: 1200,
+            window_height: 800,
+            window_x: None,
+            window_y: None,
+            window_maximized: true,
+            sidebar_width: 240,
+            sidebar_visible: true,
+            terminal_visible: false,
+            terminal_height: 250,
+            active_workspace: None,
+        }
+    }
+}
+
+pub struct CriticalConfigState(pub Mutex<CriticalConfig>);
+
+/// Read critical config synchronously from critical.json in app_data_dir.
+/// Returns default if file doesn't exist or parse fails.
+pub fn read_critical_config(app_handle: &AppHandle) -> CriticalConfig {
+    let app_dir = app_handle.path().app_data_dir().expect("failed to get app data dir");
+    let path = app_dir.join("critical.json");
+    if path.exists() {
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(config) = serde_json::from_str(&content) {
+                return config;
+            }
+        }
+    }
+    CriticalConfig::default()
+}
+
+/// Save critical config to critical.json in app_data_dir.
+pub fn save_critical_config_to_file(app_handle: &AppHandle, config: &CriticalConfig) -> Result<(), String> {
+    let app_dir = app_handle.path().app_data_dir().expect("failed to get app data dir");
+    fs::create_dir_all(&app_dir).ok();
+    let path = app_dir.join("critical.json");
+    let content = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
+    fs::write(path, content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_critical_config(state: tauri::State<CriticalConfigState>) -> Result<CriticalConfig, String> {
+    let lock = state.0.lock().unwrap();
+    Ok(lock.clone())
+}
+
+#[tauri::command]
+pub fn save_critical_config(
+    config: CriticalConfig,
+    state: tauri::State<CriticalConfigState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let mut lock = state.0.lock().unwrap();
+    *lock = config.clone();
+    drop(lock);
+    save_critical_config_to_file(&app_handle, &config)?;
+    Ok(())
+}
+

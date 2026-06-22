@@ -22,9 +22,9 @@ function createTerminalStore() {
   const state = writable<TerminalState>({
     terminals: [],
     activeTerminalId: null,
-    isVisible: false,
-    isMaximized: false,
-    height: 250,
+    isVisible: typeof window !== 'undefined' ? localStorage.getItem('terminal_isVisible') === 'true' : false,
+    isMaximized: typeof window !== 'undefined' ? localStorage.getItem('terminal_isMaximized') === 'true' : false,
+    height: typeof window !== 'undefined' ? parseInt(localStorage.getItem('terminal_height') || '250', 10) : 250,
     isResizing: false
   });
 
@@ -53,7 +53,7 @@ function createTerminalStore() {
         const filtered = s.terminals.filter(t => t.id !== id);
         let activeId = s.activeTerminalId;
         if (activeId === id) {
-          activeId = filtered.length > 0 ? filtered[filtered.length - 1].id : null;
+          activeId = filtered.length > 0 ? filtered[0].id : null;
         }
         const v = filtered.length > 0 ? s.isVisible : false;
         if (s.isVisible !== v) localStorage.setItem('terminal_isVisible', String(v));
@@ -65,6 +65,7 @@ function createTerminalStore() {
         };
       });
     },
+    setTerminals: (terminals: TerminalInstance[], activeTerminalId: string | null) => update(() => ({ terminals, activeTerminalId })),
     setActive: (id: string) => update(() => ({ activeTerminalId: id })),
     setResizing: (val: boolean) => update(() => ({ isResizing: val })),
     toggleVisibility: () => state.update(s => {
