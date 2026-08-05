@@ -7,6 +7,7 @@ export interface TerminalInstance {
   name: string;
   type: TerminalType;
   cwd: string;
+  initialCommand?: string;
 }
 
 interface TerminalState {
@@ -38,11 +39,11 @@ function createTerminalStore() {
 
   return {
     subscribe: state.subscribe,
-    newTerminal: (type: TerminalType = 'powershell', cwd: string = '') => {
+    newTerminal: (type: TerminalType = 'powershell', cwd: string = '', options?: { initialCommand?: string; name?: string }) => {
       state.update(s => {
         const id = `term-${Date.now()}`;
-        const name = type === 'powershell' ? 'PowerShell' : 'Command Prompt';
-        const newTerm = { id, name: `${name} ${s.terminals.length + 1}`, type, cwd };
+        const name = options?.name || (type === 'powershell' ? 'PowerShell' : 'Command Prompt');
+        const newTerm = { id, name: `${name} ${s.terminals.length + 1}`, type, cwd, initialCommand: options?.initialCommand };
         localStorage.setItem('terminal_isVisible', 'true');
         return {
           ...s,
@@ -69,6 +70,12 @@ function createTerminalStore() {
         };
       });
     },
+    consumeInitialCommand: (id: string) => {
+      state.update(s => ({
+        ...s,
+        terminals: s.terminals.map(t => t.id === id ? { ...t, initialCommand: undefined } : t)
+      }));
+    },
     setTerminals: (terminals: TerminalInstance[], activeTerminalId: string | null) => update(() => ({ terminals, activeTerminalId })),
     setActive: (id: string) => update(() => ({ activeTerminalId: id })),
     setActivePanel: (panel: 'problems' | 'output' | 'terminal') => {
@@ -77,9 +84,11 @@ function createTerminalStore() {
         return { ...s, activePanel: panel, isVisible: true };
       });
     },
-    addOutputLog: (log: string) => update(s => {
-      const ts = new Date().toISOString().replace('T', ' ').substring(0, 23);
-      return { outputLogs: [...s.outputLogs, `${ts} [info] ${log}`] };
+    addOutputLog: (log: string, level: string = 'info') => update(s => {
+      const now = new Date();
+      // Format: YYYY-MM-DD HH:mm:ss.SSS
+      const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}.${String(now.getMilliseconds()).padStart(3, '0')}`;
+      return { outputLogs: [...s.outputLogs, `${ts} [${level}] ${log}`] };
     }),
     clearOutput: () => update(() => ({ outputLogs: [] })),
     setResizing: (val: boolean) => update(() => ({ isResizing: val })),

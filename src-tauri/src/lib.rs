@@ -9,6 +9,7 @@ mod symbol_index;
 mod watcher_service;
 mod workspace_cache;
 mod git_service;
+mod debug_adapter;
 
 use serde::Serialize;
 use tauri::{Manager, Emitter};
@@ -281,6 +282,7 @@ pub fn run() {
                 active_searches: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             });
             app.manage(git_service::GitState::new(app.handle()));
+            app.manage(debug_adapter::DebugState::new());
 
             // D.1 — Git detected ONCE at startup (background, non-blocking):
             // fix the macOS shell PATH first, then run the tiered detection and
@@ -417,6 +419,13 @@ pub fn run() {
             git_service::git_cancel_op,
             git_service::get_git_file_content,
             git_service::git_log,
+            git_service::get_commit_files,
+            // ── Module F — Run and Debug (DAP) ──
+            debug_adapter::debug_start_session,
+            debug_adapter::debug_send_message,
+            debug_adapter::debug_stop_session,
+            debug_adapter::debug_list_sessions,
+            debug_adapter::debug_detect_type,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

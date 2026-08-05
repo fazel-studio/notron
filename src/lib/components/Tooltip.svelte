@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
 
-  let { content, side = 'top', wrapperClass = '', followCursor = false, hoverDelay = 0, disabled = false, children }: { content: string; side?: 'top' | 'bottom' | 'left' | 'right'; wrapperClass?: string; followCursor?: boolean; hoverDelay?: number; disabled?: boolean; children: import('svelte').Snippet } = $props();
+  let { content = '', customContent, side = 'top', wrapperClass = '', followCursor = false, hoverDelay = 0, disabled = false, unstyled = false, pointerEvents = false, children }: { content?: string; customContent?: import('svelte').Snippet; side?: 'top' | 'bottom' | 'left' | 'right'; wrapperClass?: string; followCursor?: boolean; hoverDelay?: number; disabled?: boolean; unstyled?: boolean; pointerEvents?: boolean; children: import('svelte').Snippet } = $props();
   let visible = $state(false);
   let coords = $state({ x: 0, y: 0 });
   let tooltipElement = $state<HTMLDivElement>();
@@ -198,7 +198,19 @@
   });
 
   let positionClass = $derived.by(() => {
-    const classes: string[] = ['fixed', 'z-[2147483647]', 'm-0', 'max-w-[calc(100vw-12px)]', 'px-2', 'py-1', 'text-[10px]', 'rounded', 'shadow-xl', 'pointer-events-none'];
+    const classes: string[] = ['fixed', 'z-[2147483647]', 'm-0', 'max-w-[calc(100vw-12px)]'];
+    
+    if (unstyled) {
+      // Just positioning classes
+    } else {
+      classes.push('px-2', 'py-1', 'text-[10px]', 'rounded', 'shadow-xl', 'bg-surface-2', 'border', 'border-subtle', 'text-primary');
+    }
+    
+    if (!pointerEvents) {
+      classes.push('pointer-events-none');
+    } else {
+      classes.push('pointer-events-auto');
+    }
     
     if (!followCursor) {
       classes.push('whitespace-nowrap');
@@ -228,10 +240,23 @@
       use:portal
       popover="manual"
       role="tooltip"
-      class="{positionClass} bg-surface-2 border border-subtle text-primary"
+      class={positionClass}
       style="inset: auto; left: {coords.x}px; top: {coords.y}px; position: fixed; margin: 0; z-index: 2147483647; opacity: {measured ? 1 : 0};"
+      onmouseenter={() => {
+        if (pointerEvents) {
+          if (showTimer) clearTimeout(showTimer);
+          cancelled = false;
+        }
+      }}
+      onmouseleave={() => {
+        if (pointerEvents) handleMouseLeave();
+      }}
     >
-      {content}
+      {#if customContent}
+        {@render customContent()}
+      {:else}
+        {content}
+      {/if}
     </div>
   {/if}
 </div>

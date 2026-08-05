@@ -41,11 +41,44 @@
     // 5.1 — reacts to the Rust unified watcher's single `fs-change` event.
     // This listener owns ONLY the Explorer cache/tree; open-tab state
     // (delete / reload / rename) is handled by App.svelte's listener.
-    listen<{ changes: FsChangeItem[] }>('fs-change', async (event) => {
-      const { changes } = event.payload;
+    listen<{ changes: FsChangeItem[]; gitignoreChanged?: boolean }>('fs-change', async (event) => {
+      const { changes, gitignoreChanged } = event.payload;
       const expandedSnap = uiStore.getExpandedPathsSetSnapshot();
       const snap = uiStore.getSnapshot();
 
+      // ── .gitignore / .notronignore changed → full cache flush ──────────────
+      // gitignore rules affect is_ignored for EVERY file in the tree, not just
+      // the directory containing the changed file. Flush everything and re-read
+      // all currently-expanded directories to pick up new is_ignored values.
+      // This matches VS Code's behavior where all decorations update after a
+      // gitignore change.
+      if (gitignoreChanged) {
+        sharedNodeCache.clear();
+        // Re-read root first
+        if (sharedRootPath) {
+          try {
+            const node = await invoke<RawFileNode>('read_directory', {
+              path: sharedRootPath, showDotFiles: snap.showDotFiles,
+            });
+            sharedRootChildren = sortNodesSync(node.children ?? []);
+            sharedNodeCache.set(sharedRootPath, sharedRootChildren);
+          } catch {}
+        }
+        // Re-read all other expanded directories concurrently
+        const expandedArr = [...expandedSnap].filter(p => p !== sharedRootPath);
+        await Promise.all(expandedArr.map(async (p) => {
+          try {
+            const fullNode = await invoke<RawFileNode>('read_directory', {
+              path: p, showDotFiles: snap.showDotFiles,
+            });
+            sharedNodeCache.set(p, sortNodesSync(fullNode.children ?? []));
+          } catch {}
+        }));
+        if (onCacheUpdated) onCacheUpdated();
+        return; // normal per-file handling already included in re-read above
+      }
+
+      // ── Normal file-level change handling ──────────────────────────────────
       for (const change of changes) {
         switch (change.type) {
           case 'created':

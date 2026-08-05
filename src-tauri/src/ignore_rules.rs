@@ -266,6 +266,7 @@ pub fn workspace_walker(root: &Path, skip_hidden: bool, app_lines: &[String]) ->
 /// does NOT apply `.gitignore` or the app defaults, because search-only
 /// excludes (Layer 2) must stay visible in the Explorer. Only the workspace
 /// `.notronignore` and hidden-file handling hide entries here.
+#[allow(dead_code)]
 pub fn explorer_walker(root: &Path, skip_hidden: bool) -> ignore::WalkBuilder {
     let mut builder = ignore::WalkBuilder::new(root);
     builder

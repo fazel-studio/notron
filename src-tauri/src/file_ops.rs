@@ -1,4 +1,4 @@
-﻿use std::path::Path;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use encoding_rs::Encoding;
@@ -57,6 +57,10 @@ pub struct FileNode {
     pub is_dir: bool,
     pub has_children: bool,
     pub children: Option<Vec<FileNode>>,
+    /// True when this entry is matched by .gitignore (shown but visually dimmed,
+    /// exactly like VS Code's "ignored" decoration in the Explorer).
+    #[serde(default)]
+    pub is_ignored: bool,
 }
 
 const LARGE_FILE_THRESHOLD: u64 = 1_048_576; // 1MB
@@ -330,6 +334,7 @@ pub async fn read_directory(
         is_dir: true,
         has_children: !children.is_empty(),
         children: Some(children),
+        is_ignored: false,
     })
 }
 

@@ -45,6 +45,7 @@ function createGitRepoStore() {
 
   let _cwd: string | null = null;
   let _opId: string | null = null;
+  let refreshRepoTimeout: any = null;
   let unlistenStatus: (() => void) | null = null;
   let statusInFlight = false;
 
@@ -65,17 +66,29 @@ function createGitRepoStore() {
   }
 
   async function refreshRepo(cwd: string) {
-    if (!cwd || statusInFlight) return;
-    statusInFlight = true;
-    patch({ repoLoading: true, lastError: null });
-    try {
-      const repo = await getRepoState(cwd);
-      patch({ repo, repoLoading: false, cwd });
-    } catch (e) {
-      patch({ repoLoading: false, lastError: String(e) });
-    } finally {
-      statusInFlight = false;
-    }
+    if (!cwd) return;
+    
+    if (refreshRepoTimeout) clearTimeout(refreshRepoTimeout);
+    
+    return new Promise<void>((resolve) => {
+      refreshRepoTimeout = setTimeout(async () => {
+        if (statusInFlight) {
+          resolve();
+          return;
+        }
+        statusInFlight = true;
+        patch({ repoLoading: true, lastError: null });
+        try {
+          const repo = await getRepoState(cwd);
+          patch({ repo, repoLoading: false, cwd });
+        } catch (e) {
+          patch({ repoLoading: false, lastError: String(e) });
+        } finally {
+          statusInFlight = false;
+          resolve();
+        }
+      }, 300); // 300ms inherent debounce for ALL callers
+    });
   }
 
   async function refreshCommits(cwd: string) {
@@ -92,6 +105,10 @@ function createGitRepoStore() {
   async function setWorkspace(cwd: string | null) {
     if (cwd === _cwd) return;
     _cwd = cwd;
+
+    const { terminalStore } = await import('./terminal');
+    terminalStore.addOutputLog(`[main] Log level: Info`);
+
     if (!cwd) {
       patch({ repo: null, commits: [], syncingOp: null, progress: null, cwd: null });
       return;
@@ -99,8 +116,17 @@ function createGitRepoStore() {
     patch({ cwd, repo: null, commits: [] });
     const availability = await detect();
     if (availability?.status === 'Available') {
+      terminalStore.addOutputLog(`[main] Validating found git in: "${availability.path}"`);
+      terminalStore.addOutputLog(`[main] Using git "${availability.version}" from "${availability.path}"`);
+      terminalStore.addOutputLog(`[Model][doInitialScan] Initial repository scan started`);
+
       await refreshRepo(cwd);
       await refreshCommits(cwd);
+
+      // Count repositories
+      let repCount = 0;
+      subscribe(s => { if (s.repo && s.repo.status === 'Repo') repCount = 1; })();
+      terminalStore.addOutputLog(`[Model][doInitialScan] Initial repository scan completed - repositories (${repCount}), closed repositories (0), parent repositories (0), unsafe repositories (0)`);
     } else {
       patch({ repo: null, repoLoading: false });
     }
@@ -111,9 +137,35 @@ function createGitRepoStore() {
 
     init: () => {
       if (unlistenStatus) return;
-      listen<unknown>('git-status-refresh', () => {
-        if (_cwd) refreshRepo(_cwd);
+      let timeoutId: any = null;
+
+      // D.7 — react to Rust watcher's git-status-refresh event.
+      // Debounce: 400ms (VSCode-equivalent responsiveness).
+      // Fast-path: if gitignoreChanged, refresh immediately because
+      // gitignore changes directly alter which files are tracked/untracked.
+      listen<{ gitignoreChanged?: boolean }>('git-status-refresh', (e) => {
+        if (!_cwd) return;
+        const payload = e.payload ?? {};
+        if (payload.gitignoreChanged) {
+          // No extra debounce — gitignore change means git status changed NOW.
+          if (timeoutId) clearTimeout(timeoutId);
+          refreshRepo(_cwd);
+        } else {
+          if (timeoutId) clearTimeout(timeoutId);
+          timeoutId = setTimeout(() => {
+            refreshRepo(_cwd!);
+          }, 400);
+        }
       }).then(un => (unlistenStatus = un));
+      
+      listen<string>('git-output', async (e) => {
+        const { terminalStore } = await import('./terminal');
+        terminalStore.addOutputLog(e.payload, 'info');
+      });
+      listen<string>('git-output-warning', async (e) => {
+        const { terminalStore } = await import('./terminal');
+        terminalStore.addOutputLog(e.payload, 'warning');
+      });
     },
 
     setWorkspace,

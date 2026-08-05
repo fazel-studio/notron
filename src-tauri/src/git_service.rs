@@ -117,6 +117,7 @@ pub struct RepoState {
     pub conflicted: Vec<GitFileStatus>,
     #[serde(default)]
     pub last_fetched_ms: Option<u64>,
+    pub remote_url: Option<String>,
 }
 
 impl RepoState {
@@ -132,6 +133,7 @@ impl RepoState {
             untracked: vec![],
             conflicted: vec![],
             last_fetched_ms: None,
+            remote_url: None,
         }
     }
     fn fresh() -> Self {
@@ -146,6 +148,7 @@ impl RepoState {
             untracked: vec![],
             conflicted: vec![],
             last_fetched_ms: Some(now_ms()),
+            remote_url: None,
         }
     }
 }
@@ -223,9 +226,13 @@ fn now_ms() -> u64 {
 
 // ── Command runner ──────────────────────────────────────────────────────────
 
-/// Run a git command without any fancy streaming. Returns the raw Output; the
-/// caller inspects `status`.
-async fn run_git_raw(git: &str, args: &[&str], cwd: Option<&str>) -> Result<std::process::Output, std::io::Error> {
+async fn run_git_raw(
+    git: &str,
+    args: &[&str],
+    cwd: Option<&str>,
+    app: Option<&AppHandle>,
+) -> Result<std::process::Output, std::io::Error> {
+    let start = std::time::Instant::now();
     let mut cmd = Command::new(git);
     if let Ok(path_env) = std::env::var("PATH") {
         cmd.env("PATH", path_env);
@@ -234,7 +241,29 @@ async fn run_git_raw(git: &str, args: &[&str], cwd: Option<&str>) -> Result<std:
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
-    cmd.output().await
+    let res = cmd.output().await;
+    let duration = start.elapsed().as_millis();
+    if let Some(app) = app {
+        let is_spammy = args.starts_with(&["rev-parse", "--is-inside-work-tree"]) 
+            || args.starts_with(&["config", "--get", "remote.origin.url"]);
+        
+        if !is_spammy {
+            let cmd_str = format!("> git {} [{}ms]", args.join(" "), duration);
+            let _ = app.emit("git-output", cmd_str);
+        }
+
+        if let Err(ref e) = res {
+            let _ = app.emit("git-output-warning", format!("[Git][config] git {} failed: {}", args[0], e));
+        } else if let Ok(ref out) = res {
+            if !out.status.success() {
+                let err_msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                if !err_msg.is_empty() {
+                    let _ = app.emit("git-output-warning", format!("[Git][config] git {} failed: {}", args[0], err_msg));
+                }
+            }
+        }
+    }
+    res
 }
 
 /// Run a git command; on success return stdout text (lossy). On spawn failure
@@ -244,8 +273,9 @@ async fn run_git(
     args: &[&str],
     cwd: &str,
     state: &GitState,
+    app: Option<&AppHandle>,
 ) -> Result<String, String> {
-    match run_git_raw(git, args, Some(cwd)).await {
+    match run_git_raw(git, args, Some(cwd), app).await {
         Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).to_string()),
         Ok(out) => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
         Err(e) => {
@@ -370,7 +400,7 @@ async fn detect_macos_xcode() -> Option<String> {
 }
 
 async fn git_version(path: &str) -> Option<String> {
-    match run_git_raw(path, &["--version"], None).await {
+    match run_git_raw(path, &["--version"], None, None).await {
         Ok(out) if out.status.success() => {
             Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
         }
@@ -515,25 +545,32 @@ fn abs_path(cwd: &str, rel: &str) -> String {
     Path::new(cwd).join(rel).to_string_lossy().into_owned()
 }
 
-/// Priority used for folder rollups (D.7.3): Conflict > Deleted >
-/// Added/Untracked > Modified > Renamed > everything else.
+/// Priority used for folder rollups (D.7.3): exact VSCode order:
+/// Conflict(!) > Deleted(D) > Added(A, staged new) > Untracked(U) > Modified(M) > Renamed(R) > Copied(C) > other.
+/// This matches VS Code's scm/git decoration provider priority exactly.
 fn code_priority(code: &str) -> u8 {
     match code {
-        "Conflict" => 6,
-        "D" => 5,
-        "A" | "U" => 4,
-        "M" => 3,
-        "R" | "C" => 2,
-        _ => 1,
+        "Conflict" => 7,
+        "D"        => 6,
+        "A"        => 5,  // staged new file — higher than untracked
+        "U"        => 4,  // untracked new file
+        "M"        => 3,
+        "R"        => 2,
+        "C"        => 1,
+        _          => 0,
     }
 }
 
 /// D.7.3 — For every changed file, mark every ancestor folder (relative to the
 /// workspace root) with the highest-priority decoration present underneath it.
-/// Folders keep a single badge (most significant code), like VS Code.
+/// Folders keep a single badge (most significant code), matching VS Code exactly.
 fn add_folder_rollups(decorations: &mut HashMap<String, GitDecoration>) {
-    let leaves: Vec<(String, GitDecoration)> =
-        decorations.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    // Collect all leaf entries (files, not rollup folders) before mutating.
+    let leaves: Vec<(String, GitDecoration)> = decorations
+        .iter()
+        .filter(|(_, v)| !v.is_rollup)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
 
     let mut rollups: HashMap<String, (u8, GitDecoration)> = HashMap::new();
     for (rel, dec) in leaves {
@@ -542,9 +579,10 @@ fn add_folder_rollups(decorations: &mut HashMap<String, GitDecoration>) {
             continue;
         }
         let mut comps: Vec<&str> = normalized.split('/').collect();
-        comps.pop(); // drop the leaf itself
+        comps.pop(); // drop the leaf filename itself
         let mut prefix = String::new();
         for comp in comps {
+            if comp.is_empty() { continue; }
             if prefix.is_empty() {
                 prefix = comp.to_string();
             } else {
@@ -554,7 +592,7 @@ fn add_folder_rollups(decorations: &mut HashMap<String, GitDecoration>) {
             let prio = code_priority(&dec.code);
             let keep_existing = rollups
                 .get(&prefix)
-                .map(|(existing, _)| *existing >= prio)
+                .map(|(existing_prio, _)| *existing_prio >= prio)
                 .unwrap_or(false);
             if !keep_existing {
                 rollups.insert(
@@ -563,7 +601,7 @@ fn add_folder_rollups(decorations: &mut HashMap<String, GitDecoration>) {
                         prio,
                         GitDecoration {
                             code: dec.code.clone(),
-                            staged: false,
+                            staged: dec.staged,
                             index_code: None,
                             worktree_code: None,
                             renamed_from: None,
@@ -576,7 +614,7 @@ fn add_folder_rollups(decorations: &mut HashMap<String, GitDecoration>) {
     }
 
     for (folder, (_, dec)) in rollups {
-        // A real file/dir entry wins over a computed rollup.
+        // A real file/dir leaf entry wins over a computed rollup.
         decorations.entry(folder).or_insert(dec);
     }
 }
@@ -684,7 +722,7 @@ pub async fn get_repo_state(
     };
 
     // D.2 — cheap gate before any heavy work.
-    let inside = match run_git_raw(&git, &["rev-parse", "--is-inside-work-tree"], Some(&cwd)).await {
+    let inside = match run_git_raw(&git, &["rev-parse", "--is-inside-work-tree"], Some(&cwd), Some(&app)).await {
         Ok(out) => out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true",
         Err(e) => {
             if e.kind() == IoErrorKind::NotFound {
@@ -702,7 +740,7 @@ pub async fn get_repo_state(
 
     // D.2 + D.7.1 — ONE exec for branch + ahead/behind + every file state.
     // -M enables rename detection (porcelain v2 otherwise reports R as A+D).
-    let out = match run_git_raw(&git, &["status", "--porcelain=v2", "--branch", "-z", "-M"], Some(&cwd)).await {
+    let out = match run_git_raw(&git, &["status", "--porcelain=v2", "--branch", "-z", "-M"], Some(&cwd), Some(&app)).await {
         Ok(out) => out,
         Err(e) => {
             if e.kind() == IoErrorKind::NotFound {
@@ -720,6 +758,17 @@ pub async fn get_repo_state(
     let entries: Vec<&str> = stdout.split('\0').filter(|s| !s.is_empty()).collect();
 
     let mut repo = RepoState::fresh();
+    
+    // Attempt to get remote_url
+    if let Ok(url_out) = run_git_raw(&git, &["config", "--get", "remote.origin.url"], Some(&cwd), Some(&app)).await {
+        if url_out.status.success() {
+            let url = String::from_utf8_lossy(&url_out.stdout).trim().to_string();
+            if !url.is_empty() {
+                repo.remote_url = Some(url);
+            }
+        }
+    }
+
     let mut rel_decorations: HashMap<String, GitDecoration> = HashMap::new();
 
     let mut i = 0;
@@ -979,39 +1028,39 @@ pub async fn git_cancel_op(op_id: String, state: State<'_, GitState>) -> Result<
 // ---- Basic operations ----
 
 #[tauri::command]
-pub async fn git_init(cwd: String, state: State<'_, GitState>) -> Result<(), String> {
+pub async fn git_init(app: AppHandle, cwd: String, state: State<'_, GitState>) -> Result<(), String> {
     let git = state.git_command().ok_or("Git is not available")?;
-    run_git(&git, &["init"], &cwd, &state).await.map(|_| ())
+    run_git(&git, &["init"], &cwd, &state, Some(&app)).await.map(|_| ())
 }
 
 #[tauri::command]
-pub async fn git_stage(cwd: String, path: String, state: State<'_, GitState>) -> Result<(), String> {
-    let git = state.git_command().ok_or("Git is not available")?;
-    let path = if path.trim() == "." { ".".to_string() } else { path };
-    run_git(&git, &["add", "--", &path], &cwd, &state).await.map(|_| ())
-}
-
-#[tauri::command]
-pub async fn git_unstage(cwd: String, path: String, state: State<'_, GitState>) -> Result<(), String> {
+pub async fn git_stage(app: AppHandle, cwd: String, path: String, state: State<'_, GitState>) -> Result<(), String> {
     let git = state.git_command().ok_or("Git is not available")?;
     let path = if path.trim() == "." { ".".to_string() } else { path };
-    run_git(&git, &["restore", "--staged", "--", &path], &cwd, &state).await.map(|_| ())
+    run_git(&git, &["add", "--", &path], &cwd, &state, Some(&app)).await.map(|_| ())
 }
 
 #[tauri::command]
-pub async fn git_commit(cwd: String, message: String, state: State<'_, GitState>) -> Result<(), String> {
+pub async fn git_unstage(app: AppHandle, cwd: String, path: String, state: State<'_, GitState>) -> Result<(), String> {
+    let git = state.git_command().ok_or("Git is not available")?;
+    let path = if path.trim() == "." { ".".to_string() } else { path };
+    run_git(&git, &["restore", "--staged", "--", &path], &cwd, &state, Some(&app)).await.map(|_| ())
+}
+
+#[tauri::command]
+pub async fn git_commit(app: AppHandle, cwd: String, message: String, state: State<'_, GitState>) -> Result<(), String> {
     let git = state.git_command().ok_or("Git is not available")?;
     if message.trim().is_empty() {
         return Err("Commit message is empty".to_string());
     }
-    run_git(&git, &["commit", "-m", &message], &cwd, &state).await.map(|_| ())
+    run_git(&git, &["commit", "-m", &message], &cwd, &state, Some(&app)).await.map(|_| ())
 }
 
 /// Discard all local changes (staged + unstaged) for a path back to HEAD.
 #[tauri::command]
-pub async fn git_discard(cwd: String, path: String, state: State<'_, GitState>) -> Result<(), String> {
+pub async fn git_discard(app: AppHandle, cwd: String, path: String, state: State<'_, GitState>) -> Result<(), String> {
     let git = state.git_command().ok_or("Git is not available")?;
-    run_git(&git, &["restore", "--source=HEAD", "--staged", "--worktree", "--", &path], &cwd, &state)
+    run_git(&git, &["restore", "--source=HEAD", "--staged", "--worktree", "--", &path], &cwd, &state, Some(&app))
         .await
         .map(|_| ())
 }
@@ -1064,49 +1113,91 @@ pub struct GitLogEntry {
     pub hash: String,
     pub message: String,
     pub author: String,
+    pub email: String,
+    pub date: String,
     pub refs: String,
+    pub stats: String,
 }
 
 #[tauri::command]
-pub async fn get_git_file_content(
-    cwd: String,
-    path: String,
-    revision: String,
-    state: State<'_, GitState>,
-) -> Result<String, String> {
+pub async fn get_git_file_content(app: AppHandle, cwd: String, path: String, revision: String, state: State<'_, GitState>) -> Result<String, String> {
     let git = state.git_command().ok_or("Git is not available")?;
     let rel_path = path.replace("\\", "/");
     let target = format!("{}:{}", revision, rel_path);
-    run_git(&git, &["show", &target], &cwd, &state).await
+    run_git(&git, &["show", &target], &cwd, &state, Some(&app)).await
 }
 
 #[tauri::command]
-pub async fn git_log(
-    cwd: String,
-    limit: Option<u32>,
-    offset: Option<u32>,
-    state: State<'_, GitState>,
-) -> Result<Vec<GitLogEntry>, String> {
+pub async fn get_commit_files(app: AppHandle, cwd: String, hash: String, state: State<'_, GitState>) -> Result<Vec<GitFileStatus>, String> {
+    let git = state.git_command().ok_or("Git is not available")?;
+    
+    let stdout = run_git(&git, &["show", "--name-status", "--pretty=format:", &hash], &cwd, &state, Some(&app)).await?;
+
+    let mut files = Vec::new();
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let status = match parts[0].chars().next().unwrap_or('M') {
+                'M' => "M",
+                'A' => "A",
+                'D' => "D",
+                'R' => "R",
+                'C' => "C",
+                'U' => "U",
+                _ => "M"
+            };
+            
+            let path = parts[1..].join(" ");
+            
+            files.push(GitFileStatus {
+                path,
+                status: status.to_string(),
+                staged: false,
+            });
+        }
+    }
+    
+    Ok(files)
+}
+
+#[tauri::command]
+pub async fn git_log(app: AppHandle, cwd: String, limit: Option<u32>, offset: Option<u32>, state: State<'_, GitState>) -> Result<Vec<GitLogEntry>, String> {
     let git = state.git_command().ok_or("Git is not available")?;
     let limit_str = limit.unwrap_or(50).to_string();
-    let mut args: Vec<&str> = vec!["log", "--pretty=format:%h%x00%s%x00%an%x00%D", "-n", &limit_str];
+    let mut args: Vec<&str> = vec!["log", "--shortstat", "--pretty=format:<C>%h%x00%s%x00%an%x00%ae%x00%at%x00%D", "-n", &limit_str];
     let skip_str;
     if let Some(skip) = offset.filter(|s| *s > 0) {
         skip_str = skip.to_string();
         args.push("--skip");
         args.push(&skip_str);
     }
-    let stdout = run_git(&git, &args, &cwd, &state).await?;
+    let stdout = run_git(&git, &args, &cwd, &state, Some(&app)).await?;
 
     let mut entries = Vec::new();
-    for line in stdout.lines() {
-        let parts: Vec<&str> = line.split('\0').collect();
-        if parts.len() >= 3 {
+    let blocks: Vec<&str> = stdout.split("<C>").collect();
+    
+    for block in blocks {
+        let block = block.trim();
+        if block.is_empty() { continue; }
+        
+        let mut lines = block.lines();
+        let header = lines.next().unwrap_or("");
+        let stats_line = lines.next().unwrap_or("").trim();
+        
+        let parts: Vec<&str> = header.split('\0').collect();
+        if parts.len() >= 5 {
             entries.push(GitLogEntry {
                 hash: parts[0].to_string(),
                 message: parts[1].to_string(),
                 author: parts[2].to_string(),
-                refs: parts.get(3).unwrap_or(&"").to_string(),
+                email: parts[3].to_string(),
+                date: parts[4].to_string(),
+                refs: parts.get(5).unwrap_or(&"").to_string(),
+                stats: stats_line.to_string(),
             });
         }
     }

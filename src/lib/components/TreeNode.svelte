@@ -57,6 +57,26 @@
   const iconTheme = $derived(settingsStore.effectiveSettings.icon_theme);
   const gitDecoration = $derived($gitDecorationStore[node.path]);
 
+  /**
+   * The badge label shown to the right of the filename, exactly like VSCode:
+   * - Files: U / A / M / D / R / C / ! (conflict)
+   * - Folders (rollup): same character representing worst status inside
+   */
+  const gitBadgeChar = $derived((() => {
+    if (!gitDecoration) return '';
+    const code = gitDecoration.code;
+    if (code === 'Conflict') return '!';
+    return code; // U, A, M, D, R, C — all shown verbatim like VSCode
+  })());
+
+  /**
+   * A gitignored entry (node.is_ignored) is shown but visually dimmed,
+   * exactly like VS Code does. If the file has an active git status badge
+   * (gitDecoration), that takes priority — a modified gitignored file is
+   * yellow, not grey.
+   */
+  const isGitIgnored = $derived(node.is_ignored === true && !gitDecoration);
+
   function handleClick(e: MouseEvent) {
     e.stopPropagation();
     onFileClick(e, node);
@@ -95,6 +115,7 @@
   class:drop-target={isDropTarget}
   class:drop-invalid={isDropInvalid}
   class:creating-child={isCreatingChild}
+  class:opacity-60={isGitIgnored && !isActive}
   onclick={handleClick}
   onkeydown={handleKeyDown}
   oncontextmenu={handleContextMenu}
@@ -119,7 +140,16 @@
   </span>
 
   {#if node.is_dir}
-    <span class="shrink-0 flex items-center text-accent">
+    <!-- Folder icon: inherits git color when decorated, otherwise uses accent -->
+    <span
+      class="shrink-0 flex items-center"
+      class:text-accent={!gitDecoration && !isGitIgnored || isActive}
+      class:text-muted={isGitIgnored && !gitDecoration && !isActive}
+      class:text-green-400={!isActive && !!gitDecoration && (gitDecoration.code === 'U' || gitDecoration.code === 'A' || gitDecoration.code === 'R' || gitDecoration.code === 'C')}
+      class:text-yellow-400={!isActive && gitDecoration?.code === 'M'}
+      class:text-red-400={!isActive && gitDecoration?.code === 'D'}
+      class:text-purple-400={!isActive && gitDecoration?.code === 'Conflict'}
+    >
       {#if iconTheme === 'default' || !iconTheme}
         {#if node.isExpanded}
           <FolderOpen size={14} />
@@ -129,10 +159,16 @@
       {/if}
     </span>
   {:else}
+    <!-- File icon: inherits git color when decorated -->
     <span
       class="shrink-0 flex items-center"
       class:text-icon-active={isActive}
-      class:text-icon-default={!isActive}
+      class:text-icon-default={!isActive && !gitDecoration && !isGitIgnored}
+      class:text-icon-muted={isGitIgnored && !gitDecoration && !isActive}
+      class:text-green-400={!isActive && !!gitDecoration && (gitDecoration.code === 'U' || gitDecoration.code === 'A' || gitDecoration.code === 'R' || gitDecoration.code === 'C')}
+      class:text-yellow-400={!isActive && gitDecoration?.code === 'M'}
+      class:text-red-400={!isActive && gitDecoration?.code === 'D'}
+      class:text-purple-400={!isActive && gitDecoration?.code === 'Conflict'}
     >
       {#if iconTheme === 'default' || !iconTheme}
         {@const Icon = getFileIcon(node.name)}
@@ -141,37 +177,45 @@
     </span>
   {/if}
 
+  <!-- Filename: colored by git status exactly like VSCode -->
   <span
     class="truncate min-w-0 flex-1"
     class:text-primary={isActive}
-    class:text-secondary={!isActive}
-    class:text-green-400={!isActive && (gitDecoration?.code === 'U' || gitDecoration?.code === 'A' || gitDecoration?.code === 'R')}
+    class:text-secondary={!isActive && !gitDecoration && !isGitIgnored}
+    class:text-muted={isGitIgnored && !gitDecoration && !isActive}
+    class:text-green-400={!isActive && !!gitDecoration && (gitDecoration.code === 'U' || gitDecoration.code === 'A' || gitDecoration.code === 'R' || gitDecoration.code === 'C')}
     class:text-yellow-400={!isActive && gitDecoration?.code === 'M'}
-    class:text-red-400={!isActive && (gitDecoration?.code === 'D' || gitDecoration?.code === 'Conflict')}
+    class:text-red-400={!isActive && gitDecoration?.code === 'D'}
+    class:text-purple-400={!isActive && gitDecoration?.code === 'Conflict'}
   >
     {node.name}
   </span>
   
+  <!-- Git badge: shown to the right like VSCode -->
   {#if gitDecoration}
     {#if gitDecoration.is_rollup}
+      <!-- Folder rollup badge: pill-shaped like VSCode folder decoration -->
       {@const rollupTone =
-        gitDecoration.code === 'U' || gitDecoration.code === 'A' || gitDecoration.code === 'R'
-          ? 'border-green-500/50 text-green-500'
+        gitDecoration.code === 'U' || gitDecoration.code === 'A' || gitDecoration.code === 'R' || gitDecoration.code === 'C'
+          ? 'border-green-500/50 text-green-400'
           : gitDecoration.code === 'M'
-            ? 'border-yellow-500/50 text-yellow-500'
+            ? 'border-yellow-500/50 text-yellow-400'
             : gitDecoration.code === 'D'
-              ? 'border-red-500/50 text-red-500'
+              ? 'border-red-500/50 text-red-400'
               : gitDecoration.code === 'Conflict'
-                ? 'border-purple-500/50 text-purple-500'
+                ? 'border-purple-500/50 text-purple-400'
                 : 'border-subtle text-muted'}
-      <span class="shrink-0 text-[10px] font-bold px-1.5 rounded-full border text-center ml-1 {rollupTone}">{gitDecoration.code === 'Conflict' ? '!' : gitDecoration.code === 'U' ? 'N' : gitDecoration.code}</span>
+      <span class="shrink-0 text-[10px] font-bold px-1.5 rounded-full border text-center ml-1 {rollupTone}">{gitBadgeChar}</span>
     {:else}
-      <span class="shrink-0 text-[10px] font-bold w-3 text-center ml-1"
-        class:text-green-500={gitDecoration.code === 'U' || gitDecoration.code === 'A' || gitDecoration.code === 'R'}
-        class:text-yellow-500={gitDecoration.code === 'M'}
-        class:text-red-500={gitDecoration.code === 'D' || gitDecoration.code === 'Conflict'}
+      <!-- File badge: single character flush-right like VSCode -->
+      <span
+        class="shrink-0 text-[10px] font-bold w-3.5 text-right ml-1"
+        class:text-green-400={gitDecoration.code === 'U' || gitDecoration.code === 'A' || gitDecoration.code === 'R' || gitDecoration.code === 'C'}
+        class:text-yellow-400={gitDecoration.code === 'M'}
+        class:text-red-400={gitDecoration.code === 'D'}
+        class:text-purple-400={gitDecoration.code === 'Conflict'}
       >
-        {gitDecoration.code === 'Conflict' ? 'C' : gitDecoration.code}
+        {gitBadgeChar}
       </span>
     {/if}
   {/if}

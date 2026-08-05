@@ -6,7 +6,7 @@
   import { themeStore } from '../stores/theme';
   import 'xterm/css/xterm.css';
 
-  let { tabId, type, cwd } = $props<{ tabId: string, type: 'powershell' | 'cmd', cwd: string }>();
+  let { tabId, type, cwd, initialCommand } = $props<{ tabId: string, type: 'powershell' | 'cmd', cwd: string, initialCommand?: string }>();
 
   let isDark = $derived($themeStore.isDark);
 
@@ -54,6 +54,11 @@
         if (!ptyProcess) return;
         ptyProcess.write(data);
       });
+
+      if (initialCommand?.trim()) {
+        ptyProcess.write(initialCommand.endsWith('\n') ? initialCommand : `${initialCommand}\r\n`);
+        terminalStore.consumeInitialCommand(tabId);
+      }
     } catch (e) {
       term.writeln(`\r\n[Failed to spawn PTY shell: ${e}]`);
     }

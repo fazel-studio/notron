@@ -1,0 +1,7 @@
+{
+  "name": "notron-js-debug-dap",
+  "version": "1.117.0",
+  "private": true,
+  "description": "Bundled vscode-js-debug standalone DAP server (strategy A). Keep CommonJS: the workspace root package.json sets type:module.",
+  "type": "commonjs"
+}

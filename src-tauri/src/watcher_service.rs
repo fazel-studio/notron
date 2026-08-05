@@ -46,6 +46,11 @@ pub struct FsChangeItem {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FsChangePayload {
     pub changes: Vec<FsChangeItem>,
+    /// True when any changed file is `.gitignore` or `.notronignore`.
+    /// The frontend should flush and re-scan the full Explorer cache when this
+    /// is set — gitignore rules change affects every subdirectory's `is_ignored`.
+    #[serde(rename = "gitignoreChanged", default)]
+    pub gitignore_changed: bool,
 }
 
 pub struct WatcherState {
@@ -325,18 +330,25 @@ pub async fn start_fs_watch(
                                     }
                                 }
 
-                                let payload = FsChangePayload { changes };
+                                let gitignore_changed = changes.iter().any(|c| {
+                                    let p = std::path::Path::new(&c.path);
+                                    matches!(p.file_name().and_then(|n| n.to_str()),
+                                        Some(".gitignore" | ".notronignore"))
+                                });
+                                let payload = FsChangePayload { changes, gitignore_changed };
 
                                 // 5.1 fan-out (2): notify the webview (tree + tabs).
                                 let _ = app_clone.emit("fs-change", &payload);
 
                                 // 5.1 fan-out (3): hint Git status refresh.
+                                // If gitignore changed, refresh immediately (no extra delay)
+                                // because gitignore changes directly affect git status.
                                 let _ = app_clone.emit("git-status-refresh", &payload);
                             }
                         } else {
                             // Only .git internals changed (e.g. external checkout):
                             // Source Control refresh only, no Explorer churn (D.7.5).
-                            let _ = app_clone.emit("git-status-refresh", &FsChangePayload { changes: vec![] });
+                            let _ = app_clone.emit("git-status-refresh", &FsChangePayload { changes: vec![], gitignore_changed: false });
                         }
                     }
                 }

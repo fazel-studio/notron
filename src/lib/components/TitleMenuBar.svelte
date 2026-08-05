@@ -234,6 +234,11 @@
             closeAll();
           }
         },
+        { label: 'Problems', action: () => {
+            terminalStore.setActivePanel('problems');
+            closeAll();
+          }
+        },
         { label: 'Output', action: () => {
             terminalStore.setActivePanel('output');
             closeAll();

@@ -22,6 +22,8 @@ export interface FlatTreeNode {
   isExpanded: boolean;
   /** Whether this directory has children (determines expand arrow) */
   has_children: boolean;
+  /** True when this entry is gitignored — shown but dimmed like VS Code. */
+  is_ignored?: boolean;
   /** Is this a temporary node for the creation input? */
   is_creating?: boolean;
   /** Type of item being created */
@@ -34,6 +36,8 @@ export interface RawFileNode {
   is_dir: boolean;
   has_children?: boolean;
   children?: RawFileNode[];
+  /** True when matched by .gitignore — shown but dimmed like VS Code. */
+  is_ignored?: boolean;
 }
 
 /**
@@ -75,6 +79,7 @@ export function flattenTree(
       is_dir: node.is_dir,
       isExpanded,
       has_children,
+      is_ignored: node.is_ignored,
     });
 
     if (isExpanded) {

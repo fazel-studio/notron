@@ -3,7 +3,7 @@ import { writable } from 'svelte/store';
 interface UiState {
   isSidebarOpen: boolean;
   sidebarWidth: number;
-  activeSidebarPanel: 'explorer' | 'search' | 'git' | 'extensions';
+  activeSidebarPanel: 'explorer' | 'search' | 'git' | 'extensions' | 'debug';
   explorerRoot: string | null;
   selectedExplorerPath: string | null;
   creatingItem: { type: 'file' | 'folder'; parentPath: string } | null;

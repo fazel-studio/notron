@@ -1,9 +1,12 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { terminalStore, type TerminalType } from '../stores/terminal';
   import { uiStore } from '../stores/ui';
   import { editorStore } from '../stores/editor';
+  import { invoke } from '@tauri-apps/api/core';
   import TerminalInstance from './TerminalInstance.svelte';
   import Tooltip from './Tooltip.svelte';
+  import DropdownMenu from './DropdownMenu.svelte';
   const termStore = terminalStore;
   const { activeTabId } = editorStore;
   
@@ -11,6 +14,69 @@
   let prevTabId = $state<string | null>(null);
   let outputSearch = $state('');
   let outputCategory = $state('Git');
+
+  let outputContainer = $state<HTMLDivElement | null>(null);
+  let isAtBottom = $state(true);
+
+  function onOutputScroll() {
+    if (!outputContainer) return;
+    const { scrollTop, scrollHeight, clientHeight } = outputContainer;
+    isAtBottom = Math.abs(scrollHeight - clientHeight - scrollTop) < 10;
+  }
+
+  let logsLength = $derived(outputCategory === 'Git' ? $termStore.outputLogs.length : 0);
+  $effect(() => {
+    // Re-run whenever logsLength changes
+    logsLength;
+    if (isAtBottom && outputContainer) {
+      setTimeout(() => {
+        if (outputContainer) {
+          outputContainer.scrollTop = outputContainer.scrollHeight;
+        }
+      }, 0);
+    }
+  });
+
+  const outputCategoryItems = [
+    { label: 'Git', action: () => outputCategory = 'Git' },
+    { label: 'Window', action: () => outputCategory = 'Window' },
+    { label: 'Extension Host', action: () => outputCategory = 'Extension Host' },
+    { label: 'ESLint', action: () => outputCategory = 'ESLint' }
+  ];
+
+  async function openProblem(filePath: string, line: number, col: number) {
+    try {
+      const root = uiStore.getSnapshot().explorerRoot || '';
+      const fullPath = `${root}\\${filePath.replace(/\//g, '\\')}`;
+      const name = filePath.split(/[\/\\]/).pop() || 'Unknown';
+      let content = null;
+      
+      const tabs = editorStore.getTabsSnapshot();
+      let tabExists = tabs.some((t: any) => t.path === fullPath);
+
+      if (!tabExists) {
+        const result: any = await invoke('open_file', { path: fullPath });
+        content = result.content;
+      }
+      
+      const language = await invoke<string>('detect_language', { path: fullPath }).catch(() => 'plaintext');
+      
+      if (!tabExists) {
+        editorStore.addTab({ id: fullPath, path: fullPath, name, content, language, isPreview: true });
+      } else {
+        editorStore.setActiveTab(fullPath);
+      }
+      
+      setTimeout(() => {
+        editorStore.updateCursor(fullPath, line, col, col);
+        window.dispatchEvent(new CustomEvent('editor:action', {
+          detail: { action: 'goto', line, column: col, endColumn: col }
+        }));
+      }, 50);
+    } catch (err) {
+      console.error("Failed to open problem file", err);
+    }
+  }
 
   $effect(() => {
     // Un-maximize when switching tabs
@@ -20,6 +86,12 @@
       if ($termStore.isMaximized) {
         terminalStore.setMaximize(false);
       }
+    }
+  });
+
+  $effect(() => {
+    if ($termStore.activePanel === 'terminal' && $termStore.isVisible && $termStore.terminals.length === 0) {
+      untrack(() => createTerminal('powershell'));
     }
   });
 
@@ -55,7 +127,7 @@
 
 <div 
   class="flex flex-col border-t border-subtle bg-surface-2 transition-all z-40 relative"
-  class:hidden={!$termStore.isVisible || $termStore.terminals.length === 0}
+  class:hidden={!$termStore.isVisible}
   class:flex-1={$termStore.isMaximized}
   style="{$termStore.isMaximized ? '' : `height: ${$termStore.height}px`};"
 >
@@ -149,6 +221,20 @@
         {/if}
         
         {#if $termStore.activePanel === 'output'}
+        <div class="relative flex items-center h-full mr-2">
+          <input type="text" placeholder="Filter" class="bg-surface border border-subtle text-[11px] pl-6 pr-2 py-0.5 rounded w-40 text-primary outline-none placeholder-muted" bind:value={outputSearch} />
+          <svg class="absolute left-1.5 top-1.5 w-3 h-3 text-muted" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        </div>
+        {#snippet categoryTrigger()}
+          <button class="flex items-center gap-1 px-1.5 py-0.5 hover:bg-hover rounded text-[11px] text-secondary hover:text-primary transition-colors h-full">
+            {outputCategory}
+            <svg class="w-3 h-3 opacity-70" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+        {/snippet}
+        <DropdownMenu items={outputCategoryItems} trigger={categoryTrigger} align="right" />
+        
+        <div class="w-px h-4 bg-subtle mx-1"></div>
+
         <Tooltip content="Clear Output" side="top">
           <button 
             aria-label="Clear Output" 
@@ -190,7 +276,8 @@
 
     <!-- Body -->
     <div class="flex-1 flex overflow-hidden">
-      {#if $termStore.activePanel === 'terminal'}
+      <!-- Terminal Panel -->
+      <div class="flex-1 flex overflow-hidden" class:hidden={$termStore.activePanel !== 'terminal'}>
       <!-- Active Terminal Content -->
       <div class="flex-1 overflow-hidden relative">
         {#if $termStore.terminals.length === 0}
@@ -208,7 +295,7 @@
             class:z-10={$termStore.activeTerminalId === term.id}
             class:-z-10={$termStore.activeTerminalId !== term.id}
           >
-            <TerminalInstance tabId={term.id} type={term.type} cwd={term.cwd} />
+            <TerminalInstance tabId={term.id} type={term.type} cwd={term.cwd} initialCommand={term.initialCommand} />
           </div>
         {/each}
       </div>
@@ -239,76 +326,86 @@
           {/each}
         </div>
       {/if}
-      {:else if $termStore.activePanel === 'output'}
-        <div class="flex-1 flex flex-col overflow-hidden">
-          <div class="flex items-center p-2 gap-2 border-b border-subtle shrink-0">
-            <select bind:value={outputCategory} class="bg-surface border border-subtle text-xs px-2 py-1 rounded text-primary outline-none">
-              <option value="Git">Git</option>
-              <option value="Window">Window</option>
-              <option value="Extension Host">Extension Host</option>
-              <option value="ESLint">ESLint</option>
-            </select>
-            <div class="relative">
-              <input type="text" placeholder="Filter" class="bg-surface border border-subtle text-xs pl-6 pr-2 py-1 rounded w-64 text-primary outline-none placeholder-muted" bind:value={outputSearch} />
-              <svg class="absolute left-2 top-1.5 w-3 h-3 text-muted" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-            </div>
-          </div>
-          <div class="flex-1 overflow-y-auto p-4 font-mono text-[11px] text-secondary whitespace-pre-wrap select-text">
+      </div>
+
+      <!-- Output Panel -->
+      <div class="flex-1 flex flex-col overflow-hidden" class:hidden={$termStore.activePanel !== 'output'}>
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+          <div bind:this={outputContainer} onscroll={onOutputScroll} tabindex="0" onpaste={(e) => e.preventDefault()} class="flex-1 overflow-y-auto p-4 font-mono text-[11px] text-secondary whitespace-pre-wrap select-text selectable overscroll-none">
             {#each (outputCategory === 'Git' ? $termStore.outputLogs : []).filter(log => !outputSearch || log.toLowerCase().includes(outputSearch.toLowerCase())) as log}
-              <div class="mb-1">{log}</div>
+              <div class="mb-1 selectable">{log}</div>
             {/each}
             {#if (outputCategory === 'Git' ? $termStore.outputLogs : []).length === 0}
-              <div class="text-muted italic">No output to display.</div>
+              <div class="text-muted italic selectable">No output to display.</div>
             {/if}
           </div>
         </div>
-      {:else if $termStore.activePanel === 'problems'}
-        <div class="flex-1 overflow-y-auto font-mono text-[11px] text-secondary select-text py-2">
+
+      <!-- Problems Panel -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <div tabindex="0" onpaste={(e) => e.preventDefault()} class="flex-1 overflow-y-auto font-mono text-[11px] text-secondary select-text selectable overscroll-none py-2" class:hidden={$termStore.activePanel !== 'problems'}>
           <!-- Dummy Data matching the reference image -->
-          <div class="flex items-center gap-1.5 px-4 py-1 hover:bg-hover cursor-pointer">
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="flex items-center gap-1.5 px-4 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/App.svelte', 1, 1)}>
             <svg class="w-3.5 h-3.5 text-secondary rotate-90" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
             <span class="text-orange-500 font-bold font-sans">S</span>
             <span class="text-primary">App.svelte</span>
             <span class="text-muted">src</span>
             <span class="text-muted flex items-center justify-center rounded-full border border-subtle w-4 h-4 text-[9px] ml-1">3</span>
           </div>
-          <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer">
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/App.svelte', 1590, 50)}>
             <svg class="w-3.5 h-3.5 text-yellow-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
             <span class="truncate">The class <code class="text-primary font-bold min-w-0">`min-w-[200px]`</code> can be written as <code class="text-primary font-bold min-w-0">`min-w-50`</code> <span class="text-muted">tailwindcss(suggestCanonicalClasses)</span> <span class="text-muted">[Ln 1590, Col 50]</span></span>
           </div>
-          <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer">
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/App.svelte', 1649, 18)}>
             <svg class="w-3.5 h-3.5 text-yellow-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
             <span class="truncate">The class <code class="text-primary font-bold min-w-0">`min-w-[160px]`</code> can be written as <code class="text-primary font-bold min-w-0">`min-w-40`</code> <span class="text-muted">tailwindcss(suggestCanonicalClasses)</span> <span class="text-muted">[Ln 1649, Col 18]</span></span>
           </div>
-          <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer">
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/App.svelte', 1649, 64)}>
             <svg class="w-3.5 h-3.5 text-yellow-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
             <span class="truncate">The class <code class="text-primary font-bold min-w-0">`z-[100]`</code> can be written as <code class="text-primary font-bold min-w-0">`z-100`</code> <span class="text-muted">tailwindcss(suggestCanonicalClasses)</span> <span class="text-muted">[Ln 1649, Col 64]</span></span>
           </div>
 
-          <div class="flex items-center gap-1.5 px-4 py-1 hover:bg-hover cursor-pointer mt-1">
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="flex items-center gap-1.5 px-4 py-1 hover:bg-hover cursor-pointer mt-1" onclick={() => openProblem('src/lib/components/SearchPanel.svelte', 1, 1)}>
             <svg class="w-3.5 h-3.5 text-secondary rotate-90" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
             <span class="text-orange-500 font-bold font-sans">S</span>
             <span class="text-primary">SearchPanel.svelte</span>
             <span class="text-muted">src\lib\components</span>
             <span class="text-muted flex items-center justify-center rounded-full border border-subtle w-4 h-4 text-[9px] ml-1">4</span>
           </div>
-          <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer">
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/lib/components/SearchPanel.svelte', 423, 64)}>
             <svg class="w-3.5 h-3.5 text-yellow-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
             <span class="truncate">The class <code class="text-primary font-bold min-w-0">`py-[3px]`</code> can be written as <code class="text-primary font-bold min-w-0">`py-0.75`</code> <span class="text-muted">tailwindcss(suggestCanonicalClasses)</span> <span class="text-muted">[Ln 423, Col 64]</span></span>
           </div>
-          <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer">
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/lib/components/SearchPanel.svelte', 425, 93)}>
             <svg class="w-3.5 h-3.5 text-yellow-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
             <span class="truncate">The class <code class="text-primary font-bold min-w-0">`mt-[1px]`</code> can be written as <code class="text-primary font-bold min-w-0">`mt-px`</code> <span class="text-muted">tailwindcss(suggestCanonicalClasses)</span> <span class="text-muted">[Ln 425, Col 93]</span></span>
           </div>
-          <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer">
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/lib/components/SearchPanel.svelte', 428, 82)}>
             <svg class="w-3.5 h-3.5 text-yellow-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
             <span class="truncate">The class <code class="text-primary font-bold min-w-0">`rounded-[2px]`</code> can be written as <code class="text-primary font-bold min-w-0">`rounded-xs`</code> <span class="text-muted">tailwindcss(suggestCanonicalClasses)</span> <span class="text-muted">[Ln 428, Col 82]</span></span>
           </div>
-          <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer">
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/lib/components/SearchPanel.svelte', 428, 96)}>
             <svg class="w-3.5 h-3.5 text-yellow-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
             <span class="truncate">The class <code class="text-primary font-bold min-w-0">`px-[1px]`</code> can be written as <code class="text-primary font-bold min-w-0">`px-px`</code> <span class="text-muted">tailwindcss(suggestCanonicalClasses)</span> <span class="text-muted">[Ln 428, Col 96]</span></span>
           </div>
         </div>
-      {/if}
+      </div>
     </div>
-  </div>

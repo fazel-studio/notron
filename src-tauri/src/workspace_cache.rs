@@ -109,38 +109,87 @@ impl WorkspaceCache {
     }
 }
 
-/// Blocking one-level directory scan with the shared ignore rules. Runs inside
-/// spawn_blocking so it never blocks the webview / event loop (0.1).
+/// Blocking one-level directory scan. Runs inside spawn_blocking so it never
+/// blocks the webview / event loop (0.1).
 ///
-/// Ignore model (Module E): only Layer 1 (`EXPLORER_HARD_EXCLUDE`), the
-/// workspace `.notronignore` and hidden-file handling apply here. `.gitignore`
-/// and `search.exclude` deliberately do NOT hide entries from the Explorer, so
-/// folders like `node_modules` stay visible and manually expandable (E.3).
-pub fn scan_dir_blocking(path: &str, show_dot: bool) -> Result<Vec<FileNode>, String> {
+/// **VS Code parity (Module E overhaul):**
+///
+/// VS Code Explorer shows ALL dot-files by default (`.gitignore`, `.github`,
+/// `.env`, etc.). Only the hard-exclude list (`.git`, `.svn`, `.DS_Store`, …)
+/// is hidden. The old `ignore` crate `hidden()` flag was incorrectly hiding
+/// every dot-prefixed file regardless — this is now fixed.
+///
+/// Additionally, each entry is checked against the workspace `.gitignore`
+/// (via the `ignore` crate) and the result is stored in `FileNode::is_ignored`
+/// so the frontend can render them with a dimmed colour like VS Code does.
+pub fn scan_dir_blocking(path: &str, _show_dot_files: bool) -> Result<Vec<crate::file_ops::FileNode>, String> {
     let dir = std::path::Path::new(path);
     if !dir.is_dir() {
         return Err("Path is not a directory".to_string());
     }
 
-    let mut children = Vec::new();
-    let mut walker = ignore_rules::explorer_walker(dir, !show_dot);
-    let mut walk = walker.max_depth(Some(1)).build();    while let Some(entry) = walk.next() {
-        let Ok(entry) = entry else { continue };
-        if entry.path() == dir {
-            continue;
+    // Build a gitignore matcher by walking up to find the workspace root.
+    // We accumulate all .gitignore files found along the way (git semantics).
+    let gitignore: Option<ignore::gitignore::Gitignore> = {
+        let mut root = dir.to_path_buf();
+        let mut workspace_root: Option<std::path::PathBuf> = None;
+        for _ in 0..20 {
+            if root.join(".git").exists() {
+                workspace_root = Some(root.clone());
+                break;
+            }
+            if root.join(".gitignore").exists() && workspace_root.is_none() {
+                workspace_root = Some(root.clone());
+            }
+            if !root.pop() { break; }
         }
+        
+        workspace_root.map(|wr| {
+            let mut builder = ignore::gitignore::GitignoreBuilder::new(&wr);
+            // Add root .gitignore
+            let _ = builder.add(wr.join(".gitignore"));
+            // Add .git/info/exclude if exists
+            let _ = builder.add(wr.join(".git").join("info").join("exclude"));
+            // Add any nested .gitignore along the path from root to dir
+            let mut cur = dir.to_path_buf();
+            while cur != wr {
+                let gi = cur.join(".gitignore");
+                if gi.exists() {
+                    let _ = builder.add(&gi);
+                }
+                if !cur.pop() { break; }
+            }
+            builder.build().unwrap_or(ignore::gitignore::Gitignore::empty())
+        })
+    };
+
+    let mut children = Vec::new();
+
+    let read_dir = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in read_dir.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
+
+        // Always hide Layer-1 hard-excluded names (`.git`, `.svn`, etc.).
         if ignore_rules::is_explorer_hard_excluded(&name) {
             continue;
         }
 
+        let entry_path = entry.path();
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        children.push(FileNode {
+
+        // Check if this entry is gitignored (shown but dimmed, like VS Code).
+        let is_ignored = gitignore
+            .as_ref()
+            .map(|gi| gi.matched(&entry_path, is_dir).is_ignore())
+            .unwrap_or(false);
+
+        children.push(crate::file_ops::FileNode {
             name,
-            path: entry.path().to_string_lossy().into_owned(),
+            path: entry_path.to_string_lossy().into_owned(),
             is_dir,
             has_children: is_dir,
             children: None,
+            is_ignored,
         });
     }
 
@@ -160,6 +209,7 @@ fn node_for_dir(path: &str, children: Vec<FileNode>) -> FileNode {
         is_dir: true,
         has_children: !children.is_empty(),
         children: Some(children),
+        is_ignored: false,
     }
 }
 

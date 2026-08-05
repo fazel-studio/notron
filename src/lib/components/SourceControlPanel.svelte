@@ -1,11 +1,12 @@
 <script lang="ts">
   import { uiStore } from '../stores/ui';
   import { editorStore } from '../stores/editor';
+  import { terminalStore } from '../stores/terminal';
   import { invoke } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
   import { gitRepoStore } from '../stores/gitRepo';
   import type { GitFileStatus } from '../services/git';
-  import { Plus, Minus, RefreshCw, Upload, Download, Loader2, FileText, ChevronDown, ChevronRight, GitBranch, MoreHorizontal, Target, Cloud, Undo2, Settings, X } from 'lucide-svelte';
+  import { Plus, Minus, RefreshCw, Upload, Download, Loader2, FileText, ChevronDown, ChevronRight, GitBranch, MoreHorizontal, Target, Cloud, Undo2, Settings, X, Check, Copy } from 'lucide-svelte';
   import Tooltip from './Tooltip.svelte';
   import { getFileIcon } from './TreeNode.svelte';
   import { settingsStore } from '../stores/settings.svelte';
@@ -22,9 +23,39 @@
   // Split view states
   let changesVisible = $state(true);
   let graphVisible = $state(true);
+  
+  let showChangesMenu = $state(false);
+  let isChangesTreeView = $state(false);
+
+  let showGraphMenu = $state(false);
+  let isGraphTreeView = $state(false);
+
+  let expandedCommit = $state<string | null>(null);
+  let expandedCommitFiles = $state<import('../services/git').GitFileStatus[]>([]);
+  let expandedCommitLoading = $state(false);
+
+  async function toggleCommitExpansion(commitHash: string) {
+    if (expandedCommit === commitHash) {
+      expandedCommit = null;
+    } else {
+      expandedCommit = commitHash;
+      expandedCommitLoading = true;
+      if ($gitRepoStore.cwd) {
+        expandedCommitFiles = await getCommitFiles($gitRepoStore.cwd, commitHash);
+      }
+      expandedCommitLoading = false;
+    }
+  }
+
+  // Resize state
   let changesFlex = $state(1);
   let graphFlex = $state(1);
   let isResizing = $state(false);
+
+  function openGitOutput() {
+    terminalStore.setActivePanel('output');
+    terminalStore.setVisibility(true);
+  }
 
   let availability = $derived($gitRepoStore.availability);
   let repo = $derived($gitRepoStore.repo);
@@ -134,7 +165,7 @@
     showManualPath = false;
   }
 
-  import { getGitFileContent } from '../services/git';
+  import { getGitFileContent, getCommitFiles } from '../services/git';
 
   async function openFile(file: GitFileStatus) {
     if (!$ui.explorerRoot) return;
@@ -170,39 +201,29 @@
   }
 
   const statusCodeColor = (code: string) => {
-    if (code === 'A' || code === 'U' || code === 'R' || code === 'C') return 'text-green-500';
-    if (code === 'M') return 'text-yellow-500';
-    if (code === 'D') return 'text-red-500';
-    if (code === 'Conflict') return 'text-purple-500';
+    if (code === 'A' || code === 'U' || code === 'R' || code === 'C') return 'text-green-400';
+    if (code === 'M') return 'text-yellow-400';
+    if (code === 'D') return 'text-red-400';
+    if (code === 'Conflict') return 'text-purple-400';
     return 'text-muted';
   };
 
-  onMount(() => {
-    gitRepoStore.init();
-    gitRepoStore.setWorkspace($ui.explorerRoot);
+  /** Returns the badge character matching VSCode and TreeNode conventions. */
+  const statusBadgeChar = (code: string) => {
+    if (code === 'Conflict') return '!';
+    return code;
+  };
 
-    const focusListener = () => {
-      gitRepoStore.refreshRepoOnly();
-    };
-    window.addEventListener('focus', focusListener);
+  onMount(() => {
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
 
     return () => {
-      window.removeEventListener('focus', focusListener);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
     };
   });
 
-  // Watch for workspace changes
-  let lastRoot = $ui.explorerRoot;
-  $effect(() => {
-    if ($ui.explorerRoot !== lastRoot) {
-      lastRoot = $ui.explorerRoot;
-      gitRepoStore.setWorkspace($ui.explorerRoot);
-    }
-  });
 </script>
 
 <div class="flex flex-col h-full bg-surface">
@@ -268,32 +289,40 @@
   {:else if repo}
     <!-- Git Actions Header -->
     <div class="p-3 border-b border-subtle flex flex-col gap-2 bg-surface">
-      <div class="flex items-center justify-between mb-1">
-        <span class="text-xs font-semibold text-primary">Source Control</span>
+      <div class="flex items-center justify-between mb-1 relative">
+        <span class="text-xs font-semibold text-primary">CHANGES</span>
         <div class="flex items-center gap-1">
-          <Tooltip content="Fetch">
-            <button onclick={handleFetch} disabled={syncing} class="p-1 rounded hover:bg-hover text-icon-default disabled:opacity-50">
+          <Tooltip content="Refresh">
+            <button onclick={handleRedetect} disabled={syncing} class="p-1 rounded hover:bg-hover text-icon-default disabled:opacity-50">
               <RefreshCw class="w-3.5 h-3.5 {syncing ? 'animate-spin' : ''}" />
             </button>
           </Tooltip>
-          <Tooltip content="Pull">
-            <button onclick={handlePull} disabled={syncing} class="p-1 rounded hover:bg-hover text-icon-default disabled:opacity-50">
-              <Download class="w-3.5 h-3.5" />
+          <Tooltip content="More Actions">
+            <button onclick={() => showChangesMenu = !showChangesMenu} class="p-1 rounded hover:bg-hover text-icon-default">
+              <MoreHorizontal class="w-3.5 h-3.5" />
             </button>
           </Tooltip>
-          <Tooltip content="Push">
-            <button onclick={handlePush} disabled={syncing} class="p-1 rounded hover:bg-hover text-icon-default disabled:opacity-50">
-              <Upload class="w-3.5 h-3.5" />
-            </button>
-          </Tooltip>
-          {#if syncing}
-            <Tooltip content="Cancel">
-              <button onclick={handleCancelSync} class="p-1 rounded hover:bg-hover text-red-500">
-                <X class="w-3.5 h-3.5" />
-              </button>
-            </Tooltip>
-          {/if}
         </div>
+        {#if showChangesMenu}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="fixed inset-0 z-40" onclick={() => showChangesMenu = false}></div>
+          <div class="absolute right-0 top-6 z-50 w-48 bg-surface border border-subtle rounded shadow-elevated flex flex-col py-1 text-xs text-primary">
+            <button onclick={() => { isChangesTreeView = false; showChangesMenu = false; }} class="flex items-center px-3 py-1.5 hover:bg-hover transition-colors">
+              <span class="w-4 flex justify-center shrink-0 mr-1">{#if !isChangesTreeView}<Check class="w-3.5 h-3.5" />{/if}</span>
+              View as List
+            </button>
+            <button onclick={() => { isChangesTreeView = true; showChangesMenu = false; }} class="flex items-center px-3 py-1.5 hover:bg-hover transition-colors">
+              <span class="w-4 flex justify-center shrink-0 mr-1">{#if isChangesTreeView}<Check class="w-3.5 h-3.5" />{/if}</span>
+              View as Tree
+            </button>
+            <div class="h-px bg-subtle my-1"></div>
+            <button onclick={() => { openGitOutput(); showChangesMenu = false; }} class="flex items-center px-3 py-1.5 hover:bg-hover transition-colors">
+              <span class="w-4 flex justify-center shrink-0 mr-1"></span>
+              View Git Output
+            </button>
+          </div>
+        {/if}
       </div>
       
       <div class="relative">
@@ -312,12 +341,12 @@
       <button
         onclick={handleCommit}
         disabled={isCommitting || !commitMessage.trim() || repo.staged.length === 0}
-        class="flex items-center justify-center gap-2 w-full py-1.5 bg-accent hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed text-on-accent rounded text-xs transition-colors font-medium"
+        class="flex items-center justify-center gap-2 w-full py-2 mt-1 bg-accent hover:bg-accent-hover disabled:bg-surface-2 disabled:text-muted disabled:cursor-not-allowed text-on-accent rounded text-sm transition-colors font-medium border disabled:border-subtle border-transparent"
       >
-        {#if isCommitting || repoLoading}
-          <Loader2 class="w-3.5 h-3.5 animate-spin" />
+        {#if isCommitting}
+          <Loader2 class="w-4 h-4 animate-spin" />
         {/if}
-        Commit
+        <span>Commit</span>
       </button>
 
       {#if syncing && progress}
@@ -344,11 +373,6 @@
 
       <!-- Top Section: CHANGES -->
       <div class="flex flex-col overflow-hidden" style="flex: {changesVisible ? changesFlex : 0}; min-height: {changesVisible ? '40px' : '0'}; display: {changesVisible ? 'flex' : 'none'};">
-        <div role="button" tabindex="0" class="flex items-center px-2 py-1 bg-surface-2 border-b border-subtle cursor-pointer hover:bg-hover shrink-0" onclick={() => changesVisible = !changesVisible} onkeydown={(e) => { if (e.key === 'Enter') changesVisible = !changesVisible; }}>
-          <ChevronDown class="w-3.5 h-3.5 mr-1 text-icon-default" />
-          <span class="text-xs font-semibold uppercase text-secondary">Changes</span>
-          <span class="ml-auto bg-surface-3 rounded-full px-1.5 py-0.5 text-[10px]">{repo.staged.length + repo.unstaged.length + repo.conflicted.length}</span>
-        </div>
 
         <div class="flex-1 overflow-y-auto">
           {#if repo.conflicted.length > 0}
@@ -361,9 +385,9 @@
                 <div role="button" tabindex="0" class="flex items-center justify-between px-3 py-1 hover:bg-hover group cursor-pointer h-8" onclick={() => openFile(file)} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') openFile(file); }}>
                   <div class="flex items-center gap-2 overflow-hidden flex-1">
                     {#if settingsStore.effectiveSettings.icon_theme !== 'off'}
-                      <Icon size={14} class="text-icon-default shrink-0" />
+                      <Icon size={14} class="text-purple-400 shrink-0" />
                     {/if}
-                    <span class="text-sm truncate text-primary">{file.path.split('/').pop()}</span>
+                    <span class="text-sm truncate text-purple-400">{file.path.split('/').pop()}</span>
                     <span class="text-xs text-muted truncate">{file.path.split('/').slice(0, -1).join('/')}</span>
                   </div>
                   <div class="flex items-center gap-2 shrink-0">
@@ -374,7 +398,7 @@
                         </button>
                       </Tooltip>
                     </div>
-                    <span class="text-[10px] w-4 text-center shrink-0 font-bold text-purple-500">C</span>
+                    <span class="text-[10px] w-4 text-center shrink-0 font-bold text-purple-400">!</span>
                   </div>
                 </div>
               {/each}
@@ -398,9 +422,9 @@
                 <div role="button" tabindex="0" class="flex items-center justify-between px-3 py-1 hover:bg-hover group cursor-pointer h-8" onclick={() => openFile(file)} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') openFile(file); }}>
                   <div class="flex items-center gap-2 overflow-hidden flex-1">
                     {#if settingsStore.effectiveSettings.icon_theme !== 'off'}
-                      <Icon size={14} class="text-icon-default shrink-0" />
+                      <Icon size={14} class="{statusCodeColor(file.status)} shrink-0" />
                     {/if}
-                    <span class="text-sm truncate text-primary">{file.path.split('/').pop()}</span>
+                    <span class="text-sm truncate {statusCodeColor(file.status)}">{file.path.split('/').pop()}</span>
                     <span class="text-xs text-muted truncate">{file.path.split('/').slice(0, -1).join('/')}</span>
                   </div>
                   <div class="flex items-center gap-2 shrink-0">
@@ -416,7 +440,7 @@
                         </button>
                       </Tooltip>
                     </div>
-                    <span class="text-[10px] w-4 text-center shrink-0 font-bold {statusCodeColor(file.status)}">{file.status === 'Conflict' ? 'C' : file.status}</span>
+                    <span class="text-[10px] w-4 text-center shrink-0 font-bold {statusCodeColor(file.status)}">{statusBadgeChar(file.status)}</span>
                   </div>
                 </div>
               {/each}
@@ -440,9 +464,9 @@
                 <div role="button" tabindex="0" class="flex items-center justify-between px-3 py-1 hover:bg-hover group cursor-pointer h-8" onclick={() => openFile(file)} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') openFile(file); }}>
                   <div class="flex items-center gap-2 overflow-hidden flex-1">
                     {#if settingsStore.effectiveSettings.icon_theme !== 'off'}
-                      <Icon size={14} class="text-icon-default shrink-0" />
+                      <Icon size={14} class="{statusCodeColor(file.status)} shrink-0" />
                     {/if}
-                    <span class="text-sm truncate text-primary">{file.path.split('/').pop()}</span>
+                    <span class="text-sm truncate {statusCodeColor(file.status)}">{file.path.split('/').pop()}</span>
                     <span class="text-xs text-muted truncate">{file.path.split('/').slice(0, -1).join('/')}</span>
                   </div>
                   <div class="flex items-center gap-2 shrink-0">
@@ -463,7 +487,7 @@
                         </button>
                       </Tooltip>
                     </div>
-                    <span class="text-[10px] w-4 text-center shrink-0 font-bold {statusCodeColor(file.status)}">{file.status === 'Conflict' ? 'C' : file.status}</span>
+                    <span class="text-[10px] w-4 text-center shrink-0 font-bold {statusCodeColor(file.status)}">{statusBadgeChar(file.status)}</span>
                   </div>
                 </div>
               {/each}
@@ -475,9 +499,9 @@
                   <div role="button" tabindex="0" class="flex items-center justify-between px-3 py-1 hover:bg-hover group cursor-pointer h-8" onclick={() => openFile(file)} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') openFile(file); }}>
                     <div class="flex items-center gap-2 overflow-hidden flex-1">
                       {#if settingsStore.effectiveSettings.icon_theme !== 'off'}
-                        <Icon size={14} class="text-icon-default shrink-0" />
+                        <Icon size={14} class="text-green-400 shrink-0" />
                       {/if}
-                      <span class="text-sm truncate text-primary">{file.path.split('/').pop()}</span>
+                      <span class="text-sm truncate text-green-400">{file.path.split('/').pop()}</span>
                       <span class="text-xs text-muted truncate">{file.path.split('/').slice(0, -1).join('/')}</span>
                     </div>
                     <div class="flex items-center gap-2 shrink-0">
@@ -488,7 +512,7 @@
                           </button>
                         </Tooltip>
                       </div>
-                      <span class="text-[10px] w-4 text-center shrink-0 font-bold text-green-500">U</span>
+                      <span class="text-[10px] w-4 text-center shrink-0 font-bold text-green-400">U</span>
                     </div>
                   </div>
                 {/each}
@@ -528,41 +552,203 @@
 
       <!-- Bottom Section: GRAPH -->
       <div class="flex flex-col overflow-hidden" style="flex: {graphVisible ? graphFlex : 0}; min-height: {graphVisible ? '40px' : '0'}; display: {graphVisible ? 'flex' : 'none'};">
-        <div class="flex items-center justify-between px-2 py-1 bg-surface-2 border-b border-y border-subtle shrink-0">
+        <div class="flex items-center justify-between px-2 py-1 bg-surface-2 border-b border-y border-subtle shrink-0 relative">
           <div role="button" tabindex="0" class="flex items-center cursor-pointer hover:bg-hover flex-1" onclick={() => graphVisible = !graphVisible} onkeydown={(e) => { if (e.key === 'Enter') graphVisible = !graphVisible; }}>
             <ChevronDown class="w-3.5 h-3.5 mr-1 text-icon-default" />
             <span class="text-xs font-semibold uppercase text-secondary">Graph</span>
           </div>
           <div class="flex items-center gap-1 shrink-0">
-            <Tooltip content="Fetch"><button onclick={handleFetch} disabled={syncing} class="p-1 rounded hover:bg-hover text-icon-default"><RefreshCw class="w-3.5 h-3.5 {syncing ? 'animate-spin' : ''}" /></button></Tooltip>
-            <Tooltip content="More Actions"><button class="p-1 rounded hover:bg-hover text-icon-default"><MoreHorizontal class="w-3.5 h-3.5" /></button></Tooltip>
+            <Tooltip content="Refresh Graph">
+              <button onclick={handleRedetect} disabled={syncing} class="p-1 rounded hover:bg-hover text-icon-default disabled:opacity-50">
+                <RefreshCw class="w-3.5 h-3.5 {syncing ? 'animate-spin' : ''}" />
+              </button>
+            </Tooltip>
+            <Tooltip content="Fetch All Remotes">
+              <button onclick={handleFetch} disabled={syncing} class="p-1 rounded hover:bg-hover text-icon-default disabled:opacity-50">
+                <Cloud class="w-3.5 h-3.5" />
+              </button>
+            </Tooltip>
+            <Tooltip content="Pull">
+              <button onclick={handlePull} disabled={syncing} class="p-1 rounded hover:bg-hover text-icon-default disabled:opacity-50">
+                <Download class="w-3.5 h-3.5" />
+              </button>
+            </Tooltip>
+            <Tooltip content="Push">
+              <button onclick={handlePush} disabled={syncing} class="p-1 rounded hover:bg-hover text-icon-default disabled:opacity-50">
+                <Upload class="w-3.5 h-3.5" />
+              </button>
+            </Tooltip>
+            {#if syncing}
+              <Tooltip content="Cancel">
+                <button onclick={handleCancelSync} class="p-1 rounded hover:bg-hover text-red-500">
+                  <X class="w-3.5 h-3.5" />
+                </button>
+              </Tooltip>
+            {/if}
+            <Tooltip content="More Actions">
+              <button class="p-1 rounded hover:bg-hover text-icon-default" onclick={(e) => { e.stopPropagation(); showGraphMenu = !showGraphMenu; }}>
+                <MoreHorizontal class="w-3.5 h-3.5" />
+              </button>
+            </Tooltip>
           </div>
+          {#if showGraphMenu}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div class="fixed inset-0 z-40" onclick={() => showGraphMenu = false}></div>
+            <div class="absolute right-0 top-8 z-50 w-48 bg-surface border border-subtle rounded shadow-elevated flex flex-col py-1 text-xs text-primary">
+              <button onclick={() => { isGraphTreeView = false; showGraphMenu = false; }} class="flex items-center px-3 py-1.5 hover:bg-hover transition-colors">
+                <span class="w-4 flex justify-center shrink-0 mr-1">{#if !isGraphTreeView}<Check class="w-3.5 h-3.5" />{/if}</span>
+                View as List
+              </button>
+              <button onclick={() => { isGraphTreeView = true; showGraphMenu = false; }} class="flex items-center px-3 py-1.5 hover:bg-hover transition-colors">
+                <span class="w-4 flex justify-center shrink-0 mr-1">{#if isGraphTreeView}<Check class="w-3.5 h-3.5" />{/if}</span>
+                View as Tree
+              </button>
+            </div>
+          {/if}
         </div>
         <div class="flex-1 overflow-y-auto bg-surface relative">
           {#if commits.length > 0}
             <div class="absolute left-[21px] top-0 bottom-0 w-[2px] bg-subtle z-0"></div>
             {#each commits as commit}
-              <div class="flex items-center px-3 py-1 hover:bg-hover group cursor-pointer gap-2 h-7 relative z-10">
-                <div class="flex items-center justify-center w-5 h-5 shrink-0 bg-surface rounded-full">
-                  <div class="w-2 h-2 rounded-full border-2 border-accent bg-surface z-10"></div>
-                </div>
-                <div class="flex items-center flex-1 overflow-hidden">
-                  <span class="text-xs text-primary truncate font-medium flex-1">{commit.message}</span>
-                  {#if commit.refs}
-                    <div class="ml-2 flex items-center gap-1 shrink-0">
-                      {#each commit.refs.split(', ') as ref}
-                        {#if ref.includes('origin/')}
-                          <span class="flex items-center gap-0.5 text-[9px] border border-purple-500/50 text-purple-400 bg-purple-500/10 rounded-full px-1.5 py-0.5 whitespace-nowrap"><Cloud class="w-2.5 h-2.5" /> {ref.replace('origin/', '')}</span>
-                        {:else if ref.includes('HEAD')}
-                          <span class="flex items-center gap-0.5 text-[9px] border border-accent/50 text-accent bg-accent/10 rounded-full px-1.5 py-0.5 whitespace-nowrap"><Target class="w-2.5 h-2.5" /> {ref}</span>
+              <div class="flex flex-col">
+                <!-- Commit Row -->
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <Tooltip 
+                  side="right" 
+                  unstyled={true} 
+                  pointerEvents={true}
+                  hoverDelay={400}
+                  wrapperClass="flex w-full items-center px-3 py-1 hover:bg-hover group cursor-pointer gap-2 h-7 relative z-10"
+                >
+                  {#snippet customContent()}
+                    <!-- svelte-ignore a11y_click_events_have_key_events -->
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <div class="w-[360px] bg-surface-2 border border-subtle rounded-md shadow-xl flex flex-col pointer-events-auto cursor-default text-primary relative ml-2" onclick={(e) => e.stopPropagation()}>
+                      <!-- Arrow (placed behind container to hide its right half) -->
+                      <div class="absolute -left-[6px] top-1/2 -translate-y-1/2 w-3 h-3 bg-surface-2 border-l border-b border-subtle rotate-45 -z-10 rounded-sm"></div>
+                      
+                      <!-- Header & Body -->
+                      <div class="p-3 flex flex-col gap-2 relative z-10 rounded-t-md">
+                        <!-- Top Row: Name, email, date -->
+                        <div class="flex items-baseline gap-2 flex-wrap">
+                          <a href="mailto:{commit.email}" class="text-[13px] font-semibold text-accent hover:underline">{commit.author}</a>
+                          <span class="text-[10px] text-muted ml-auto">
+                            {new Date(parseInt(commit.date) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} {new Date(parseInt(commit.date) * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        
+                        <!-- Commit Message (Multi-line) -->
+                        <div class="text-xs leading-relaxed whitespace-pre-wrap font-medium">
+                          {commit.message}
+                        </div>
+                      </div>
+                      
+                      <!-- Line -->
+                      <div class="h-px w-full bg-subtle"></div>
+                      
+                      <!-- Stats -->
+                      <div class="px-3 py-2 text-[11px] text-muted font-medium bg-surface-2">
+                        {#if commit.stats}
+                          {commit.stats}
                         {:else}
-                          <span class="flex items-center gap-0.5 text-[9px] border border-green-500/50 text-green-400 bg-green-500/10 rounded-full px-1.5 py-0.5 whitespace-nowrap"><GitBranch class="w-2.5 h-2.5" /> {ref}</span>
+                          0 files changed
                         {/if}
-                      {/each}
+                      </div>
+
+                      <!-- Line -->
+                      <div class="h-px w-full bg-subtle"></div>
+                      
+                      <!-- Footer hashes -->
+                      <div class="px-3 py-2 bg-surface-3/30 border-t border-subtle rounded-b-md flex items-center gap-2 text-[11px] relative z-10 group/hash">
+                        <span class="font-mono text-primary flex-1">{commit.hash}</span>
+                        <button class="p-1 rounded hover:bg-surface-2 text-icon-default opacity-0 group-hover/hash:opacity-100 transition-opacity" onclick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(commit.hash); }} title="Copy Commit Hash">
+                          <Copy class="w-3.5 h-3.5" />
+                        </button>
+                        {#if $gitRepoStore.repo?.remote_url}
+                          {@const remoteUrl = $gitRepoStore.repo.remote_url.replace(/\.git$/, '')}
+                          <span class="text-subtle mx-1">|</span>
+                          <a href="{remoteUrl}/commit/{commit.hash}" target="_blank" class="text-accent hover:underline flex items-center gap-1" onclick={(e) => e.stopPropagation()} title="Open on GitHub">
+                            Open on GitHub
+                          </a>
+                        {/if}
+                      </div>
                     </div>
-                  {/if}
-                </div>
-                <span class="text-[10px] text-muted shrink-0 w-20 truncate text-right">{commit.author}</span>
+                  {/snippet}
+
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <div class="flex w-full items-center" onclick={() => toggleCommitExpansion(commit.hash)}>
+                    <div class="flex items-center justify-center w-5 h-5 shrink-0 bg-surface rounded-full">
+                      <div class="w-2 h-2 rounded-full border-2 border-accent bg-surface z-10"></div>
+                    </div>
+                    <div class="flex items-center flex-1 overflow-hidden pr-2">
+                      <span class="text-xs text-primary truncate font-medium flex-1">{commit.message}</span>
+                      {#if commit.refs}
+                        <div class="ml-2 flex items-center gap-1 shrink-0">
+                          {#each commit.refs.split(', ') as ref}
+                            {#if ref.includes('origin/')}
+                              <span class="flex items-center gap-0.5 text-[9px] border border-purple-500/50 text-purple-400 bg-purple-500/10 rounded-full px-1.5 py-0.5 whitespace-nowrap"><Cloud class="w-2.5 h-2.5" /> {ref.replace('origin/', '')}</span>
+                            {:else if ref.includes('HEAD')}
+                              <span class="flex items-center gap-0.5 text-[9px] border border-accent/50 text-accent bg-accent/10 rounded-full px-1.5 py-0.5 whitespace-nowrap"><Target class="w-2.5 h-2.5" /> {ref}</span>
+                            {:else}
+                              <span class="flex items-center gap-0.5 text-[9px] border border-green-500/50 text-green-400 bg-green-500/10 rounded-full px-1.5 py-0.5 whitespace-nowrap"><GitBranch class="w-2.5 h-2.5" /> {ref}</span>
+                            {/if}
+                          {/each}
+                        </div>
+                      {/if}
+                    </div>
+                    <span class="text-[10px] text-muted shrink-0 w-20 truncate text-right group-hover:hidden">{commit.author}</span>
+                    <div class="hidden group-hover:flex items-center gap-1 shrink-0 w-20 justify-end">
+                      <Tooltip content="Copy Commit Hash">
+                        <button class="p-1 rounded hover:bg-surface-2 text-icon-default" onclick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(commit.hash); }}>
+                          <FileText class="w-3 h-3" />
+                        </button>
+                      </Tooltip>
+                      <Tooltip content="Checkout Commit">
+                        <button class="p-1 rounded hover:bg-surface-2 text-icon-default" onclick={(e) => { e.stopPropagation(); uiStore.addToast('Checkout', 'success', `Checkout ${commit.hash} not implemented yet`); }}>
+                          <Target class="w-3 h-3" />
+                        </button>
+                      </Tooltip>
+                      <Tooltip content="More Actions">
+                        <button class="p-1 rounded hover:bg-surface-2 text-icon-default" onclick={(e) => { e.stopPropagation(); }}>
+                          <MoreHorizontal class="w-3 h-3" />
+                        </button>
+                      </Tooltip>
+                    </div>
+                  </div>
+                </Tooltip>
+
+                <!-- Expanded Files -->
+                {#if expandedCommit === commit.hash}
+                  <div class="flex flex-col pl-6 bg-surface-2 border-y border-subtle py-1">
+                    {#if expandedCommitLoading}
+                      <div class="text-[10px] text-muted px-4 py-2 flex items-center gap-2">
+                        <Loader2 class="w-3 h-3 animate-spin" /> Loading files...
+                      </div>
+                    {:else}
+                      {#each expandedCommitFiles as file}
+                        {@const Icon = getFileIcon(file.path.split('/').pop() || '')}
+                        <!-- svelte-ignore a11y_click_events_have_key_events -->
+                        <!-- svelte-ignore a11y_no_static_element_interactions -->
+                        <div class="flex items-center justify-between px-3 py-1 hover:bg-hover group cursor-pointer h-7" onclick={() => openFile(file)}>
+                          <div class="flex items-center gap-2 overflow-hidden flex-1">
+                            {#if settingsStore.effectiveSettings.icon_theme !== 'off'}
+                              <Icon size={12} class="text-icon-default shrink-0" />
+                            {/if}
+                            <span class="text-xs truncate text-primary">{file.path.split('/').pop()}</span>
+                            <span class="text-[10px] text-muted truncate">{file.path.split('/').slice(0, -1).join('/')}</span>
+                          </div>
+                          <span class="text-[10px] font-mono font-bold shrink-0 ml-2 {file.status === 'M' ? 'text-yellow-500' : file.status === 'A' ? 'text-green-500' : file.status === 'D' ? 'text-red-500' : 'text-primary'}">
+                            {file.status}
+                          </span>
+                        </div>
+                      {/each}
+                      {#if expandedCommitFiles.length === 0}
+                        <div class="text-[10px] text-muted px-4 py-1">No files changed.</div>
+                      {/if}
+                    {/if}
+                  </div>
+                {/if}
               </div>
             {/each}
           {:else}

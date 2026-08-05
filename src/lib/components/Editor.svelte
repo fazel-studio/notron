@@ -60,6 +60,8 @@
   import { editorStore, buildReplaceRegex, applyReplacement } from '../stores/editor';
   import { uiStore } from '../stores/ui';
   import { themeStore } from '../stores/theme';
+  import { debugStore } from '../stores/debug';
+  import { createBreakpointGutter, createActiveLineExtension } from '../utils/debugExtensions';
   
   let { tabId, content, filePath }: { tabId: string; content: string; filePath: string } = $props();
 
@@ -133,6 +135,7 @@
   const tabSizeCompartment = new Compartment();
   const minimapCompartment = new Compartment();
   const gutterCompartment = new Compartment();
+  const debugCompartment = new Compartment();
 
   const settings = settingsStore;
   const ui = uiStore;
@@ -263,6 +266,10 @@
           showOverlay: 'always'
         })
       ] : []),
+      debugCompartment.of([
+        createBreakpointGutter(filePath),
+        createActiveLineExtension(filePath)
+      ]),
     ];
 
     let state = editorStates.get(tabId);
@@ -317,6 +324,22 @@
     if (!editorView) return;
     editorView.dispatch({
       effects: themeCompartment.reconfigure(dark ? oneDark : lightTheme)
+    });
+  });
+
+  // Re-render debug extensions when debug state or breakpoints change
+  let debugState = $derived($debugStore.state);
+  let debugBps = $derived($debugStore.breakpoints);
+  let debugFrame = $derived($debugStore.activeFrame);
+
+  $effect(() => {
+    debugState; debugBps; debugFrame; // subscribe
+    if (!editorView) return;
+    editorView.dispatch({
+      effects: debugCompartment.reconfigure([
+        createBreakpointGutter(filePath),
+        createActiveLineExtension(filePath)
+      ])
     });
   });
 

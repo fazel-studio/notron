@@ -32,6 +32,7 @@ export interface RepoState {
   untracked: GitFileStatus[];
   conflicted: GitFileStatus[];
   last_fetched_ms: number | null;
+  remote_url: string | null;
 }
 
 export interface GitProgress {
@@ -45,7 +46,10 @@ export interface GitLogEntry {
   hash: string;
   message: string;
   author: string;
+  email: string;
+  date: string;
   refs: string;
+  stats: string;
 }
 
 // ── Detection (D.1) ──────────────────────────────────────────────────────────
@@ -190,6 +194,14 @@ export async function getGitLog(cwd: string, limit: number = 50, offset: number 
     return await invoke<GitLogEntry[]>('git_log', { cwd, limit, offset });
   } catch (err) {
     console.error('Failed to get git log:', err);
+    return [];
+  }
+}
+
+export async function getCommitFiles(cwd: string, hash: string): Promise<GitFileStatus[]> {
+  try {
+    return await invoke<GitFileStatus[]>('get_commit_files', { cwd, hash });
+  } catch {
     return [];
   }
 }

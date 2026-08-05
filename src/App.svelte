@@ -24,12 +24,17 @@
   import { paletteStore, type PaletteItem } from './lib/stores/palette';
   import { navigationStore } from './lib/stores/navigation';
   import { gitDecorationStore } from './lib/stores/gitDecoration';
+  import { gitRepoStore } from './lib/stores/gitRepo';
   import { onMount } from 'svelte';
 
   const tabs = editorStore.tabs;
   const activeTabId = editorStore.activeTabId;
   const saveStatus = editorStore.saveStatus;
   const ui = uiStore;
+
+  let gitRepo = $derived($gitRepoStore.repo);
+  let gitLoading = $derived($gitRepoStore.repoLoading || $gitRepoStore.syncing || $gitRepoStore.availabilityLoading);
+  let gitChangesCount = $derived(gitRepo ? gitRepo.staged.length + gitRepo.unstaged.length + gitRepo.conflicted.length : 0);
 
   let closingTabId = $state<string | null>(null);
   let isClosingWindow = $state(false);
@@ -48,6 +53,7 @@
   let GoToLineComponent = $state<any>(null);
   let SearchPanelComponent = $state<any>(null);
   let SourceControlPanelComponent = $state<any>(null);
+  let DebugPanelComponent = $state<any>(null);
   let MarkdownPreviewComponent = $state<any>(null);
   let ImageViewerComponent = $state<any>(null);
   let EditorComponent = $state<any>(null);
@@ -140,6 +146,9 @@
     if ($ui.activeSidebarPanel === 'git' && $ui.isSidebarOpen && !SourceControlPanelComponent) {
       import('./lib/components/SourceControlPanel.svelte').then(m => SourceControlPanelComponent = m.default);
     }
+    if ($ui.activeSidebarPanel === 'debug' && $ui.isSidebarOpen && !DebugPanelComponent) {
+      import('./lib/components/DebugPanel.svelte').then(m => DebugPanelComponent = m.default);
+    }
   });
 
   let tabCtxMenu = $state({
@@ -174,6 +183,7 @@
 
     const focusHandler = async () => {
       if (!appReady) return;
+      gitRepoStore.refreshRepoOnly();
       const currentTabs = editorStore.getTabsSnapshot();
       const paths = currentTabs.filter((t: any) => !t.path.startsWith('Untitled') && t.status !== 'deleted').map((t: any) => t.path);
       if (paths.length === 0) return;
@@ -386,6 +396,7 @@
         terminalVisible: termVal.isVisible,
         terminalMaximized: termVal.isMaximized,
         terminalHeight: termVal.height,
+        terminalActivePanel: termVal.activePanel,
         tabs: validTabs.map((t: any) => ({
           id: t.id, path: t.path, name: t.name, language: t.language,
           isPreview: t.isPreview, isPinned: t.isPinned, 
@@ -555,16 +566,12 @@
             if (parsed.searchQuery !== undefined) uiStore.setSearchQuery(parsed.searchQuery);
             if (parsed.replaceQuery !== undefined) uiStore.setReplaceQuery(parsed.replaceQuery);
             
-            // Apply terminal state ONLY if terminals exist in this workspace
-            if (parsed.terminals && parsed.terminals.length > 0) {
-              terminalStore.setTerminals(parsed.terminals, parsed.activeTerminalId || null);
-              if (parsed.terminalVisible !== undefined) terminalStore.setVisibility(parsed.terminalVisible);
-              if (parsed.terminalMaximized !== undefined) terminalStore.setMaximize(parsed.terminalMaximized);
-              if (parsed.terminalHeight !== undefined) terminalStore.setHeight(parsed.terminalHeight);
-            } else {
-              terminalStore.setTerminals([], null);
-              terminalStore.setVisibility(false);
-            }
+            // Apply terminal state
+            terminalStore.setTerminals(parsed.terminals || [], parsed.activeTerminalId || null);
+            if (parsed.terminalVisible !== undefined) terminalStore.setVisibility(parsed.terminalVisible);
+            if (parsed.terminalMaximized !== undefined) terminalStore.setMaximize(parsed.terminalMaximized);
+            if (parsed.terminalHeight !== undefined) terminalStore.setHeight(parsed.terminalHeight);
+            if (parsed.terminalActivePanel !== undefined) terminalStore.setActivePanel(parsed.terminalActivePanel);
 
             // Phase 3: Lazy Tab Initialization
             if (parsed.tabs && parsed.tabs.length > 0) {
@@ -610,6 +617,9 @@
     recordStartupPhase('frontend-state-loaded');
 
     appReady = true;
+    if (root) {
+      gitRepoStore.setWorkspace(root);
+    }
     recordStartupPhase('frontend-ready');
     setTimeout(() => {
       invoke('show_main_window').catch(e => console.error('Failed to show window', e));
@@ -761,15 +771,11 @@
             if (parsed.searchQuery !== undefined) uiStore.setSearchQuery(parsed.searchQuery);
             if (parsed.replaceQuery !== undefined) uiStore.setReplaceQuery(parsed.replaceQuery);
 
-            if (parsed.terminals && parsed.terminals.length > 0) {
-              terminalStore.setTerminals(parsed.terminals, parsed.activeTerminalId || null);
-              if (parsed.terminalVisible !== undefined) terminalStore.setVisibility(parsed.terminalVisible);
-              if (parsed.terminalMaximized !== undefined) terminalStore.setMaximize(parsed.terminalMaximized);
-              if (parsed.terminalHeight !== undefined) terminalStore.setHeight(parsed.terminalHeight);
-            } else {
-              terminalStore.setTerminals([], null);
-              terminalStore.setVisibility(false);
-            }
+            terminalStore.setTerminals(parsed.terminals || [], parsed.activeTerminalId || null);
+            if (parsed.terminalVisible !== undefined) terminalStore.setVisibility(parsed.terminalVisible);
+            if (parsed.terminalMaximized !== undefined) terminalStore.setMaximize(parsed.terminalMaximized);
+            if (parsed.terminalHeight !== undefined) terminalStore.setHeight(parsed.terminalHeight);
+            if (parsed.terminalActivePanel !== undefined) terminalStore.setActivePanel(parsed.terminalActivePanel);
 
             if (parsed.tabs !== undefined) {
               const lazyTabs = parsed.tabs.map((t: any) => ({
@@ -1044,15 +1050,25 @@
     const key = e.key.toLowerCase();
 
     // ── BLOKIR FITUR BAWAAN BROWSER ──
-    // 1. Find / Search
-    if ((cmdOrCtrl && (key === 'f' || key === 'g')) || e.key === 'F3') {
-      e.preventDefault();
+    // 1. Find / Search / Sidebar panels
+    if ((cmdOrCtrl && (key === 'f' || key === 'g' || key === 'e')) || e.key === 'F3') {
+      if (!e.shiftKey) e.preventDefault();
       // Ctrl+F opens the per-file find widget via the editor keymap; F3 /
       // Ctrl+G remain blocked. Ctrl+Shift+F opens the global search panel.
     }
     if (cmdOrCtrl && e.shiftKey && key === 'f') {
       e.preventDefault();
       openGlobalSearch();
+    }
+    if (cmdOrCtrl && e.shiftKey && key === 'e') {
+      e.preventDefault();
+      uiStore.setSidebarOpen(true);
+      uiStore.setActiveSidebarPanel('explorer');
+    }
+    if (cmdOrCtrl && e.shiftKey && key === 'g') {
+      e.preventDefault();
+      uiStore.setSidebarOpen(true);
+      uiStore.setActiveSidebarPanel('git');
     }
     // 2. Print & Save
     if (cmdOrCtrl && key === 'p') {
@@ -1127,6 +1143,9 @@
     // Initialize UI from sync storage (localStorage for fast access)
     uiStore.initFromStorage();
     terminalStore.initFromStorage();
+    gitRepoStore.init();
+
+    import('./lib/services/dapClient').then(m => m.setupDapListeners());
 
     // Start staged startup
     lastLoadedRoot = uiStore.getSnapshot().explorerRoot;
@@ -1137,6 +1156,7 @@
     const root = $ui.explorerRoot;
     if (appReady && root && root !== lastLoadedRoot) {
       lastLoadedRoot = root;
+      gitRepoStore.setWorkspace(root);
       loadWorkspaceState(root).catch(console.error);
     }
   });
@@ -1469,37 +1489,66 @@
   <div class="flex flex-1 overflow-hidden">
     <div class="w-12 flex flex-col items-center py-0 justify-between z-10 border-r border-subtle bg-surface-2">
       <div class="flex flex-col items-center gap-1 w-full mt-2">
-        <button aria-label="Explorer" onclick={() => { if ($ui.isSidebarOpen && $ui.activeSidebarPanel === 'explorer') uiStore.setSidebarOpen(false); else { uiStore.setActiveSidebarPanel('explorer'); uiStore.setSidebarOpen(true); } }} class="p-2 mb-2 bg-transparent cursor-pointer relative transition-colors hover:text-icon-active"
-          class:text-icon-active-tab={$ui.activeSidebarPanel === 'explorer' && $ui.isSidebarOpen}
-          class:text-icon-default={!($ui.activeSidebarPanel === 'explorer' && $ui.isSidebarOpen)}
-        >
-          {#if $ui.activeSidebarPanel === 'explorer' && $ui.isSidebarOpen}
-            <div class="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-8 bg-indicator-active"></div>
-          {/if}
-          <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-        </button>
-        <button aria-label="Search" onclick={() => { if ($ui.isSidebarOpen && $ui.activeSidebarPanel === 'search') uiStore.setSidebarOpen(false); else { uiStore.setActiveSidebarPanel('search'); uiStore.setSidebarOpen(true); } }} class="p-2 mb-2 bg-transparent cursor-pointer relative transition-colors hover:text-icon-active"
-          class:text-icon-active-tab={$ui.activeSidebarPanel === 'search' && $ui.isSidebarOpen}
-          class:text-icon-default={!($ui.activeSidebarPanel === 'search' && $ui.isSidebarOpen)}
-        >
-          {#if $ui.activeSidebarPanel === 'search' && $ui.isSidebarOpen}
-            <div class="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-8 bg-indicator-active"></div>
-          {/if}
-          <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        </button>
-        <button aria-label="Source Control" onclick={() => { if ($ui.isSidebarOpen && $ui.activeSidebarPanel === 'git') uiStore.setSidebarOpen(false); else { uiStore.setActiveSidebarPanel('git'); uiStore.setSidebarOpen(true); } }} class="p-2 mb-2 bg-transparent cursor-pointer relative transition-colors hover:text-icon-active"
-          class:text-icon-active-tab={$ui.activeSidebarPanel === 'git' && $ui.isSidebarOpen}
-          class:text-icon-default={!($ui.activeSidebarPanel === 'git' && $ui.isSidebarOpen)}
-        >
-          {#if $ui.activeSidebarPanel === 'git' && $ui.isSidebarOpen}
-            <div class="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-8 bg-indicator-active"></div>
-          {/if}
-          <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M6 9v6"/><path d="M18 9v2a2 2 0 0 1-2 2h-4a2 2 0 0 0-2 2v6"/></svg>
-        </button>
+        <Tooltip content="Explorer (Ctrl+Shift+E)" side="right" hoverDelay={300}>
+          <button aria-label="Explorer" onclick={() => { if ($ui.isSidebarOpen && $ui.activeSidebarPanel === 'explorer') uiStore.setSidebarOpen(false); else { uiStore.setActiveSidebarPanel('explorer'); uiStore.setSidebarOpen(true); } }} class="p-2 mb-2 bg-transparent cursor-pointer relative transition-colors hover:text-icon-active"
+            class:text-icon-active-tab={$ui.activeSidebarPanel === 'explorer' && $ui.isSidebarOpen}
+            class:text-icon-default={!($ui.activeSidebarPanel === 'explorer' && $ui.isSidebarOpen)}
+          >
+            {#if $ui.activeSidebarPanel === 'explorer' && $ui.isSidebarOpen}
+              <div class="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-8 bg-indicator-active"></div>
+            {/if}
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+          </button>
+        </Tooltip>
+        <Tooltip content="Search (Ctrl+Shift+F)" side="right" hoverDelay={300}>
+          <button aria-label="Search" onclick={() => { if ($ui.isSidebarOpen && $ui.activeSidebarPanel === 'search') uiStore.setSidebarOpen(false); else { uiStore.setActiveSidebarPanel('search'); uiStore.setSidebarOpen(true); } }} class="p-2 mb-2 bg-transparent cursor-pointer relative transition-colors hover:text-icon-active"
+            class:text-icon-active-tab={$ui.activeSidebarPanel === 'search' && $ui.isSidebarOpen}
+            class:text-icon-default={!($ui.activeSidebarPanel === 'search' && $ui.isSidebarOpen)}
+          >
+            {#if $ui.activeSidebarPanel === 'search' && $ui.isSidebarOpen}
+              <div class="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-8 bg-indicator-active"></div>
+            {/if}
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          </button>
+        </Tooltip>
+        <Tooltip content="Source Control (Ctrl+Shift+G)" side="right" hoverDelay={300}>
+          <button aria-label="Source Control" onclick={() => { if ($ui.isSidebarOpen && $ui.activeSidebarPanel === 'git') uiStore.setSidebarOpen(false); else { uiStore.setActiveSidebarPanel('git'); uiStore.setSidebarOpen(true); } }} class="p-2 mb-2 bg-transparent cursor-pointer relative transition-colors hover:text-icon-active"
+            class:text-icon-active-tab={$ui.activeSidebarPanel === 'git' && $ui.isSidebarOpen}
+            class:text-icon-default={!($ui.activeSidebarPanel === 'git' && $ui.isSidebarOpen)}
+          >
+            {#if $ui.activeSidebarPanel === 'git' && $ui.isSidebarOpen}
+              <div class="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-8 bg-indicator-active"></div>
+            {/if}
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M6 9v6"/><path d="M18 9v2a2 2 0 0 1-2 2h-4a2 2 0 0 0-2 2v6"/></svg>
+            
+            {#if gitLoading}
+              <div class="absolute bottom-0 -right-1 bg-accent text-on-accent rounded-full h-4 min-w-4 flex items-center justify-center border-2 border-surface-2 shadow-sm pointer-events-none" title="Git is analyzing...">
+                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="animate-spin"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+              </div>
+            {:else if gitChangesCount > 0}
+              <div class="absolute bottom-0 -right-1 bg-accent text-on-accent text-[9px] font-bold rounded-full h-4 min-w-4 px-1 flex items-center justify-center border-2 border-surface-2 shadow-sm pointer-events-none">
+                {gitChangesCount > 99 ? '99+' : gitChangesCount}
+              </div>
+            {/if}
+          </button>
+        </Tooltip>
+        <Tooltip content="Run and Debug (Ctrl+Shift+D)" side="right" hoverDelay={300}>
+          <button aria-label="Run and Debug" onclick={() => { if ($ui.isSidebarOpen && $ui.activeSidebarPanel === 'debug') uiStore.setSidebarOpen(false); else { uiStore.setActiveSidebarPanel('debug'); uiStore.setSidebarOpen(true); } }} class="p-2 mb-2 bg-transparent cursor-pointer relative transition-colors hover:text-icon-active"
+            class:text-icon-active-tab={$ui.activeSidebarPanel === 'debug' && $ui.isSidebarOpen}
+            class:text-icon-default={!($ui.activeSidebarPanel === 'debug' && $ui.isSidebarOpen)}
+          >
+            {#if $ui.activeSidebarPanel === 'debug' && $ui.isSidebarOpen}
+              <div class="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-8 bg-indicator-active"></div>
+            {/if}
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="14" x="8" y="6" rx="4"/><path d="m19 7-3 2"/><path d="m5 7 3 2"/><path d="m19 19-3-2"/><path d="m5 19 3-2"/><path d="M20 13h-4"/><path d="M4 13h4"/><path d="m10 4 1 2"/><path d="m14 4-1 2"/></svg>
+          </button>
+        </Tooltip>
       </div>
-      <button aria-label="Settings" onclick={openSettings} class="p-2 bg-transparent cursor-pointer mb-2 text-icon-default hover:text-icon-active transition-colors">
-        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      </button>
+      <Tooltip content="Settings (Ctrl+,)" side="right" hoverDelay={300}>
+        <button aria-label="Settings" onclick={openSettings} class="p-2 bg-transparent cursor-pointer mb-2 text-icon-default hover:text-icon-active transition-colors">
+          <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </Tooltip>
     </div>
 
     {#if $ui.isSidebarOpen}
@@ -1523,10 +1572,10 @@
           }}
         ></div>
         <div class="h-9 flex items-center justify-between px-4 text-xs font-semibold tracking-widest select-none uppercase text-secondary">
-          <span>{$ui.activeSidebarPanel === 'explorer' ? 'Explorer' : $ui.activeSidebarPanel === 'search' ? 'Search' : 'Source Control'}</span>
+          <span>{$ui.activeSidebarPanel === 'explorer' ? 'Explorer' : $ui.activeSidebarPanel === 'search' ? 'Search' : $ui.activeSidebarPanel === 'git' ? 'Source Control' : 'Run and Debug'}</span>
           {#if $ui.activeSidebarPanel === 'explorer'}
-            <Tooltip content="Toggle Dot Files">
-              <button aria-label="Toggle Dot Files" onclick={() => uiStore.toggleShowDotFiles()} class="p-1 rounded transition-colors hover:bg-hover" class:text-accent={$ui.showDotFiles} class:text-icon-default={!$ui.showDotFiles} class:hover:text-icon-active={true}>
+            <Tooltip content="Toggle VCS/System Hidden Files (.git, .svn, …)">
+              <button aria-label="Toggle Hidden VCS Files" onclick={() => uiStore.toggleShowDotFiles()} class="p-1 rounded transition-colors hover:bg-hover" class:text-accent={$ui.showDotFiles} class:text-icon-default={!$ui.showDotFiles} class:hover:text-icon-active={true}>
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
               </button>
             </Tooltip>
@@ -1604,6 +1653,10 @@
           {:else if $ui.activeSidebarPanel === 'git' && SourceControlPanelComponent}
             <div class="flex flex-col h-full overflow-hidden">
               <SourceControlPanelComponent />
+            </div>
+          {:else if $ui.activeSidebarPanel === 'debug' && DebugPanelComponent}
+            <div class="flex flex-col h-full overflow-hidden">
+              <DebugPanelComponent />
             </div>
           {/if}
         </div>
