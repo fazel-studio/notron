@@ -530,43 +530,61 @@ pub async fn save_workspace_session(
 
 // Tiered Settings Commands
 
+/// Read the full global_settings table into a serde_json map.
+pub fn query_global_settings_map(conn: &Connection) -> Result<std::collections::HashMap<String, Value>, String> {
+    let mut stmt = conn.prepare("SELECT key, value FROM global_settings").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }).map_err(|e| e.to_string())?;
+
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        if let Ok((k, v)) = row {
+            let parsed: Value = serde_json::from_str(&v).unwrap_or(Value::Null);
+            map.insert(k, parsed);
+        }
+    }
+    Ok(map)
+}
+
+/// Read workspace-scoped settings for a single workspace.
+pub fn query_workspace_settings_map(conn: &Connection, workspace_id: &str) -> Result<std::collections::HashMap<String, Value>, String> {
+    let mut stmt = conn.prepare("SELECT key, value FROM workspace_settings WHERE workspace_id = ?1").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(params![workspace_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }).map_err(|e| e.to_string())?;
+
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        if let Ok((k, v)) = row {
+            let parsed: Value = serde_json::from_str(&v).unwrap_or(Value::Null);
+            map.insert(k, parsed);
+        }
+    }
+    Ok(map)
+}
+
+/// Read the crash flag (stored as a global_settings row).
+pub fn query_crash_flag(conn: &Connection) -> Result<bool, String> {
+    let mut stmt = conn.prepare("SELECT value FROM global_settings WHERE key = 'crash_flag'").map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    if let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let value: String = row.get(0).map_err(|e| e.to_string())?;
+        Ok(value == "true")
+    } else {
+        Ok(false)
+    }
+}
+
 #[tauri::command]
 pub async fn load_global_settings(state: tauri::State<'_, DbState>) -> Result<std::collections::HashMap<String, Value>, String> {
-    with_db(&state, move |conn| {
-        let mut stmt = conn.prepare("SELECT key, value FROM global_settings").map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        }).map_err(|e| e.to_string())?;
-        
-        let mut map = std::collections::HashMap::new();
-        for row in rows {
-            if let Ok((k, v)) = row {
-                let parsed: Value = serde_json::from_str(&v).unwrap_or(Value::Null);
-                map.insert(k, parsed);
-            }
-        }
-        Ok(map)
-    }).await
+    with_db(&state, |conn| query_global_settings_map(conn)).await
 }
 
 #[tauri::command]
 pub async fn load_workspace_settings(workspace_id: String, state: tauri::State<'_, DbState>) -> Result<std::collections::HashMap<String, Value>, String> {
     let wid = workspace_id.clone();
-    with_db(&state, move |conn| {
-        let mut stmt = conn.prepare("SELECT key, value FROM workspace_settings WHERE workspace_id = ?1").map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(params![wid], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        }).map_err(|e| e.to_string())?;
-        
-        let mut map = std::collections::HashMap::new();
-        for row in rows {
-            if let Ok((k, v)) = row {
-                let parsed: Value = serde_json::from_str(&v).unwrap_or(Value::Null);
-                map.insert(k, parsed);
-            }
-        }
-        Ok(map)
-    }).await
+    with_db(&state, move |conn| query_workspace_settings_map(conn, &wid)).await
 }
 
 #[tauri::command]
@@ -611,6 +629,51 @@ pub async fn delete_workspace_setting(workspace_id: String, key: String, state: 
         ).map_err(|e| e.to_string())?;
         Ok(())
     }).await
+}
+
+/// Effective user-configured ignore rules for a workspace: `search_exclude`
+/// and `search_include` (gitignore-style patterns; `search_include` entries are
+/// negated with `!` in the rendered ignore file). Global settings are merged
+/// first, workspace settings appended last so they win (Module E, E.3). Used
+/// by workspace-wide scans (Search, Quick Open) to build the Layer-2 app
+/// ignore file.
+#[derive(Debug, Clone, Default)]
+pub struct IgnoreUserSettings {
+    pub search_exclude: Vec<String>,
+    pub search_include: Vec<String>,
+}
+
+pub async fn get_ignore_settings(
+    state: &DbState,
+    workspace_path: &str,
+) -> Result<IgnoreUserSettings, String> {
+    fn str_list(v: &Value) -> Vec<String> {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    let wid = workspace_path.to_string();
+    with_db(state, move |conn| {
+        let mut result = IgnoreUserSettings::default();
+        let global = query_global_settings_map(conn)?;
+        let ws = query_workspace_settings_map(conn, &wid)?;
+        for map in [&global, &ws] {
+            for (k, v) in map {
+                match k.as_str() {
+                    "search_exclude" => result.search_exclude.extend(str_list(v)),
+                    "search_include" => result.search_include.extend(str_list(v)),
+                    _ => {}
+                }
+            }
+        }
+        Ok(result)
+    })
+    .await
 }
 
 // Tiered State Load/Save Commands
@@ -834,16 +897,7 @@ pub async fn get_dirty_tab_snapshots(state: tauri::State<'_, DbState>) -> Result
 
 #[tauri::command]
 pub async fn check_crash_flag(state: tauri::State<'_, DbState>) -> Result<bool, String> {
-    with_db(&state, move |conn| {
-        let mut stmt = conn.prepare("SELECT value FROM global_settings WHERE key = 'crash_flag'").map_err(|e| e.to_string())?;
-        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
-        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            let value: String = row.get(0).map_err(|e| e.to_string())?;
-            Ok(value == "true")
-        } else {
-            Ok(false)
-        }
-    }).await
+    with_db(&state, |conn| query_crash_flag(conn)).await
 }
 
 #[tauri::command]

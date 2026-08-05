@@ -36,6 +36,8 @@
     ],
     files: [
       { id: 'defaultEncoding', label: 'Default Encoding', section: 'files' },
+      { id: 'searchExclude', label: 'Search Exclude', section: 'files' },
+      { id: 'searchInclude', label: 'Search Include', section: 'files' },
     ],
   };
 
@@ -154,7 +156,7 @@
               </div>
               <Select id="theme"
                 class="w-44"
-                options={[{value: 'light', label: 'Light'}, {value: 'dark', label: 'Dark'}, {value: 'system', label: 'System Default'}]}
+                options={[{value: 'light', label: 'Light'}, {value: 'dark', label: 'Dark'}, {value: 'black', label: 'Black'}, {value: 'system', label: 'System Default'}]}
                 value={settingsStore.effectiveSettings.theme}
                 onchange={(v) => handleSave('theme', v)}
               />
@@ -303,6 +305,88 @@
                 value={settingsStore.effectiveSettings.default_encoding}
                 onchange={(v) => handleSave('default_encoding', v)}
               />
+            </div>
+
+            <div id="setting-searchExclude" class="py-3 border-t border-subtle">
+              <label for="searchExclude" class="font-medium text-primary block">Search Exclude</label>
+              <p class="text-xs text-muted mt-0.5">Patterns excluded from Global Search &amp; Quick Open. They stay visible in the Explorer, expandable manually. Matches .gitignore syntax.</p>
+              <div class="flex gap-2 mt-2">
+                <input
+                  id="searchExclude"
+                  type="text"
+                  placeholder="e.g. **/*.min.js"
+                  class="flex-1 rounded p-1.5 text-sm outline-none border bg-canvas border-subtle text-primary placeholder-muted focus:border-focus"
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter' && (e.target as HTMLInputElement).value.trim()) {
+                      settingsStore.addSearchExclude((e.target as HTMLInputElement).value);
+                      (e.target as HTMLInputElement).value = '';
+                    }
+                  }}
+                />
+                <button
+                  onclick={() => {
+                    const input = document.getElementById('searchExclude') as HTMLInputElement | null;
+                    if (input?.value.trim()) {
+                      settingsStore.addSearchExclude(input.value);
+                      input.value = '';
+                    }
+                  }}
+                  class="px-3 py-1.5 text-sm rounded border border-subtle bg-surface-2 text-primary hover:bg-hover transition-colors"
+                >Add</button>
+              </div>
+              <div class="mt-2 flex flex-wrap gap-1.5">
+                {#each settingsStore.effectiveSettings.search_exclude as pattern (pattern)}
+                  <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded border border-subtle bg-surface-2 text-secondary">
+                    {pattern}
+                    <button
+                      aria-label={`Remove ${pattern}`}
+                      onclick={() => settingsStore.removeSearchExclude(pattern)}
+                      class="text-muted hover:text-primary transition-colors"
+                    >×</button>
+                  </span>
+                {/each}
+              </div>
+            </div>
+
+            <div id="setting-searchInclude" class="py-3 border-t border-subtle">
+              <label for="searchInclude" class="font-medium text-primary block">Search Include</label>
+              <p class="text-xs text-muted mt-0.5">Re-include patterns that the app defaults would otherwise exclude from Search (e.g. <code class="text-primary">target</code> to search Rust build output).</p>
+              <div class="flex gap-2 mt-2">
+                <input
+                  id="searchInclude"
+                  type="text"
+                  placeholder="e.g. target"
+                  class="flex-1 rounded p-1.5 text-sm outline-none border bg-canvas border-subtle text-primary placeholder-muted focus:border-focus"
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter' && (e.target as HTMLInputElement).value.trim()) {
+                      settingsStore.addSearchInclude((e.target as HTMLInputElement).value);
+                      (e.target as HTMLInputElement).value = '';
+                    }
+                  }}
+                />
+                <button
+                  onclick={() => {
+                    const input = document.getElementById('searchInclude') as HTMLInputElement | null;
+                    if (input?.value.trim()) {
+                      settingsStore.addSearchInclude(input.value);
+                      input.value = '';
+                    }
+                  }}
+                  class="px-3 py-1.5 text-sm rounded border border-subtle bg-surface-2 text-primary hover:bg-hover transition-colors"
+                >Add</button>
+              </div>
+              <div class="mt-2 flex flex-wrap gap-1.5">
+                {#each settingsStore.effectiveSettings.search_include as pattern (pattern)}
+                  <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded border border-subtle bg-surface-2 text-secondary">
+                    {pattern}
+                    <button
+                      aria-label={`Remove ${pattern}`}
+                      onclick={() => settingsStore.removeSearchInclude(pattern)}
+                      class="text-muted hover:text-primary transition-colors"
+                    >×</button>
+                  </span>
+                {/each}
+              </div>
             </div>
           {/if}
 

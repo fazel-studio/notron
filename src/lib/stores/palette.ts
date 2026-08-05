@@ -12,6 +12,13 @@ export interface PaletteItem {
   shortcut?: string;
 }
 
+const MAX_PALETTE_FILES = 50_000;
+const CACHE_TTL_MS = 60_000;
+
+// Cache raw file lists per workspace so re-opening the palette (or switching
+// back to a workspace) never re-walks the whole tree.
+const workspaceFileCache = new Map<string, { paths: string[]; ts: number }>();
+
 function createPaletteStore() {
   const { subscribe, set } = writable({
     items: [] as PaletteItem[],
@@ -30,13 +37,23 @@ function createPaletteStore() {
     },
     async loadWorkspaceFiles(workspacePath: string, baseCommands: PaletteItem[], openFileAction: (path: string) => void) {
       try {
-        const files = await invoke<string[]>('list_all_files', { 
-          path: workspacePath,
-          excludeDirs: ['node_modules', '.git', 'target', 'dist']
-        }).catch(() => []); // graceful fallback
-        
+        const now = Date.now();
+        const cached = workspaceFileCache.get(workspacePath);
+        let files: string[];
+        if (cached && now - cached.ts < CACHE_TTL_MS) {
+          files = cached.paths;
+        } else {
+          files = await invoke<string[]>('list_all_files', {
+            path: workspacePath,
+            excludeDirs: ['node_modules', '.git', 'target', 'dist'],
+            maxResults: MAX_PALETTE_FILES,
+          }).catch(() => []); // graceful fallback
+          workspaceFileCache.set(workspacePath, { paths: files, ts: now });
+        }
+
         const fileItems: PaletteItem[] = files.map(path => {
-          const relativePath = path.replace(workspacePath + (path.includes('\\') ? '\\' : '/'), '');
+          const separator = path.includes('\\') ? '\\' : '/';
+          const relativePath = path.replace(workspacePath + separator, '');
           return {
             id: `file:${path}`,
             label: path.split(/[/\\]/).pop() || path,

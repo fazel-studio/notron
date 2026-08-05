@@ -18,7 +18,7 @@ function loadTheme(): string {
 }
 
 function computeIsDark(theme: string): boolean {
-  if (theme === 'dark') return true;
+  if (theme === 'dark' || theme === 'black') return true;
   if (theme === 'light') return false;
   return getSystemTheme();
 }
@@ -36,6 +36,7 @@ function createThemeStore(): Readable<{ theme: string; isDark: boolean }> & { se
       if (typeof window !== 'undefined') {
         localStorage.setItem(THEME_KEY, theme);
         document.documentElement.classList.toggle('dark', isDark);
+        document.documentElement.classList.toggle('black', theme === 'black');
       }
     } catch {
       // storage unavailable

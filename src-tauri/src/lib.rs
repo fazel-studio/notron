@@ -1,16 +1,17 @@
 mod config;
 mod db;
 mod file_ops;
-mod fs_watcher;
+mod ignore_rules;
+mod search;
+mod startup;
+mod stream;
 mod symbol_index;
+mod watcher_service;
+mod workspace_cache;
+mod git_service;
 
 use serde::Serialize;
 use tauri::{Manager, Emitter};
-
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
 
 #[tauri::command]
 fn show_main_window(window: tauri::Window, state: tauri::State<'_, config::CriticalConfigState>) -> Result<(), String> {
@@ -67,6 +68,9 @@ struct StartupState {
     critical: config::CriticalConfig,
     ui_state: Option<db::UiStateRow>,
     session_pairs: Vec<(String, String)>,
+    global_settings: std::collections::HashMap<String, serde_json::Value>,
+    workspace_settings: std::collections::HashMap<String, serde_json::Value>,
+    crash_flag: bool,
 }
 
 #[tauri::command]
@@ -80,67 +84,100 @@ async fn load_startup_state(
     let app_config = config_state.0.lock().unwrap().clone();
     let critical_config = critical_state.0.lock().unwrap().clone();
 
-    // If workspace_id provided, query UI state and session from DB
-    let (ui_state, session_pairs) = if let Some(ref wid) = workspace_id {
-        let w = wid.clone();
-        let pool = db_state.0.clone();
+    let pool = db_state.0.clone();
+    let wid = workspace_id.clone();
+
+    // Parallel DB reads: (1) settings + crash flag, (2) UI + session state.
+    // Each uses its own pooled connection so they don't serialize.
+    let settings_fut = {
+        let pool = pool.clone();
+        let wid = wid.clone();
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| format!("Pool error: {}", e))?;
-            // Apply per-connection PRAGMAs
             let _ = conn.execute_batch("
                 PRAGMA cache_size = -65536;
                 PRAGMA mmap_size  = 268435456;
                 PRAGMA temp_store = MEMORY;
             ");
+            let global_settings = db::query_global_settings_map(&conn)?;
+            let crash_flag = db::query_crash_flag(&conn)?;
+            let workspace_settings = match &wid {
+                Some(w) => db::query_workspace_settings_map(&conn, w)?,
+                None => std::collections::HashMap::new(),
+            };
+            Ok::<_, String>((global_settings, workspace_settings, crash_flag))
+        })
+    };
 
-            // Query UI state
-            let ui = match conn.query_row(
-                "SELECT sidebar_width, panel_height, sidebar_visible, expanded_folder_paths,
-                        active_sidebar_panel, is_minimap_enabled
-                 FROM ui_state WHERE workspace_id = ?1",
-                rusqlite::params![w],
-                |row| {
-                    Ok(db::UiStateRow {
-                        sidebar_width: row.get(0)?,
-                        panel_height: row.get(1)?,
-                        sidebar_visible: row.get::<_, Option<i64>>(2)?.map(|v| v != 0),
-                        expanded_folder_paths: row.get(3)?,
-                        active_sidebar_panel: row.get(4)?,
-                        is_minimap_enabled: row.get::<_, Option<i64>>(5)?.map(|v| v != 0),
-                    })
-                },
-            ) {
-                Ok(s) => Some(s),
-                Err(rusqlite::Error::QueryReturnedNoRows) => None,
-                Err(e) => return Err(e.to_string()),
+    let session_fut = {
+        let pool = pool.clone();
+        let wid = wid.clone();
+        tokio::task::spawn_blocking(move || {
+            let (ui_state, session_pairs) = if let Some(w) = wid {
+                let conn = pool.get().map_err(|e| format!("Pool error: {}", e))?;
+                let _ = conn.execute_batch("
+                    PRAGMA cache_size = -65536;
+                    PRAGMA mmap_size  = 268435456;
+                    PRAGMA temp_store = MEMORY;
+                ");
+
+                // Query UI state
+                let ui = match conn.query_row(
+                    "SELECT sidebar_width, panel_height, sidebar_visible, expanded_folder_paths,
+                            active_sidebar_panel, is_minimap_enabled
+                     FROM ui_state WHERE workspace_id = ?1",
+                    rusqlite::params![w],
+                    |row| {
+                        Ok(db::UiStateRow {
+                            sidebar_width: row.get(0)?,
+                            panel_height: row.get(1)?,
+                            sidebar_visible: row.get::<_, Option<i64>>(2)?.map(|v| v != 0),
+                            expanded_folder_paths: row.get(3)?,
+                            active_sidebar_panel: row.get(4)?,
+                            is_minimap_enabled: row.get::<_, Option<i64>>(5)?.map(|v| v != 0),
+                        })
+                    },
+                ) {
+                    Ok(s) => Some(s),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                    Err(e) => return Err(e.to_string()),
+                };
+
+                // Query legacy session pairs from workspace_state
+                let mut stmt = conn.prepare(
+                    "SELECT key, value FROM workspace_state WHERE workspace_path = ?1"
+                ).map_err(|e| e.to_string())?;
+                let rows = stmt.query_map(rusqlite::params![w], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                }).map_err(|e| e.to_string())?;
+
+                let mut pairs = Vec::new();
+                for row in rows {
+                    pairs.push(row.map_err(|e| e.to_string())?);
+                }
+
+                (ui, pairs)
+            } else {
+                (None, Vec::new())
             };
 
-            // Query legacy session pairs from workspace_state
-            let mut stmt = conn.prepare(
-                "SELECT key, value FROM workspace_state WHERE workspace_path = ?1"
-            ).map_err(|e| e.to_string())?;
-            let rows = stmt.query_map(rusqlite::params![w], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            }).map_err(|e| e.to_string())?;
-
-            let mut pairs = Vec::new();
-            for row in rows {
-                pairs.push(row.map_err(|e| e.to_string())?);
-            }
-
-            Ok::<_, String>((ui, pairs))
+            Ok::<_, String>((ui_state, session_pairs))
         })
-        .await
-        .map_err(|e| e.to_string())??
-    } else {
-        (None, Vec::new())
     };
+
+    let (settings_res, session_res) = tokio::try_join!(settings_fut, session_fut)
+        .map_err(|e| e.to_string())?;
+    let (global_settings, workspace_settings, crash_flag) = settings_res?;
+    let (ui_state, session_pairs) = session_res?;
 
     Ok(StartupState {
         config: app_config,
         critical: critical_config,
         ui_state,
         session_pairs,
+        global_settings,
+        workspace_settings,
+        crash_flag,
     })
 }
 
@@ -167,7 +204,7 @@ fn start_memory_monitor(_app: tauri::AppHandle) {
 #[cfg(debug_assertions)]
 fn setup_logging() {
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
+        .with_max_level(tracing::Level::INFO)
         .init();
 }
 
@@ -202,6 +239,14 @@ pub fn run() {
             }
         }))
         .setup(|app| {
+            // 0.6 — startup timers: every phase below is measured and
+            // queryable via `get_startup_timers` / `record_startup_timer`.
+            app.manage(startup::StartupTimers::new());
+            {
+                let timers = app.state::<startup::StartupTimers>();
+                timers.record("setup-start");
+            }
+
             #[cfg(debug_assertions)]
             setup_logging();
             
@@ -211,28 +256,62 @@ pub fn run() {
             // Phase 0: Read critical config synchronously BEFORE anything else
             let critical_cfg = config::read_critical_config(app.handle());
             app.manage(config::CriticalConfigState(std::sync::Mutex::new(critical_cfg)));
+            {
+                let timers = app.state::<startup::StartupTimers>();
+                timers.record("critical-config");
+            }
 
             // Initialize DB with connection pool
             let pool = db::init_db(app.handle()).expect("Failed to initialize database");
             app.manage(db::DbState(pool));
+            {
+                let timers = app.state::<startup::StartupTimers>();
+                timers.record("db-init");
+            }
 
             let config = config::load_config(app.handle());
             app.manage(config::ConfigState(std::sync::Mutex::new(config)));
 
-            // Initialize FS Watcher state
-            app.manage(fs_watcher::WatcherState::new());
+            // 0.2 — Rust-side Explorer cache (source of truth for the tree).
+            app.manage(workspace_cache::WorkspaceCache::new());
+            // 5.1 — Unified file watcher service (one watcher per workspace root).
+            app.manage(watcher_service::WatcherState::new());
             
             app.manage(file_ops::SearchRegistry {
                 active_searches: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             });
+            app.manage(git_service::GitState::new(app.handle()));
+
+            // D.1 — Git detected ONCE at startup (background, non-blocking):
+            // fix the macOS shell PATH first, then run the tiered detection and
+            // persist the result. The frontend later reads the cached value via
+            // `get_git_availability` instead of re-detecting on every command.
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    git_service::fix_macos_shell_path().await;
+                    let state = app_handle.state::<git_service::GitState>();
+                    let manual = state.manual_path.lock().unwrap().clone();
+                    let detected = git_service::detect_git_async(manual.as_deref()).await;
+                    {
+                        let mut avail = state.availability.lock().unwrap();
+                        *avail = detected;
+                    }
+                    state.persist(&app_handle);
+                });
+            }
 
             #[cfg(debug_assertions)]
             start_memory_monitor(app.handle().clone());
 
+            {
+                let timers = app.state::<startup::StartupTimers>();
+                timers.record("setup-done");
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
             // ── Startup ──
             load_startup_state,
             // ── Legacy DB Commands ──
@@ -277,6 +356,7 @@ pub fn run() {
             file_ops::read_file_binary,
             file_ops::read_file_text,
             file_ops::read_file_chunked,
+            file_ops::read_file_stream,
             file_ops::save_file,
             file_ops::read_directory,
             file_ops::read_directory_flat,
@@ -287,17 +367,30 @@ pub fn run() {
             file_ops::create_directory,
             file_ops::detect_language,
             file_ops::rename_item,
+            file_ops::rename_items,
             file_ops::delete_item,
+            file_ops::delete_items,
             file_ops::copy_item,
+            file_ops::copy_items,
             file_ops::create_file,
-            file_ops::search_workspace,
+            // ── Module C — Global Search (ripgrep engine) ──
+            search::search_files_stream,
+            search::replace_all_files,
             file_ops::cancel_search,
             file_ops::list_all_files,
+            // ── FS Watcher (unified service 5.1) ──
             file_ops::batch_read_files,
             file_ops::get_files_metadata,
-            // ── FS Watcher ──
-            fs_watcher::start_fs_watch,
-            fs_watcher::stop_fs_watch,
+            // ── FS Watcher (unified service 5.1) ──
+            watcher_service::start_fs_watch,
+            watcher_service::stop_fs_watch,
+            // ── Workspace Cache / Streaming (0.2, 0.3) ──
+            workspace_cache::expand_folder,
+            workspace_cache::read_directory_stream,
+            workspace_cache::read_directory_cached,
+            // ── Startup Timers (0.6) ──
+            startup::get_startup_timers,
+            startup::record_startup_timer,
             // ── Symbol Index ──
             symbol_index::index_workspace,
             symbol_index::get_symbol_index,
@@ -307,6 +400,23 @@ pub fn run() {
             symbol_index::rename_symbol,
             show_main_window,
             open_new_window,
+            // ── Module D — Source Control ──
+            git_service::get_git_availability,
+            git_service::check_git_availability,
+            git_service::re_detect_git,
+            git_service::set_git_manual_path,
+            git_service::get_repo_state,
+            git_service::git_init,
+            git_service::git_stage,
+            git_service::git_unstage,
+            git_service::git_commit,
+            git_service::git_discard,
+            git_service::git_push,
+            git_service::git_pull,
+            git_service::git_fetch,
+            git_service::git_cancel_op,
+            git_service::get_git_file_content,
+            git_service::git_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

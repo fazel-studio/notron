@@ -57,16 +57,17 @@
   import { showMinimap } from '@replit/codemirror-minimap';
   import { invoke } from '@tauri-apps/api/core';
   import { settingsStore } from '../stores/settings.svelte';
-  import { editorStore } from '../stores/editor';
+  import { editorStore, buildReplaceRegex, applyReplacement } from '../stores/editor';
   import { uiStore } from '../stores/ui';
   import { themeStore } from '../stores/theme';
   
   let { tabId, content, filePath }: { tabId: string; content: string; filePath: string } = $props();
 
+  let currentTabId: string | null = null;
+  const editorStates = new Map<string, EditorState>();
   let editorEl: HTMLDivElement;
   let editorView = $state<EditorView | null>(null);
   let scrollDOM: HTMLElement | null = $state(null);
-  let isLargeFile = $state(false);
   let isDark = $derived($themeStore.isDark);
   let gutterWidth = $state(0);
   let docChangedCount = $state(0);
@@ -75,6 +76,7 @@
   const tabsStore = editorStore.tabs;
   let currentTab = $derived($tabsStore.find((t: any) => t.id === tabId));
   let tabStatus = $derived(currentTab?.status);
+  let isLargeFile = $derived(currentTab?.isLargeFile || (content && content.length > 250000));
   
   const foldMarkers = new Set<{ app: any, marker: HTMLElement }>();
 
@@ -136,13 +138,6 @@
   const ui = uiStore;
   let minimapDom: HTMLElement | null = null;
 
-  
-  $effect(() => {
-    invoke<boolean>('is_large_file', { path: filePath }).then(large => {
-      isLargeFile = large;
-    }).catch(() => {});
-  });
-
   async function loadLanguage() {
     if (isLargeFile) {
       return;
@@ -157,10 +152,16 @@
   }
 
   function setupEditor() {
-    if (editorView) {
-      editorView.destroy();
-      editorView = null;
+    if (!editorView) {
+        editorView = new EditorView({ parent: editorEl });
+        scrollDOM = editorView.scrollDOM;
     }
+    
+    // Save old state
+    if (currentTabId && editorStates.has(currentTabId)) {
+        editorStates.set(currentTabId, editorView.state);
+    }
+    currentTabId = tabId;
 
     let cursorScrollTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -264,25 +265,27 @@
       ] : []),
     ];
 
-    const tabData = editorStore.getTabsSnapshot().find(t => t.id === tabId);
-    let state;
-    if (tabData && tabData.undoHistory && !isLargeFile) {
-      try {
-        state = EditorState.fromJSON(
-          { doc: content, history: tabData.undoHistory },
-          { extensions: extBase },
-          { history: historyField }
-        );
-      } catch (e) {
-        console.warn('Failed to restore history', e);
-        state = EditorState.create({ doc: content, extensions: extBase });
-      }
-    } else {
-      state = EditorState.create({ doc: content, extensions: extBase });
+    let state = editorStates.get(tabId);
+    if (!state) {
+        const tabData = editorStore.getTabsSnapshot().find(t => t.id === tabId);
+        if (tabData && tabData.undoHistory && !isLargeFile) {
+          try {
+            state = EditorState.fromJSON(
+              { doc: content || '', history: tabData.undoHistory },
+              { extensions: extBase },
+              { history: historyField }
+            );
+          } catch (e) {
+            console.warn('Failed to restore history', e);
+            state = EditorState.create({ doc: content || '', extensions: extBase });
+          }
+        } else {
+          state = EditorState.create({ doc: content || '', extensions: extBase });
+        }
+        editorStates.set(tabId, state);
     }
     
-    editorView = new EditorView({ state, parent: editorEl });
-    scrollDOM = editorView.scrollDOM;
+    editorView.setState(state);
 
     const scroll = editorStore.getScroll(tabId);
     if (scroll) {
@@ -405,6 +408,26 @@
     else if (action === 'moveLineDown') moveLineDown(editorView);
     else if (action === 'find') uiStore.setFileSearchOpen(true);
     else if (action === 'replace') uiStore.setFileSearchOpen(true);
+    else if (action === 'replaceAll' && customEvent.detail?.options) {
+      // Replace All on the active (live) tab via a single CodeMirror
+      // transaction — undoable with Ctrl+Z, and the updateListener keeps
+      // the store + autosave in sync.
+      const { path: targetPath, options } = customEvent.detail;
+      if (currentTab?.path !== targetPath) return;
+      const re = buildReplaceRegex(options.query, options);
+      const doc = editorView.state.doc.toString();
+      const changes: { from: number; to: number; insert: string }[] = [];
+      re.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(doc)) !== null) {
+        if (m[0].length === 0) { re.lastIndex++; continue; }
+        changes.push({ from: m.index, to: m.index + m[0].length, insert: applyReplacement(m[0], re, options) });
+      }
+      if (changes.length > 0) {
+        editorView.dispatch({ changes });
+        editorView.focus();
+      }
+    }
     else if (action === 'goto' && customEvent.detail?.line !== undefined) {
       const lineNum = customEvent.detail.line;
       if (lineNum > 0 && lineNum <= editorView.state.doc.lines) {
@@ -432,24 +455,62 @@
   onMount(() => {
     setupEditor();
     window.addEventListener('editor:action', handleAction);
+    window.addEventListener('editor:append-chunk', handleAppendChunk);
+  });
+  
+  function handleAppendChunk(e: any) {
+      if (!editorView) return;
+      const { tabId: tId, chunk } = e.detail;
+      let state = editorStates.get(tId);
+      if (state) {
+          if (tId === currentTabId) {
+              editorView.dispatch({
+                  changes: { from: editorView.state.doc.length, insert: chunk }
+              });
+              editorStates.set(tId, editorView.state);
+          } else {
+              const tr = state.update({
+                  changes: { from: state.doc.length, insert: chunk }
+              });
+              editorStates.set(tId, tr.state);
+          }
+      } else {
+          // Store chunk so when we create state we have it
+          const tabData = editorStore.getTabsSnapshot().find(t => t.id === tId);
+          if (tabData) {
+               editorStore.updateContent(tId, (tabData.content || '') + chunk);
+          }
+      }
+  }
+  
+  (() => {
+      // Re-run setupEditor when tabId changes
+      if (tabId && tabId !== currentTabId && editorView) {
+          setupEditor();
+      }
   });
 
   onDestroy(() => {
     window.removeEventListener('editor:action', handleAction);
+    // Instead of just current tab, save history for all tracked states
     if (editorView) {
-      if (!isLargeFile) {
-        try {
-          const serializedHistory = editorView.state.toJSON({ history: historyField }).history;
-          editorStore.updateUndoHistory(tabId, serializedHistory);
-        } catch (e) {
-          console.warn('Failed to serialize history', e);
-        }
+      for (const [id, state] of editorStates.entries()) {
+          const t = editorStore.getTabsSnapshot().find(tb => tb.id === id);
+          const isL = t?.isLargeFile || (state.doc.length > 250000);
+          if (!isL) {
+             try {
+                const serializedHistory = state.toJSON({ history: historyField }).history;
+                editorStore.updateUndoHistory(id, serializedHistory);
+             } catch(e) {}
+          }
+          editorStore.updateContent(id, state.doc.toString());
       }
-      editorStore.updateContent(tabId, editorView.state.doc.toString());
-      const pos = editorView.state.selection.main.head;
-      const line = editorView.state.doc.lineAt(pos);
-      editorStore.updateCursor(tabId, line.number, pos - line.from + 1);
-      editorStore.updateScroll(tabId, editorView.scrollDOM.scrollTop, editorView.scrollDOM.scrollLeft);
+      if (currentTabId) {
+          const pos = editorView.state.selection.main.head;
+          const line = editorView.state.doc.lineAt(pos);
+          editorStore.updateCursor(currentTabId, line.number, pos - line.from + 1);
+          editorStore.updateScroll(currentTabId, editorView.scrollDOM.scrollTop, editorView.scrollDOM.scrollLeft);
+      }
       editorView.destroy();
       editorView = null;
     }
@@ -482,7 +543,15 @@
         if (!currentTab) return;
         invoke('read_file_text', { path: currentTab.path }).then((content) => {
           editorStore.setInitialContent(tabId, content as string);
-        }).catch(() => {});
+        }).catch(async (err) => {
+          if (String(err) === '__LARGE_FILE__') {
+            try {
+              const chunked = await invoke<any>('read_file_chunked', { path: currentTab.path });
+              editorStore.setInitialContent(tabId, chunked.content);
+              editorStore.updateTab(tabId, { isLargeFile: true, isPreview: true });
+            } catch(e) {}
+          }
+        });
       }}>Reload from Disk</button>
     </div>
   {/if}

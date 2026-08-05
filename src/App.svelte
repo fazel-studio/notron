@@ -2,7 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open, save } from '@tauri-apps/plugin-dialog';
-  import { watch } from '@tauri-apps/plugin-fs';
+  import { listen } from '@tauri-apps/api/event';
   import { editorStore } from './lib/stores/editor';
   import { uiStore } from './lib/stores/ui';
   import { getHumanReadableError } from './lib/utils/error';
@@ -23,6 +23,7 @@
   import { terminalStore } from './lib/stores/terminal';
   import { paletteStore, type PaletteItem } from './lib/stores/palette';
   import { navigationStore } from './lib/stores/navigation';
+  import { gitDecorationStore } from './lib/stores/gitDecoration';
   import { onMount } from 'svelte';
 
   const tabs = editorStore.tabs;
@@ -31,24 +32,39 @@
   const ui = uiStore;
 
   let closingTabId = $state<string | null>(null);
+  let isClosingWindow = $state(false);
+  let closeQueue = $state<string[]>([]);
+  let pendingCloseConfirmed = $state(false);
   let isCommandPaletteOpen = $state(false);
   let commandPaletteInitialQuery = $state('');
   let isSettingsOpen = $state(false);
   let isGoToLineOpen = $state(false);
   let appReady = $state(false);
   let currentCursorPos = $state('Ln 1, Col 1');
+  let isMaximized = $state(false);
 
   let CommandPaletteComponent = $state<any>(null);
   let SettingsPageComponent = $state<any>(null);
   let GoToLineComponent = $state<any>(null);
   let SearchPanelComponent = $state<any>(null);
+  let SourceControlPanelComponent = $state<any>(null);
   let MarkdownPreviewComponent = $state<any>(null);
   let ImageViewerComponent = $state<any>(null);
   let EditorComponent = $state<any>(null);
+  let DiffEditorComponent = $state<any>(null);
 
   let showSmartSearchModal = $state(false);
   let activeTab = $derived($tabs.find((t: any) => t.id === $activeTabId) || null);
   let isDark = $derived($themeStore.isDark);
+
+  // Precomputed name→count map so the tab bar avoids an O(n²) filter per render.
+  const tabNameCounts = $derived(
+    $tabs.reduce((m, t: any) => {
+      if (t.path?.startsWith('Untitled')) return m;
+      m.set(t.name, (m.get(t.name) ?? 0) + 1);
+      return m;
+    }, new Map<string, number>())
+  );
 
   $effect(() => {
     const workspacePath = $ui.explorerRoot;
@@ -63,6 +79,35 @@
 
     document.title = windowTitle;
     getCurrentWindow().setTitle(windowTitle).catch(() => {});
+  });
+
+  $effect(() => {
+    const appWindow = getCurrentWindow();
+    const syncMaximized = () => appWindow.isMaximized().then((v) => { isMaximized = v; }).catch(() => {});
+    syncMaximized();
+    const unlisten = appWindow.onResized(syncMaximized);
+    return () => { unlisten.then((fn) => fn()).catch(() => {}); };
+  });
+
+  // Intercept window close: prompt for unsaved changes before closing
+  $effect(() => {
+    const appWindow = getCurrentWindow();
+    const unlisten = appWindow.onCloseRequested((event) => {
+      if (pendingCloseConfirmed) return;
+      event.preventDefault();
+      const modified = editorStore.getTabsSnapshot().filter((t: any) =>
+        t.isModified || (t.path.startsWith('Untitled') && t.content && t.content.trim() !== '')
+      );
+      if (modified.length === 0) {
+        pendingCloseConfirmed = true;
+        appWindow.close();
+        return;
+      }
+      isClosingWindow = true;
+      closeQueue = modified.map((t: any) => t.id);
+      closingTabId = closeQueue[0];
+    });
+    return () => { unlisten.then((fn) => fn()).catch(() => {}); };
   });
 
   // Sync settings theme to themeStore
@@ -91,6 +136,9 @@
   $effect(() => {
     if ($ui.activeSidebarPanel === 'search' && $ui.isSidebarOpen && !SearchPanelComponent) {
       import('./lib/components/SearchPanel.svelte').then(m => SearchPanelComponent = m.default);
+    }
+    if ($ui.activeSidebarPanel === 'git' && $ui.isSidebarOpen && !SourceControlPanelComponent) {
+      import('./lib/components/SourceControlPanel.svelte').then(m => SourceControlPanelComponent = m.default);
     }
   });
 
@@ -220,18 +268,26 @@
         const fileName = selected.split(/[/\\]/).pop() || 'Unknown';
         let content = '';
         const isImage = /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(fileName);
+        let isLargeFile = false;
+        let isPreview = false;
         if (!isImage) {
           try {
             content = await invoke<string>('read_file_text', { path: selected });
           } catch (e) {
             if (String(e) === '__BINARY__') content = '';
-            else throw e;
+            else if (String(e) === '__LARGE_FILE__') {
+              const chunked = await invoke<any>('read_file_chunked', { path: selected });
+              content = chunked.content;
+              isLargeFile = true;
+              isPreview = true;
+            } else throw e;
           }
         }
         editorStore.addTab({
           id: `tab-${Date.now()}`, path: selected, name: fileName, content,
           language: isImage ? 'image' : await invoke<string>('detect_language', { path: selected }),
-          isPreview: false
+          isPreview,
+          isLargeFile
         });
       }
     } catch (err) { console.error(err); }
@@ -370,7 +426,7 @@
           },
         }).catch(() => {}),
         invoke('save_dirty_tab_snapshots', {
-          tabs: session.tabs.filter((t: any) => t.isModified && t.content !== undefined).map((t: any) => ({
+          tabs: session.tabs.filter((t: any) => t.isModified && t.content !== undefined && !t.isLargeFile).map((t: any) => ({
             path: t.path,
             content: t.content,
             cursor_pos: t.cursor?.line || 0,
@@ -428,6 +484,12 @@
     fullSessionSaveTimer = setTimeout(saveWorkspaceSession, 2000);
   }
 
+  // 0.6 — record a frontend startup phase in the Rust StartupTimers store,
+  // queryable later via `get_startup_timers`.
+  function recordStartupPhase(name: string) {
+    invoke('record_startup_timer', { name }).catch(() => {});
+  }
+
   // ============================================================
   // Section 1.2: Shell-First Rendering + Tiered State Loading
   // Section 1.4 + 6.1: IPC Batching — all startup queries in ONE round-trip
@@ -436,8 +498,12 @@
     // Phase 0: Shell renders immediately (appReady=false shows skeleton)
     // Theme + dimensions already loaded from localStorage (sync)
     appReady = false;
+    recordStartupPhase('frontend-start');
 
     const root = uiStore.getSnapshot().explorerRoot;
+
+    // Hoisted so the crash-recovery phase (outside the try block) can read it.
+    let crashFlag = false;
 
     try {
       // Phase 2: Single IPC round-trip for ALL startup state
@@ -446,10 +512,20 @@
         critical: any;
         ui_state: any | null;
         session_pairs: [string, string][];
+        global_settings: Record<string, any>;
+        workspace_settings: Record<string, any>;
+        crash_flag: boolean;
       }>('load_startup_state', { workspaceId: root || null });
 
-      // Apply config
-      await settingsStore.loadAllSettings(root || undefined);
+      // Apply settings from the folded startup payload (no extra round-trips)
+      settingsStore.applyLoadedSettings(
+        startupState.global_settings,
+        startupState.workspace_settings,
+        root || undefined
+      );
+
+      // Capture crash flag before leaving the try block's scope
+      crashFlag = startupState.crash_flag === true;
 
       // Apply UI state from DB (overrides localStorage if available)
       if (startupState.ui_state) {
@@ -531,7 +607,10 @@
       editorStore.setTabs([], null);
     }
 
+    recordStartupPhase('frontend-state-loaded');
+
     appReady = true;
+    recordStartupPhase('frontend-ready');
     setTimeout(() => {
       invoke('show_main_window').catch(e => console.error('Failed to show window', e));
     }, 50);
@@ -549,9 +628,8 @@
       }
     }
 
-    // Phase 4: Crash Recovery Check
+    // Phase 4: Crash Recovery Check (flag is now included in startup state)
     try {
-      const crashFlag = await invoke<boolean>('check_crash_flag');
       if (crashFlag) {
         try {
           const dirtySnapshots = await invoke<any[]>('get_dirty_tab_snapshots');
@@ -585,6 +663,7 @@
 
     // Phase 5: Background tasks via requestIdleCallback
     scheduleBackgroundTasks();
+    recordStartupPhase('frontend-done');
   }
 
   function scheduleBackgroundTasks() {
@@ -599,6 +678,12 @@
     idle(() => {
       if (!EditorComponent) {
         import('./lib/components/Editor.svelte').then(m => EditorComponent = m.default);
+      }
+    });
+    // Warm the file index for Ctrl+P in the background (non-blocking)
+    idle(() => {
+      if (uiStore.getSnapshot().explorerRoot) {
+        ensurePaletteLoaded();
       }
     });
   }
@@ -619,6 +704,11 @@
         if (String(err) === '__BINARY__') {
           editorStore.setTabUnsupported(tabId, true);
           editorStore.setInitialContent(tabId, '');
+        } else if (String(err) === '__LARGE_FILE__') {
+          const chunked = await invoke<any>('read_file_chunked', { path });
+          editorStore.setInitialContent(tabId, chunked.content);
+          // Set isLargeFile to true and disable editing to prevent data loss
+          editorStore.updateTab(tabId, { isLargeFile: true, isPreview: true });
         } else {
           console.error('Failed to load active tab content:', err);
         }
@@ -635,7 +725,16 @@
         critical: any;
         ui_state: any | null;
         session_pairs: [string, string][];
+        global_settings: Record<string, any>;
+        workspace_settings: Record<string, any>;
+        crash_flag: boolean;
       }>('load_startup_state', { workspaceId: root || null });
+
+      settingsStore.applyLoadedSettings(
+        startupState.global_settings,
+        startupState.workspace_settings,
+        root
+      );
 
       if (startupState.ui_state) {
         const u = startupState.ui_state;
@@ -734,10 +833,32 @@
       editorStore.setTabLoading(tabId, true);
       invoke<string>('read_file_text', { path }).then(content => {
         editorStore.setInitialContent(tabId, content);
-      }).catch(err => {
+      }).catch(async err => {
         if (String(err) === '__BINARY__') {
           editorStore.setTabUnsupported(tabId, true);
           editorStore.setInitialContent(tabId, '');
+        } else if (String(err) === '__LARGE_FILE__') {
+          try {
+            const { Channel } = await import('@tauri-apps/api/core');
+            const channel = new Channel<{ chunk: string; done: boolean }>();
+            let firstChunk = true;
+            channel.onmessage = (message) => {
+               if (message.done) {
+                  editorStore.updateTab(tabId, { isLoading: false });
+                  return;
+               }
+               if (firstChunk) {
+                   editorStore.setInitialContent(tabId, message.chunk);
+                   editorStore.updateTab(tabId, { isLargeFile: true, isPreview: true });
+                   firstChunk = false;
+               } else {
+                   window.dispatchEvent(new CustomEvent('editor:append-chunk', {
+                       detail: { tabId, chunk: message.chunk }
+                   }));
+               }
+            };
+            await invoke('read_file_stream', { path, channel });
+          } catch(e) { console.error(e); }
         } else {
           console.error("Failed to lazy load tab content:", err);
         }
@@ -750,8 +871,11 @@
 
   // Trigger EditorComponent lazy load as soon as a non-special tab exists (even with null content)
   $effect(() => {
-    if (activeTab && activeTab.language !== 'markdown-preview' && activeTab.language !== 'image' && activeTab.language !== 'welcome' && !EditorComponent) {
+    if (activeTab && activeTab.language !== 'markdown-preview' && activeTab.language !== 'image' && activeTab.language !== 'welcome' && !EditorComponent && !activeTab.isDiff) {
       import('./lib/components/Editor.svelte').then(m => EditorComponent = m.default);
+    }
+    if (activeTab && activeTab.isDiff && !DiffEditorComponent) {
+      import('./lib/components/DiffEditor.svelte').then(m => DiffEditorComponent = m.default);
     }
   });
 
@@ -781,22 +905,32 @@
     { id: 'go-to-line', label: 'Go to Line', category: 'command', shortcut: 'Ctrl+G', action: () => isGoToLineOpen = true }
   ];
 
-  $effect(() => {
-    const root = $ui.explorerRoot;
-    if (appReady && root) {
-      paletteStore.loadWorkspaceFiles(
-        root,
-        baseCommands,
-        (path) => {
-          const name = path.split(/[/\\]/).pop() || 'Unknown';
-          editorStore.addTab({ id: path, path, name, content: null, language: 'plaintext', isPreview: false });
-          editorStore.setActiveTab(path);
-        }
-      );
-    } else if (appReady && !root) {
+  // Palette file index is built lazily (on first palette open) so startup never
+  // blocks on a full workspace walk. An idle prefetch warms it afterwards.
+  let paletteLoadedFor = $state<string | null>(null);
+
+  function openFileFromPalette(path: string) {
+    const name = path.split(/[/\\]/).pop() || 'Unknown';
+    editorStore.addTab({ id: path, path, name, content: null, language: 'plaintext', isPreview: false });
+    editorStore.setActiveTab(path);
+  }
+
+  function ensurePaletteLoaded() {
+    const root = uiStore.getSnapshot().explorerRoot;
+    if (root) {
+      if (paletteLoadedFor === root) return;
+      paletteLoadedFor = root;
+      paletteStore.loadWorkspaceFiles(root, baseCommands, openFileFromPalette);
+    } else {
       paletteStore.initItems(baseCommands);
     }
-  });
+  }
+
+  function openCommandPalette(initialQuery = '') {
+    commandPaletteInitialQuery = initialQuery;
+    ensurePaletteLoaded();
+    isCommandPaletteOpen = true;
+  }
 
   async function handleOpenFolder() {
     try {
@@ -836,18 +970,72 @@
     }
   }
 
+  function advanceCloseQueue() {
+    closeQueue = closeQueue.slice(1);
+    if (closeQueue.length > 0) {
+      closingTabId = closeQueue[0];
+    } else {
+      isClosingWindow = false;
+      closingTabId = null;
+      pendingCloseConfirmed = true;
+      getCurrentWindow().close();
+    }
+  }
+
+  function handleCloseDialogCancel() {
+    if (isClosingWindow) {
+      isClosingWindow = false;
+      closeQueue = [];
+    }
+    closingTabId = null;
+  }
+
+  function handleCloseDialogDontSave() {
+    if (!closingTabId) return;
+    editorStore.closeTab(closingTabId);
+    if (isClosingWindow) {
+      advanceCloseQueue();
+    } else {
+      closingTabId = null;
+      debouncedSaveFullSession();
+    }
+  }
+
   async function handleCloseSave() {
     if (!closingTabId) return;
     const tab = $tabs.find((t: any) => t.id === closingTabId);
     if (!tab) { closingTabId = null; return; }
-    if (tab.path.startsWith('Untitled')) {
-      const selected = await save();
-      if (selected && typeof selected === 'string') editorStore.closeTab(closingTabId);
-    } else {
-      editorStore.closeTab(closingTabId);
+    try {
+      if (tab.path.startsWith('Untitled')) {
+        const selected = await save();
+        if (!selected || typeof selected !== 'string') return;
+        await invoke('save_file', { path: selected, content: tab.content ?? '' });
+      } else {
+        if (tab.content !== null) {
+          await invoke('save_file', { path: tab.path, content: tab.content });
+        }
+      }
+    } catch (err) {
+      uiStore.addToast('Save Failed', 'alert', getHumanReadableError(err));
+      return;
     }
-    closingTabId = null;
-    debouncedSaveFullSession();
+    editorStore.closeTab(closingTabId);
+    if (isClosingWindow) {
+      advanceCloseQueue();
+    } else {
+      closingTabId = null;
+      debouncedSaveFullSession();
+    }
+  }
+
+  function openGlobalSearch() {
+    uiStore.setSidebarOpen(true);
+    uiStore.setActiveSidebarPanel('search');
+    setTimeout(() => {
+      const el = document.querySelector<HTMLInputElement>('#global-search-input');
+      el?.focus();
+      el?.select();
+    }, 50);
   }
 
   function handleGlobalKeydown(e: KeyboardEvent) {
@@ -859,17 +1047,20 @@
     // 1. Find / Search
     if ((cmdOrCtrl && (key === 'f' || key === 'g')) || e.key === 'F3') {
       e.preventDefault();
-      // Notron search not fully global yet, but we block browser default
+      // Ctrl+F opens the per-file find widget via the editor keymap; F3 /
+      // Ctrl+G remain blocked. Ctrl+Shift+F opens the global search panel.
+    }
+    if (cmdOrCtrl && e.shiftKey && key === 'f') {
+      e.preventDefault();
+      openGlobalSearch();
     }
     // 2. Print & Save
     if (cmdOrCtrl && key === 'p') {
       e.preventDefault();
       if (e.shiftKey) {
-        commandPaletteInitialQuery = '>';
-        isCommandPaletteOpen = true; 
+        openCommandPalette('>');
       } else {
-        commandPaletteInitialQuery = '';
-        isCommandPaletteOpen = true; 
+        openCommandPalette('');
       }
     }
     if (cmdOrCtrl && !e.shiftKey && key === 's') {
@@ -880,12 +1071,12 @@
       e.preventDefault(); 
       window.dispatchEvent(new CustomEvent('editor:save-as'));
     }
-    // 3. DevTools & View Source
-    if (e.key === 'F12' || 
-       (cmdOrCtrl && e.shiftKey && (key === 'i' || key === 'j')) || 
-       (cmdOrCtrl && key === 'u')) {
-      e.preventDefault();
-    }
+    // 3. DevTools & View Source (Unblocked for debugging)
+    // if (e.key === 'F12' || 
+    //    (cmdOrCtrl && e.shiftKey && (key === 'i' || key === 'j')) || 
+    //    (cmdOrCtrl && key === 'u')) {
+    //   e.preventDefault();
+    // }
     // 4. Refresh / Reload
     if (e.key === 'F5' || (cmdOrCtrl && key === 'r') || (cmdOrCtrl && e.shiftKey && key === 'r')) {
       e.preventDefault();
@@ -914,6 +1105,12 @@
     }
     if (cmdOrCtrl && key === 'b') {
       e.preventDefault(); uiStore.toggleSidebar();
+    }
+    if (cmdOrCtrl && key === 'd') {
+      e.preventDefault();
+      // Per-file find widget (VS Code "Ctrl+D" habit). The editor ignores the
+      // event when no tab is open.
+      window.dispatchEvent(new CustomEvent('editor:action', { detail: { action: 'find' } }));
     }
     if (cmdOrCtrl && key === ',') {
       e.preventDefault(); openSettings();
@@ -944,7 +1141,19 @@
     }
   });
 
-  // File watcher with proper debounce and filtering (Bagian 4.3)
+  // Unified file watcher — the Rust backend owns watching (debounce 0.4,
+  // coalescing, shared ignore rules 5.2) and fans out ONE `fs-change` event
+  // per quiet window (5.1). The frontend only reacts:
+  //   - FileTree.svelte   → Explorer cache/tree refresh
+  //   - Here             → open-tab state (deleted / reload / renamed)
+  interface FsChangeItem {
+    type: 'created' | 'deleted' | 'renamed' | 'modified';
+    path: string;
+    parentPath?: string;
+    oldPath?: string;
+    newPath?: string;
+  }
+
   $effect(() => {
     const explorerRoot = $ui.explorerRoot;
     if (!explorerRoot || !appReady) return;
@@ -952,71 +1161,109 @@
     let unsubTabs = editorStore.tabs.subscribe(debouncedSaveFullSession);
     let unsubActive = editorStore.activeTabId.subscribe(debouncedSaveFullSession);
 
-    let unwatch: (() => void) | null = null;
-    let debounceTimer: number | undefined;
-    let pendingPaths = new Set<string>();
+    let watchStarted = false;
+    let unlistenFs: (() => void) | null = null;
     let watchTimer: number | undefined;
 
     watchTimer = setTimeout(async () => {
+      // Delegate watching to the Rust unified service (5.1).
       try {
-        unwatch = await watch(explorerRoot, (event) => {
-          clearTimeout(debounceTimer);
-          (event.paths || []).forEach((p: string) => pendingPaths.add(p));
+        await invoke('start_fs_watch', { root: explorerRoot });
+        watchStarted = true;
+      } catch (e) { console.error("Failed to start Rust file watcher:", e); }
 
-          debounceTimer = setTimeout(async () => {
-            const changedPaths = new Set(pendingPaths);
-            pendingPaths.clear();
+      // D.2/D.7 — populate Git decorations for the Explorer immediately on
+      // workspace open (the backend emits `git-decorations-changed`).
+      try {
+        await invoke('get_repo_state', { cwd: explorerRoot });
+      } catch (e) { /* not a repo, git unavailable, etc. */ }
 
-            // Filter ignored paths (Bagian 4.3 - Filtering)
-            const ignorePatterns = ['node_modules', '.git', 'target', 'dist', 'build', '.cache', '.next', '.nuxt', '.svelte-kit', '__pycache__', '.pytest_cache'];
-            const ignoreExts = ['.lock', '.log', '.tmp', '.temp', '.swp', '.swo'];
-            const shouldIgnore = (p: string) => {
-              const lower = p.toLowerCase();
-              if (ignorePatterns.some(ig => lower.includes(ig))) return true;
-              if (ignoreExts.some(ext => lower.endsWith(ext))) return true;
-              return false;
-            };
-            const relevantChanges = [...changedPaths].filter(p => !shouldIgnore(p));
+      unlistenFs = await listen('fs-change', async (event) => {
+        const payload = (event.payload ?? {}) as { changes: FsChangeItem[] };
+        const changes = payload.changes ?? [];
+        if (changes.length === 0) return;
 
-            // Batch processing - if 50+ events, do full refresh
-            if (relevantChanges.length >= 50) {
-              uiStore.triggerExplorerRefresh();
-            } else if (relevantChanges.length > 0) {
-              // Selective updates (Bagian 4.3 - Update UI)
-              uiStore.triggerExplorerRefresh();
+        const changedPaths = new Set<string>();
+        const removedDecoPaths: string[] = [];
+
+        for (const change of changes) {
+          if (change.type === 'renamed') {
+            if (change.oldPath && change.newPath) {
+              editorStore.updateTabPath(change.oldPath, change.newPath);
+              changedPaths.add(change.newPath);
+              // Optimistically drop the stale decoration for the old path (D.7);
+              // the backend's git-status-refresh will recompute the delta.
+              removedDecoPaths.push(change.oldPath);
             }
+          } else {
+            if (change.path) changedPaths.add(change.path);
+            if (change.type === 'deleted') {
+              editorStore.markTabDeleted(change.path);
+              removedDecoPaths.push(change.path);
+            }
+          }
+        }
 
-            // Check if any open tabs were affected
-            editorStore.getTabsSnapshot().filter((tab: any) => {
-              if (!tab.path || tab.path.startsWith('Untitled')) return false;
-              return (changedPaths.has(tab.path) || changedPaths.has(explorerRoot)) && tab.content !== null;
-            }).forEach(async (tab: any) => {
-              try {
-                const exists = await invoke<boolean>('file_exists', { path: tab.path });
-                if (!exists) {
-                  // File deleted while open - mark tab (Bagian 13.2)
-                  editorStore.markTabDeleted(tab.id);
-                  return;
-                }
-                try {
-                  const content = await invoke<string>('read_file_text', { path: tab.path });
-                  const latestTab = editorStore.getTabsSnapshot().find((t: any) => t.id === tab.id);
-                  if (latestTab && !latestTab.isModified && content !== latestTab.content) {
-                    editorStore.setInitialContent(tab.id, content);
-                  } else if (latestTab && latestTab.isModified && content !== latestTab.originalContent) {
-                    editorStore.markTabConflict(tab.id);
-                    console.warn(`External change detected for ${tab.path} while modified in editor`);
-                  }
-                } catch (err) {
-                  if (String(err) === '__BINARY__') {
-                    editorStore.setTabUnsupported(tab.id, true);
-                  }
-                }
-              } catch (err) {}
-            });
-          }, 300);
-        }, { recursive: true, delayMs: 0 });
-      } catch (e) { console.error("Failed to watch explorer root:", e); }
+        if (removedDecoPaths.length > 0) {
+          gitDecorationStore.removePaths(removedDecoPaths);
+        }
+
+        if (changedPaths.size === 0) return;
+
+        // Reload open tabs affected by create/modify events — batched into
+        // 2 IPC calls (get_files_metadata + batch_read_files) instead of N×2
+        // per tab.
+        const affectedTabs = editorStore.getTabsSnapshot().filter((tab: any) => {
+          if (!tab.path || tab.path.startsWith('Untitled')) return false;
+          return changedPaths.has(tab.path) && tab.content !== null;
+        });
+
+        if (affectedTabs.length === 0) return;
+
+        const affectedPaths = affectedTabs.map((t: any) => t.path);
+        const metadata = await invoke<any[]>('get_files_metadata', { paths: affectedPaths }).catch(() => []);
+        const existing = new Set<string>(metadata.map((m: any) => m.path));
+        const sizeByPath = new Map<string, number>(metadata.map((m: any) => [m.path, m.size]));
+
+        // Mark deleted tabs
+        for (const tab of affectedTabs) {
+          if (!existing.has(tab.path)) editorStore.markTabDeleted(tab.id);
+        }
+
+        // Reload small files in one batch (large files via chunked reads)
+        const smallTabs = affectedTabs.filter((t: any) => existing.has(t.path) && (sizeByPath.get(t.path) ?? 0) <= 1_048_576);
+        const largeTabs = affectedTabs.filter((t: any) => existing.has(t.path) && (sizeByPath.get(t.path) ?? 0) > 1_048_576);
+
+        if (smallTabs.length > 0) {
+          const contents = await invoke<Record<string, string | null>>('batch_read_files', {
+            paths: smallTabs.map((t: any) => t.path)
+          }).catch(() => ({} as Record<string, string | null>));
+
+          for (const tab of smallTabs) {
+            const content = contents[tab.path];
+            if (content === null || content === undefined) continue; // binary / unreadable
+            const latestTab = editorStore.getTabsSnapshot().find((t: any) => t.id === tab.id);
+            if (!latestTab) continue;
+            if (!latestTab.isModified && content !== latestTab.content) {
+              editorStore.setInitialContent(tab.id, content);
+            } else if (latestTab.isModified && content !== latestTab.originalContent) {
+              editorStore.markTabConflict(tab.id);
+              console.warn(`External change detected for ${tab.path} while modified in editor`);
+            }
+          }
+        }
+
+        for (const tab of largeTabs) {
+          try {
+            const chunked = await invoke<any>('read_file_chunked', { path: tab.path });
+            const latestTab = editorStore.getTabsSnapshot().find((t: any) => t.id === tab.id);
+            if (latestTab && !latestTab.isModified && chunked.content !== latestTab.content) {
+              editorStore.setInitialContent(tab.id, chunked.content);
+              editorStore.updateTab(tab.id, { isLargeFile: true, isPreview: true });
+            }
+          } catch (e) { /* file may have been removed mid-read */ }
+        }
+      });
     }, 1500);
 
     // Save session on beforeunload
@@ -1048,8 +1295,8 @@
 
     return () => {
       clearTimeout(watchTimer);
-      if (unwatch) unwatch();
-      if (debounceTimer) clearTimeout(debounceTimer);
+      if (unlistenFs) unlistenFs();
+      if (watchStarted) invoke('stop_fs_watch', { root: explorerRoot }).catch(() => {});
       unsubTabs();
       unsubActive();
       window.removeEventListener('beforeunload', handleBeforeUnload);
@@ -1109,10 +1356,7 @@
     window.addEventListener('keydown', handleGlobalKeydown);
     const preventCM = (e: MouseEvent) => e.preventDefault();
     window.addEventListener('contextmenu', preventCM);
-    const openCmd = () => {
-      commandPaletteInitialQuery = '>';
-      isCommandPaletteOpen = true;
-    };
+    const openCmd = () => openCommandPalette('>');
     window.addEventListener('open-command-palette', openCmd);
     return () => {
       window.removeEventListener('keydown', handleGlobalKeydown);
@@ -1124,15 +1368,19 @@
 
 <div class="h-screen w-screen flex flex-col overflow-hidden bg-canvas text-primary"
   class:dark={isDark}
+  class:black={$themeStore.theme === 'black'}
 >
 
 
-  <div class="h-8 flex items-center justify-between px-2 select-none bg-surface-2 text-primary">
-    <div data-tauri-drag-region class="flex items-center h-full flex-1">
+  <div class="h-9 flex items-center justify-between px-2 select-none bg-surface-2 text-primary" data-tauri-drag-region>
+    <div class="flex items-center h-full" data-tauri-drag-region="false">
       <img src="/notron.png" alt="Notron Logo" class="w-4 h-4 ml-1 pointer-events-none" />
       <TitleMenuBar />
     </div>
-    <div data-tauri-drag-region class="h-full flex items-center justify-center flex-1">
+    
+    <div class="flex-1 h-full pointer-events-none"></div>
+
+    <div class="h-full flex items-center justify-center" data-tauri-drag-region="false">
       <div class="flex items-center gap-1">
         <button 
           class="p-1 rounded transition-colors hover:bg-hover text-icon-default hover:text-icon-active disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1152,11 +1400,8 @@
         </button>
 
         <button 
-          class="flex items-center justify-center w-72 h-6 px-3 mx-2 rounded-md border border-subtle bg-surface hover:bg-hover transition-colors text-xs text-secondary hover:text-primary cursor-pointer shadow-sm nodrag"
-          onclick={() => {
-            commandPaletteInitialQuery = '';
-            isCommandPaletteOpen = true;
-          }}
+          class="flex items-center justify-center w-72 h-6 px-3 mx-2 rounded-md border border-subtle bg-surface hover:bg-hover transition-colors text-xs text-secondary hover:text-primary cursor-pointer shadow-sm"
+          onclick={() => openCommandPalette('')}
           title="Search files (Ctrl+P)"
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-2 opacity-70"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
@@ -1164,14 +1409,33 @@
         </button>
       </div>
     </div>
-    <div class="flex items-center justify-end flex-1">
-      <button aria-label="Minimize" onclick={() => getCurrentWindow().minimize()} class="p-2 bg-transparent transition-colors hover:bg-hover text-icon-default hover:text-icon-active">
+    
+    <div class="flex-1 h-full pointer-events-none"></div>
+
+    <div class="flex items-center justify-end h-full" data-tauri-drag-region="false">
+      <button
+        aria-label="Minimize"
+        onclick={() => getCurrentWindow().minimize()}
+        class="w-[46px] h-full flex items-center justify-center text-icon-default hover:bg-hover hover:text-icon-active transition-colors"
+      >
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
-      <button aria-label="Maximize" onclick={() => getCurrentWindow().toggleMaximize()} class="p-2 bg-transparent transition-colors hover:bg-hover text-icon-default hover:text-icon-active">
-        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
+      <button
+        aria-label={isMaximized ? 'Restore' : 'Maximize'}
+        onclick={() => getCurrentWindow().toggleMaximize()}
+        class="w-[46px] h-full flex items-center justify-center text-icon-default hover:bg-hover hover:text-icon-active transition-colors"
+      >
+        {#if isMaximized}
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+        {:else}
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
+        {/if}
       </button>
-      <button aria-label="Close" onclick={() => getCurrentWindow().close()} class="p-2 bg-transparent transition-colors hover:bg-red-500 text-icon-default hover:text-white">
+      <button
+        aria-label="Close"
+        onclick={() => getCurrentWindow().close()}
+        class="w-[46px] h-full flex items-center justify-center text-icon-default hover:bg-red-500 hover:text-white transition-colors"
+      >
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>
@@ -1197,7 +1461,7 @@
 
         <!-- Terminal Panel Skeleton -->
         {#if $terminalStore.isVisible}
-          <div class="shrink-0 border-t border-subtle bg-surface-2" style="height: {$terminalStore.isMaximized ? 'calc(100vh - 2rem)' : `${$terminalStore.height}px`};"></div>
+          <div class="shrink-0 border-t border-subtle bg-surface-2" style="height: {$terminalStore.isMaximized ? 'calc(100vh - 2.25rem)' : `${$terminalStore.height}px`};"></div>
         {/if}
       </div>
     </div>
@@ -1222,6 +1486,15 @@
             <div class="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-8 bg-indicator-active"></div>
           {/if}
           <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+        <button aria-label="Source Control" onclick={() => { if ($ui.isSidebarOpen && $ui.activeSidebarPanel === 'git') uiStore.setSidebarOpen(false); else { uiStore.setActiveSidebarPanel('git'); uiStore.setSidebarOpen(true); } }} class="p-2 mb-2 bg-transparent cursor-pointer relative transition-colors hover:text-icon-active"
+          class:text-icon-active-tab={$ui.activeSidebarPanel === 'git' && $ui.isSidebarOpen}
+          class:text-icon-default={!($ui.activeSidebarPanel === 'git' && $ui.isSidebarOpen)}
+        >
+          {#if $ui.activeSidebarPanel === 'git' && $ui.isSidebarOpen}
+            <div class="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-8 bg-indicator-active"></div>
+          {/if}
+          <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M6 9v6"/><path d="M18 9v2a2 2 0 0 1-2 2h-4a2 2 0 0 0-2 2v6"/></svg>
         </button>
       </div>
       <button aria-label="Settings" onclick={openSettings} class="p-2 bg-transparent cursor-pointer mb-2 text-icon-default hover:text-icon-active transition-colors">
@@ -1250,7 +1523,7 @@
           }}
         ></div>
         <div class="h-9 flex items-center justify-between px-4 text-xs font-semibold tracking-widest select-none uppercase text-secondary">
-          <span>{$ui.activeSidebarPanel === 'explorer' ? 'Explorer' : 'Search'}</span>
+          <span>{$ui.activeSidebarPanel === 'explorer' ? 'Explorer' : $ui.activeSidebarPanel === 'search' ? 'Search' : 'Source Control'}</span>
           {#if $ui.activeSidebarPanel === 'explorer'}
             <Tooltip content="Toggle Dot Files">
               <button aria-label="Toggle Dot Files" onclick={() => uiStore.toggleShowDotFiles()} class="p-1 rounded transition-colors hover:bg-hover" class:text-accent={$ui.showDotFiles} class:text-icon-default={!$ui.showDotFiles} class:hover:text-icon-active={true}>
@@ -1324,9 +1597,13 @@
                 </div>
               {/if}
             </div>
-          {:else if SearchPanelComponent}
+          {:else if $ui.activeSidebarPanel === 'search' && SearchPanelComponent}
             <div class="flex flex-col h-full overflow-hidden">
               <SearchPanelComponent />
+            </div>
+          {:else if $ui.activeSidebarPanel === 'git' && SourceControlPanelComponent}
+            <div class="flex flex-col h-full overflow-hidden">
+              <SourceControlPanelComponent />
             </div>
           {/if}
         </div>
@@ -1356,14 +1633,17 @@
                 oncontextmenu={(e) => handleTabContextMenu(e, tab.id)}
               >
                 {#if tab.language === 'welcome'}
-                  <img src="/notron.png" alt="Welcome" class="w-3.5 h-3.5 grayscale opacity-80 pointer-events-none" />
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1536 1024" fill="currentColor" class="w-3.5 h-auto opacity-80 pointer-events-none text-primary shrink-0" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M 472 343 L 473 347 L 473 355 L 472 356 L 473 357 L 472 358 L 472 372 L 473 373 L 472 374 L 472 385 L 473 386 L 472 387 L 473 388 L 472 389 L 473 394 L 472 395 L 473 396 L 472 397 L 473 398 L 472 399 L 473 401 L 472 403 L 473 404 L 473 423 L 472 424 L 473 426 L 473 431 L 472 432 L 473 433 L 473 439 L 472 440 L 473 441 L 473 454 L 472 455 L 473 456 L 473 463 L 472 464 L 473 466 L 473 754 L 476 762 L 484 770 L 494 774 L 503 774 L 523 767 L 597 735 L 613 726 L 620 716 L 622 710 L 622 482 L 506 381 L 492 370 L 479 356 L 473 343 Z "/>
+                    <path fill-rule="evenodd" d="M 480 260 L 475 267 L 473 273 L 473 333 L 475 340 L 481 351 L 495 365 L 508 375 L 517 384 L 522 387 L 538 402 L 678 522 L 696 536 L 729 565 L 963 761 L 972 765 L 986 765 L 998 760 L 1046 735 L 1052 731 L 1059 724 L 1063 715 L 1063 645 L 1058 629 L 1052 620 L 1041 609 L 1006 581 L 861 458 L 721 336 L 592 221 L 582 215 L 577 214 L 568 214 L 562 216 L 498 249 Z "/>
+                    <path fill-rule="evenodd" d="M 1029 196 L 999 208 L 994 209 L 961 223 L 956 224 L 943 230 L 938 231 L 928 236 L 918 239 L 911 243 L 905 249 L 902 254 L 900 261 L 900 484 L 1041 601 L 1056 617 L 1061 627 L 1063 635 L 1063 217 L 1058 207 L 1051 200 L 1042 196 Z "/>
+                  </svg>
                 {:else}
                   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
                 {/if}
                 <span class="text-xs truncate flex-1" class:italic={tab.isPreview}>
                   {(() => {
-                    const duplicates = $tabs.filter((t: any) => t.name === tab.name);
-                    if (duplicates.length > 1 && !tab.path.startsWith('Untitled')) {
+                    if ((tabNameCounts.get(tab.name) ?? 0) > 1 && !tab.path.startsWith('Untitled')) {
                       const parts = tab.path.split(/[/\\]/);
                       if (parts.length >= 2) {
                         return `${tab.name} \u00A0...${parts[parts.length - 2]}`;
@@ -1372,15 +1652,17 @@
                     return tab.name;
                   })()}
                 </span>
-                {#if tab.isModified}
-                  <div class="w-2 h-2 rounded-full bg-accent shrink-0"></div>
-                {:else if tab.status === 'conflict'}
-                  <div class="w-2 h-2 rounded-full bg-status-warning shrink-0" title="External changes detected"></div>
-                {:else if tab.status === 'deleted'}
-                  <div class="w-2 h-2 rounded-full bg-status-error shrink-0" title="File deleted"></div>
-                {/if}
-                {#if tab.content === null && !tab.isModified && !tab.isLargeFile}
-                  <div class="w-2 h-2 rounded-full bg-muted shrink-0 animate-pulse"></div>
+                {#if tab.language !== 'welcome'}
+                  {#if tab.isModified}
+                    <div class="w-2 h-2 rounded-full bg-accent shrink-0"></div>
+                  {:else if tab.status === 'conflict'}
+                    <div class="w-2 h-2 rounded-full bg-status-warning shrink-0" title="External changes detected"></div>
+                  {:else if tab.status === 'deleted'}
+                    <div class="w-2 h-2 rounded-full bg-status-error shrink-0" title="File deleted"></div>
+                  {/if}
+                  {#if tab.content === null && !tab.isModified && !tab.isLargeFile}
+                    <div class="w-2 h-2 rounded-full bg-muted shrink-0 animate-pulse"></div>
+                  {/if}
                 {/if}
                 {#if tab.isPinned}
                   <button aria-label="Unpin tab" class="p-0.5 rounded transition-colors hover:bg-active"
@@ -1428,7 +1710,12 @@
 
       <div class="flex-1 relative overflow-hidden" class:hidden={$terminalStore.isMaximized}>
         {#if $tabs.length === 0}
-<div class="absolute inset-0 flex flex-col items-center justify-center gap-4 text-muted">
+<div class="absolute inset-0 flex flex-col items-center justify-center gap-6 text-muted">
+             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1536 1024" fill="currentColor" class="w-[min(50vw,400px)] h-auto pointer-events-none text-primary/60" role="img" aria-label="Notron">
+               <path fill-rule="evenodd" d="M 472 343 L 473 347 L 473 355 L 472 356 L 473 357 L 472 358 L 472 372 L 473 373 L 472 374 L 472 385 L 473 386 L 472 387 L 473 388 L 472 389 L 473 394 L 472 395 L 473 396 L 472 397 L 473 398 L 472 399 L 473 401 L 472 403 L 473 404 L 473 423 L 472 424 L 473 426 L 473 431 L 472 432 L 473 433 L 473 439 L 472 440 L 473 441 L 473 454 L 472 455 L 473 456 L 473 463 L 472 464 L 473 466 L 473 754 L 476 762 L 484 770 L 494 774 L 503 774 L 523 767 L 597 735 L 613 726 L 620 716 L 622 710 L 622 482 L 506 381 L 492 370 L 479 356 L 473 343 Z "/>
+               <path fill-rule="evenodd" d="M 480 260 L 475 267 L 473 273 L 473 333 L 475 340 L 481 351 L 495 365 L 508 375 L 517 384 L 522 387 L 538 402 L 678 522 L 696 536 L 729 565 L 963 761 L 972 765 L 986 765 L 998 760 L 1046 735 L 1052 731 L 1059 724 L 1063 715 L 1063 645 L 1058 629 L 1052 620 L 1041 609 L 1006 581 L 861 458 L 721 336 L 592 221 L 582 215 L 577 214 L 568 214 L 562 216 L 498 249 Z "/>
+               <path fill-rule="evenodd" d="M 1029 196 L 999 208 L 994 209 L 961 223 L 956 224 L 943 230 L 938 231 L 928 236 L 918 239 L 911 243 L 905 249 L 902 254 L 900 261 L 900 484 L 1041 601 L 1056 617 L 1061 627 L 1063 635 L 1063 217 L 1058 207 L 1051 200 L 1042 196 Z "/>
+             </svg>
              <div class="flex flex-col gap-2">
                <div class="flex items-center gap-4"><span class="w-24 text-right">New File</span><kbd class="px-2 py-0.5 rounded text-xs bg-surface-2 border border-subtle">Ctrl+N</kbd></div>
                <div class="flex items-center gap-4"><span class="w-24 text-right">Open File</span><kbd class="px-2 py-0.5 rounded text-xs bg-surface-2 border border-subtle">Ctrl+O</kbd></div>
@@ -1456,12 +1743,12 @@
               <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
               <span class="text-sm">The file is not displayed in the editor because it is either binary or uses an unsupported text encoding.</span>
             </div>
-          {:else if activeTab.content === null}
+          {:else if activeTab.content === null && !activeTab.isDiff}
             <div class="absolute inset-0 flex items-center justify-center text-xs text-muted">Suspended — click to reload</div>
-          {:else if EditorComponent}
-            {#key activeTab.id + (isDark ? '-d' : '-l')}
-              <EditorComponent tabId={activeTab.id} content={activeTab.content} filePath={activeTab.path} />
-            {/key}
+          {:else if activeTab.isDiff && DiffEditorComponent}
+            <DiffEditorComponent originalContent={activeTab.diffOriginalContent} currentContent={activeTab.content} filePath={activeTab.path} />
+          {:else if !activeTab.isDiff && EditorComponent}
+            <EditorComponent tabId={activeTab.id} content={activeTab.content} filePath={activeTab.path} />
           {:else}
             <div class="absolute inset-0 flex items-center justify-center">
               <div class="flex items-center gap-3">
@@ -1520,8 +1807,8 @@
 <CloseTabDialog
   isOpen={!!closingTabId}
   fileName={$tabs.find((t: any) => t.id === closingTabId)?.name || 'Untitled'}
-  onCancel={() => closingTabId = null}
-  onDontSave={() => { if (closingTabId) { editorStore.closeTab(closingTabId); } closingTabId = null; debouncedSaveFullSession(); }}
+  onCancel={handleCloseDialogCancel}
+  onDontSave={handleCloseDialogDontSave}
   onSave={handleCloseSave}
 />
 

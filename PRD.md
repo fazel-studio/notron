@@ -3,6 +3,11 @@
 ## 1. Ringkasan Proyek
 **Notron** adalah aplikasi code editor desktop modern yang dirancang untuk kecepatan, efisiensi, dan pengalaman pengguna yang minimalis namun bertenaga. Dibangun menggunakan **Tauri** untuk backend (Rust) dan **Svelte 5** untuk frontend, Notron menawarkan performa aplikasi native dengan fleksibilitas teknologi web.
 
+### 1.1. Artitektur:
+- Package Manager: Bun
+- Stack : Tauri + Stelve + Rust
+- Engine : Code Mirror 6
+
 ## 2. Target Pengguna
 *   **Software Engineers:** Yang membutuhkan editor ringan untuk pengeditan cepat atau manajemen proyek skala menengah.
 *   **Web Developers:** Pengguna yang terbiasa dengan ekosistem modern seperti VS Code tetapi menginginkan aplikasi yang lebih hemat sumber daya (RAM/CPU).

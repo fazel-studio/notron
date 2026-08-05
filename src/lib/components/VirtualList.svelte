@@ -21,6 +21,8 @@
     itemHeight?: number;
     overscan?: number;
     class?: string;
+    /** Optional key function for #each. Defaults to item.path (or index). */
+    getKey?: (item: T, index: number) => any;
     item: Snippet<[{ item: T; index: number }]>;
   }
 
@@ -29,6 +31,7 @@
     itemHeight = 22,
     overscan = 5,
     class: className = '',
+    getKey = (item: any, i: number) => item?.path ?? i,
     item: itemSnippet,
   }: Props<any> = $props();
 
@@ -53,6 +56,7 @@
 
   function handleScroll(e: Event) {
     scrollTop = (e.target as HTMLDivElement).scrollTop;
+    window.dispatchEvent(new CustomEvent('notron:cancel-tooltips'));
   }
 
   // Use ResizeObserver for container height (avoids layout thrashing)
@@ -79,7 +83,7 @@
   <div style="height: {totalHeight}px; position: relative;">
     <!-- Only render visible slice, offset with translateY -->
     <div style="transform: translateY({offsetY}px);">
-      {#each visibleItems as item, i (item.path ?? i)}
+      {#each visibleItems as item, i (getKey(item, startIndex + i))}
         <div style="height: {itemHeight}px;">
           {@render itemSnippet({ item, index: startIndex + i })}
         </div>

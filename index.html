@@ -8,8 +8,9 @@
     <script>
       (function() {
         var theme = localStorage.getItem('notron_theme') || 'system';
-        var isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        var isDark = theme === 'dark' || theme === 'black' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
         document.documentElement.classList.toggle('dark', isDark);
+        document.documentElement.classList.toggle('black', theme === 'black');
       })();
     </script>
   </head>

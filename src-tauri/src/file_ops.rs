@@ -1,5 +1,4 @@
-use std::io::Read;
-use std::path::Path;
+﻿use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use encoding_rs::Encoding;
@@ -7,8 +6,10 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
-use tauri::{AppHandle, State, Emitter};
+use tauri::{State, Emitter};
 use chardetng::EncodingDetector;
+
+use crate::workspace_cache::WorkspaceCache;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FileContent {
@@ -27,14 +28,11 @@ pub struct FileOpenMeta {
     pub is_large: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct SearchResult {
-    pub path: String,
-    pub line: usize,
-    pub text: String,
+#[derive(Serialize, Clone)]
+pub struct FileChunk {
+    pub chunk: String,
+    pub done: bool,
 }
-
-
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FileInfo {
@@ -52,7 +50,7 @@ pub struct FileMetadata {
     pub is_dir: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct FileNode {
     pub name: String,
     pub path: String,
@@ -69,22 +67,6 @@ const INITIAL_CHUNK_SIZE: usize = 100 * 1024;    // 100KB first chunk
 
 pub struct SearchRegistry {
     pub active_searches: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchOptions {
-    pub case_sensitive: bool,
-    #[allow(dead_code)]
-    pub use_regex: bool,
-}
-
-#[derive(Serialize, Clone)]
-pub struct SearchBatchPayload {
-    pub results: Vec<SearchResult>,
-    pub files_scanned: usize,
-    pub total_matches: usize,
-    pub is_done: bool,
 }
 
 #[tauri::command]
@@ -181,6 +163,27 @@ pub async fn read_file_chunked(path: String) -> Result<ChunkedFileResult, String
 }
 
 #[tauri::command]
+pub async fn read_file_stream(
+    path: String,
+    channel: tauri::ipc::Channel<FileChunk>,
+) -> Result<(), String> {
+    use tokio::io::AsyncReadExt;
+    let mut file = tokio::fs::File::open(&path).await.map_err(|e| e.to_string())?;
+    // 512KB chunks
+    let mut buf = vec![0u8; 512 * 1024]; 
+    loop {
+        let n = file.read(&mut buf).await.map_err(|e| e.to_string())?;
+        if n == 0 {
+            let _ = channel.send(FileChunk { chunk: "".to_string(), done: true });
+            break;
+        }
+        let chunk = String::from_utf8_lossy(&buf[..n]).replace("\r\n", "\n");
+        let _ = channel.send(FileChunk { chunk, done: false });
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn read_file_binary(path: String) -> Result<Vec<u8>, String> {
     fs::read(&path).await.map_err(|e| e.to_string())
 }
@@ -190,6 +193,12 @@ pub async fn read_file_binary(path: String) -> Result<Vec<u8>, String> {
 /// For a 100KB file, this reduces IPC payload from ~500KB to ~100KB.
 #[tauri::command]
 pub async fn read_file_text(path: String) -> Result<String, String> {
+    // Check size before reading
+    let metadata = fs::metadata(&path).await.map_err(|e| e.to_string())?;
+    if metadata.len() > LARGE_FILE_THRESHOLD {
+        return Err("__LARGE_FILE__".to_string());
+    }
+
     let bytes = fs::read(&path).await.map_err(|e| e.to_string())?;
 
     // Check for binary content (NUL bytes in first 8KB)
@@ -217,15 +226,18 @@ pub struct DirBatchEntry {
 pub async fn read_directory_batch(
     paths: Vec<String>,
     show_dot_files: Option<bool>,
+    cache: State<'_, WorkspaceCache>,
 ) -> Result<Vec<DirBatchEntry>, String> {
     let show_dot = show_dot_files.unwrap_or(false);
 
-    // Read all directories concurrently using tokio::spawn
+    // All reads go through the shared cache (load-or-cache, 0.2). Requests
+    // are issued concurrently; failed dirs are skipped silently.
     let mut handles = Vec::with_capacity(paths.len());
     for path in paths {
-        let show_dot = show_dot;
+        let cache = cache.inner().clone();
         handles.push(tokio::spawn(async move {
-            read_single_dir(&path, show_dot).await
+            let children = cache.get_children(&path, show_dot).await?;
+            Ok::<DirBatchEntry, String>(DirBatchEntry { path, children })
         }));
     }
 
@@ -233,68 +245,49 @@ pub async fn read_directory_batch(
     for handle in handles {
         match handle.await {
             Ok(Ok(entry)) => results.push(entry),
-            Ok(Err(e)) => {
+            Ok(Err(_e)) => {
                 // Skip failed directories silently (may have been deleted)
-                eprintln!("read_directory_batch: skipping failed dir: {}", e);
             }
-            Err(e) => {
-                eprintln!("read_directory_batch: task join error: {}", e);
+            Err(_e) => {
+                // Task join error — treat as failed
             }
         }
     }
     Ok(results)
 }
 
-/// Internal helper for batch directory reading
-async fn read_single_dir(path: &str, show_dot: bool) -> Result<DirBatchEntry, String> {
-    let dir_path = std::path::Path::new(path);
-    if !fs::metadata(dir_path).await.map(|m| m.is_dir()).unwrap_or(false) {
-        return Err(format!("Not a directory: {}", path));
-    }
-
-    let mut children = Vec::new();
-    if let Ok(mut entries) = fs::read_dir(dir_path).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let child_name = entry.file_name().to_string_lossy().into_owned();
-            if is_ignored_dir(&child_name) { continue; }
-            if !show_dot && is_dot_file(&child_name) { continue; }
-
-            let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
-            children.push(FileNode {
-                name: child_name,
-                path: entry.path().to_string_lossy().into_owned(),
-                is_dir,
-                has_children: is_dir,
-                children: None,
-            });
-        }
-    }
-
-    children.sort_by(|a, b| {
-        b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
-
-    Ok(DirBatchEntry {
-        path: path.to_string(),
-        children,
-    })
-}
-
 #[tauri::command]
-pub async fn save_file(path: String, content: String, encoding: Option<String>) -> Result<(), String> {
+pub async fn save_file(
+    path: String,
+    content: String,
+    encoding: Option<String>,
+    cache: State<'_, WorkspaceCache>,
+) -> Result<(), String> {
     let enc_str = encoding.unwrap_or_else(|| "UTF-8".to_string());
     let enc = Encoding::for_label(enc_str.as_bytes()).unwrap_or(encoding_rs::UTF_8);
     let (cow, _, _) = enc.encode(&content);
-    fs::write(path, cow).await.map_err(|e| e.to_string())?;
+    fs::write(&path, cow).await.map_err(|e| e.to_string())?;
+    // 0.2 — drop the stale entry so the next read reflects the write.
+    cache.invalidate_parent(&path);
     Ok(())
 }
 
-fn is_ignored_dir(name: &str) -> bool {
-    matches!(name, ".git" | ".svn" | ".hg" | ".DS_Store" | "node_modules" | "target" | "dist" | "build" | ".cache" | ".next" | ".nuxt" | ".svelte-kit" | "__pycache__" | ".venv" | "vendor")
-}
-
-fn is_dot_file(name: &str) -> bool {
-    name.starts_with('.') && name != ".." && name != "."
+/// Sort nodes: directories first, then by name (case-insensitive).
+/// Precomputes lowercase names once per node instead of re-allocating
+/// a lowercase String on every comparator call (O(n log n) allocations
+/// for large directories).
+pub(crate) fn sort_nodes(nodes: &mut Vec<FileNode>) {
+    let mut keyed: Vec<(bool, String, usize)> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.is_dir, n.name.to_lowercase(), i))
+        .collect();
+    keyed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let sorted: Vec<FileNode> = keyed
+        .into_iter()
+        .map(|(_, _, i)| std::mem::take(&mut nodes[i]))
+        .collect();
+    *nodes = sorted;
 }
 
 #[allow(dead_code)]
@@ -315,41 +308,21 @@ pub fn resolve_symlink_safe(path: &Path, workspace_root: &Path) -> Option<std::p
 /// Reads ONE level of a directory (non-recursive) for lazy loading.
 /// Returns a FileNode with immediate children only. Children of subdirectories
 /// are not populated (they use empty Vec to save space).
+///
+/// Served from the Rust WorkspaceCache (0.2): cache hit is instant, a miss
+/// scans the FS off the main thread and warms the cache.
 #[tauri::command]
-pub async fn read_directory(path: String, show_dot_files: Option<bool>) -> Result<FileNode, String> {
+pub async fn read_directory(
+    path: String,
+    show_dot_files: Option<bool>,
+    cache: State<'_, WorkspaceCache>,
+) -> Result<FileNode, String> {
     let show_dot = show_dot_files.unwrap_or(false);
+    let children = cache.get_children(&path, show_dot).await?;
+
     let dir_path = Path::new(&path);
-
-    if !fs::metadata(dir_path).await.map(|m| m.is_dir()).unwrap_or(false) {
-        return Err("Path is not a directory".to_string());
-    }
-
     let name = dir_path.file_name().unwrap_or_default().to_string_lossy().into_owned();
     let path_str = dir_path.to_string_lossy().into_owned();
-
-    let mut children = Vec::new();
-    if let Ok(mut entries) = fs::read_dir(dir_path).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let child_name = entry.file_name().to_string_lossy().into_owned();
-            if is_ignored_dir(&child_name) { continue; }
-            if !show_dot && is_dot_file(&child_name) { continue; }
-
-            let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
-            let has_children = is_dir;
-
-            children.push(FileNode {
-                name: child_name,
-                path: entry.path().to_string_lossy().into_owned(),
-                is_dir,
-                has_children,
-                children: None,
-            });
-        }
-    }
-
-    children.sort_by(|a, b| {
-        b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
 
     Ok(FileNode {
         name,
@@ -361,37 +334,14 @@ pub async fn read_directory(path: String, show_dot_files: Option<bool>) -> Resul
 }
 
 #[tauri::command]
-pub async fn read_directory_flat(path: String, show_dot_files: Option<bool>) -> Result<Vec<FileNode>, String> {
+pub async fn read_directory_flat(
+    path: String,
+    show_dot_files: Option<bool>,
+    cache: State<'_, WorkspaceCache>,
+) -> Result<Vec<FileNode>, String> {
     let show_dot = show_dot_files.unwrap_or(false);
-    let dir_path = Path::new(&path);
-
-    if !fs::metadata(dir_path).await.map(|m| m.is_dir()).unwrap_or(false) {
-        return Err("Path is not a directory".to_string());
-    }
-
-    let mut items = Vec::new();
-    if let Ok(mut entries) = fs::read_dir(dir_path).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if is_ignored_dir(&name) { continue; }
-            if !show_dot && is_dot_file(&name) { continue; }
-
-            let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
-            items.push(FileNode {
-                name,
-                path: entry.path().to_string_lossy().into_owned(),
-                is_dir,
-                has_children: is_dir,
-                children: None,
-            });
-        }
-    }
-
-    items.sort_by(|a, b| {
-        b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
-
-    Ok(items)
+    // Served from the shared cache like the tree reads (0.2).
+    cache.get_children(&path, show_dot).await
 }
 
 #[tauri::command]
@@ -421,39 +371,172 @@ pub async fn is_large_file(path: String) -> Result<bool, String> {
     Ok(metadata.len() > LARGE_FILE_THRESHOLD)
 }
 
-#[tauri::command]
-pub async fn create_file(path: String) -> Result<(), String> {
-    fs::write(path, "").await.map_err(|e| e.to_string())
+#[derive(Deserialize)]
+pub struct MovePair {
+    pub old_path: String,
+    pub new_path: String,
+}
+
+#[derive(Deserialize)]
+pub struct CopyPair {
+    pub source_path: String,
+    pub dest_path: String,
 }
 
 #[tauri::command]
-pub async fn create_directory(path: String) -> Result<(), String> {
-    fs::create_dir_all(path).await.map_err(|e| e.to_string())
+pub async fn create_file(path: String, cache: State<'_, WorkspaceCache>, app: tauri::AppHandle) -> Result<(), String> {
+    fs::write(&path, "").await.map_err(|e| e.to_string())?;
+    cache.invalidate_parent(&path);
+    let _ = app.emit("search-invalidate", &path);
+    let _ = app.emit("git-invalidate", &path);
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn rename_item(old_path: String, new_path: String) -> Result<(), String> {
-    fs::rename(old_path, new_path).await.map_err(|e| e.to_string())
+pub async fn create_directory(path: String, cache: State<'_, WorkspaceCache>, app: tauri::AppHandle) -> Result<(), String> {
+    fs::create_dir_all(&path).await.map_err(|e| e.to_string())?;
+    cache.invalidate_parent(&path);
+    let _ = app.emit("search-invalidate", &path);
+    let _ = app.emit("git-invalidate", &path);
+    Ok(())
+}
+
+/// B.5 — Move a file/dir to a new location.
+///
+/// `std::fs::rename` is instant when source & destination live on the same
+/// filesystem (true move, not copy+delete). When the OS reports a cross-device
+/// link error (EXDEV), fall back to copy + delete.
+async fn move_entry(from: &str, to: &str) -> Result<(), String> {
+    match tokio::fs::rename(from, to).await {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            let metadata = tokio::fs::metadata(from).await.map_err(|e| e.to_string())?;
+            if metadata.is_dir() {
+                copy_dir_recursive(from, to).await?;
+                tokio::fs::remove_dir_all(from).await.map_err(|e| e.to_string())?;
+            } else {
+                tokio::fs::copy(from, to).await.map_err(|e| e.to_string())?;
+                tokio::fs::remove_file(from).await.map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 #[tauri::command]
-pub async fn delete_item(path: String) -> Result<(), String> {
+pub async fn rename_item(
+    old_path: String,
+    new_path: String,
+    cache: State<'_, WorkspaceCache>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    move_entry(&old_path, &new_path).await?;
+    cache.invalidate(&old_path);
+    cache.invalidate_parent(&old_path);
+    cache.invalidate_parent(&new_path);
+    let _ = app.emit("search-invalidate", &old_path);
+    let _ = app.emit("search-invalidate", &new_path);
+    let _ = app.emit("git-invalidate", &old_path);
+    let _ = app.emit("git-invalidate", &new_path);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rename_items(
+    moves: Vec<MovePair>,
+    cache: State<'_, WorkspaceCache>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    for m in moves {
+        if let Err(e) = move_entry(&m.old_path, &m.new_path).await {
+            eprintln!("Failed to rename {}: {}", m.old_path, e);
+            continue;
+        }
+        cache.invalidate(&m.old_path);
+        cache.invalidate_parent(&m.old_path);
+        cache.invalidate_parent(&m.new_path);
+        let _ = app.emit("search-invalidate", &m.old_path);
+        let _ = app.emit("search-invalidate", &m.new_path);
+        let _ = app.emit("git-invalidate", &m.old_path);
+        let _ = app.emit("git-invalidate", &m.new_path);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_item(path: String, cache: State<'_, WorkspaceCache>, app: tauri::AppHandle) -> Result<(), String> {
     let metadata = fs::metadata(&path).await.map_err(|e| e.to_string())?;
     if metadata.is_dir() {
-        fs::remove_dir_all(path).await.map_err(|e| e.to_string())
+        fs::remove_dir_all(&path).await.map_err(|e| e.to_string())?;
     } else {
-        fs::remove_file(path).await.map_err(|e| e.to_string())
+        fs::remove_file(&path).await.map_err(|e| e.to_string())?;
     }
+    cache.invalidate(&path);
+    cache.invalidate_parent(&path);
+    let _ = app.emit("search-invalidate", &path);
+    let _ = app.emit("git-invalidate", &path);
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn copy_item(src_path: String, dst_path: String) -> Result<(), String> {
+pub async fn delete_items(
+    paths: Vec<String>,
+    cache: State<'_, WorkspaceCache>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    for path in paths {
+        let metadata = fs::metadata(&path).await.map_err(|e| e.to_string())?;
+        if metadata.is_dir() {
+            fs::remove_dir_all(&path).await.map_err(|e| e.to_string())?;
+        } else {
+            fs::remove_file(&path).await.map_err(|e| e.to_string())?;
+        }
+        cache.invalidate(&path);
+        cache.invalidate_parent(&path);
+        let _ = app.emit("search-invalidate", &path);
+        let _ = app.emit("git-invalidate", &path);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn copy_item(
+    src_path: String,
+    dst_path: String,
+    cache: State<'_, WorkspaceCache>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     let metadata = fs::metadata(&src_path).await.map_err(|e| e.to_string())?;
     if metadata.is_dir() {
-        copy_dir_recursive(&src_path, &dst_path).await
+        copy_dir_recursive(&src_path, &dst_path).await?;
     } else {
-        fs::copy(src_path, dst_path).await.map(|_| ()).map_err(|e| e.to_string())
+        fs::copy(&src_path, &dst_path).await.map_err(|e| e.to_string())?;
     }
+    cache.invalidate_parent(&dst_path);
+    let _ = app.emit("search-invalidate", &dst_path);
+    let _ = app.emit("git-invalidate", &dst_path);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn copy_items(
+    copies: Vec<CopyPair>,
+    cache: State<'_, WorkspaceCache>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    for c in copies {
+        let metadata = fs::metadata(&c.source_path).await.map_err(|e| e.to_string())?;
+        if metadata.is_dir() {
+            copy_dir_recursive(&c.source_path, &c.dest_path).await?;
+        } else {
+            fs::copy(&c.source_path, &c.dest_path).await.map_err(|e| e.to_string())?;
+        }
+        cache.invalidate_parent(&c.dest_path);
+        let _ = app.emit("search-invalidate", &c.dest_path);
+        let _ = app.emit("git-invalidate", &c.dest_path);
+    }
+    Ok(())
 }
 
 use std::future::Future;
@@ -499,136 +582,6 @@ pub async fn cancel_search(
     Ok(())
 }
 
-fn collect_files_by_priority(workspace_path: &str) -> Vec<std::path::PathBuf> {
-    let mut priority_3 = vec![]; // root
-    let mut priority_4 = vec![]; // level 1
-    let mut priority_5 = vec![]; // level 2+
-  
-    for entry in walkdir::WalkDir::new(workspace_path)
-        .into_iter()
-        .filter_entry(|e| {
-            let name = e.file_name().to_string_lossy();
-            !is_ignored_dir(&name) && !is_dot_file(&name)
-        })
-        .filter_map(|e| e.ok())
-    {
-        if entry.file_type().is_file() {
-            let path = entry.path().to_path_buf();
-            let depth = entry.depth();
-          
-            let ext = path.extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            let ignored_extensions = [
-                "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg",
-                "woff", "woff2", "ttf", "eot", "otf",
-                "mp3", "mp4", "avi", "mov", "mkv",
-                "zip", "tar", "gz", "bz2", "7z", "rar",
-                "pdf", "doc", "docx", "xls", "xlsx",
-                "lock", "min.js", "min.css", "map",
-            ];
-            if ignored_extensions.contains(&ext.as_str()) { continue; }
-            if let Ok(metadata) = std::fs::metadata(&path) {
-                if metadata.len() > 5_000_000 { continue; }
-            }
-          
-            match depth {
-                1 => priority_3.push(path),
-                2 => priority_4.push(path),
-                _ => priority_5.push(path),
-            }
-        }
-    }
-  
-    [priority_3, priority_4, priority_5].concat()
-}
-
-#[tauri::command]
-pub async fn search_workspace(
-    query: String,
-    workspace_path: String,
-    cancel_token: String,
-    options: SearchOptions,
-    app: AppHandle,
-    registry: State<'_, SearchRegistry>,
-) -> Result<(), String> {
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    registry.active_searches.lock().await
-        .insert(cancel_token.clone(), cancel_flag.clone());
-  
-    let registry_clone = registry.inner().active_searches.clone();
-    
-    tokio::task::spawn_blocking(move || {
-        let files_by_priority = collect_files_by_priority(&workspace_path);
-        let mut batch_results: Vec<SearchResult> = Vec::new();
-        let mut last_emit = std::time::Instant::now();
-        let mut files_scanned = 0;
-        let mut total_matches = 0;
-        let query_lower = if options.case_sensitive { query.clone() } else { query.to_lowercase() };
-
-        for file_path in files_by_priority {
-            if cancel_flag.load(Ordering::Relaxed) {
-                break;
-            }
-          
-            files_scanned += 1;
-            
-            // Basic exclusion
-            if let Ok(mut file) = std::fs::File::open(&file_path) {
-                let mut magic = [0u8; 4];
-                if file.read_exact(&mut magic).is_ok() {
-                    if magic.starts_with(&[0x7f, 0x45, 0x4c, 0x46]) || magic.starts_with(&[0x4d, 0x5a]) || magic.starts_with(&[0x89, 0x50, 0x4e, 0x47]) || magic.starts_with(&[0xff, 0xd8, 0xff]) || magic.starts_with(&[0x47, 0x49, 0x46]) {
-                        continue;
-                    }
-                }
-            }
-            
-            if let Ok(content) = std::fs::read_to_string(&file_path) {
-                let mut line_num = 1;
-                for line in content.lines() {
-                    let text_to_check = if options.case_sensitive { line.to_string() } else { line.to_lowercase() };
-                    if text_to_check.contains(&query_lower) {
-                        batch_results.push(SearchResult {
-                            path: file_path.to_string_lossy().into_owned(),
-                            line: line_num,
-                            text: line.to_string(),
-                        });
-                        total_matches += 1;
-                    }
-                    line_num += 1;
-                }
-            }
-          
-            let should_emit = last_emit.elapsed().as_millis() >= 50 || batch_results.len() >= 20;
-          
-            if should_emit && !batch_results.is_empty() {
-                let payload = SearchBatchPayload {
-                    results: std::mem::take(&mut batch_results),
-                    files_scanned,
-                    total_matches,
-                    is_done: false,
-                };
-                let _ = app.emit("search-batch", payload);
-                last_emit = std::time::Instant::now();
-            }
-        }
-      
-        let payload = SearchBatchPayload {
-            results: batch_results,
-            files_scanned,
-            total_matches,
-            is_done: true,
-        };
-        let _ = app.emit("search-batch", payload);
-        
-        let mut searches = registry_clone.blocking_lock();
-        searches.remove(&cancel_token);
-    });
-  
-    Ok(())
-}
-
 #[tauri::command]
 pub async fn detect_language(path: String) -> String {
     let ext = Path::new(&path)
@@ -658,29 +611,34 @@ pub async fn detect_language(path: String) -> String {
 }
 
 /// List all files in the workspace
+/// Optionally cap the number of returned files to bound IPC payload + memory.
+/// Applies the workspace's Layer-2 ignore rules (search.exclude / search.include)
+/// so Quick Open respects the user's Search Exclude settings (Module E, E.3).
 #[tauri::command]
-pub async fn list_all_files(path: String, exclude_dirs: Option<Vec<String>>) -> Result<Vec<String>, String> {
+pub async fn list_all_files(
+    path: String,
+    _exclude_dirs: Option<Vec<String>>,
+    max_results: Option<usize>,
+    db: State<'_, crate::db::DbState>,
+) -> Result<Vec<String>, String> {
+    let user_ignore = crate::db::get_ignore_settings(db.inner(), &path).await?;
+    let app_ignore_lines =
+        crate::ignore_rules::effective_ignore_lines(&user_ignore.search_exclude, &user_ignore.search_include);
+
     tokio::task::spawn_blocking(move || {
         let mut results = Vec::new();
-        let excludes = exclude_dirs.unwrap_or_default();
-        
-        let walker = walkdir::WalkDir::new(&path).into_iter();
+        let max_results = max_results.unwrap_or(usize::MAX);
 
-        for entry in walker.filter_entry(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') && name.len() > 1 {
-                return false;
-            }
-            if e.file_type().is_dir() {
-                if excludes.iter().any(|ex| ex == &name) {
-                    return false;
-                }
-            }
-            true
-        }) {
-            if let Ok(entry) = entry {
-                if entry.file_type().is_file() {
-                    results.push(entry.path().to_string_lossy().to_string());
+        let builder =
+            crate::ignore_rules::workspace_walker(Path::new(&path), true, &app_ignore_lines);
+
+        for result in builder.build() {
+            if let Ok(entry) = result {
+                if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    results.push(entry.path().to_string_lossy().into_owned());
+                    if results.len() >= max_results {
+                        break;
+                    }
                 }
             }
         }

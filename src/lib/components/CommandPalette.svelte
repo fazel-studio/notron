@@ -75,7 +75,14 @@
         />
       </div>
       <div class="h-[460px] overflow-y-auto py-2 scrollbar-hide flex flex-col">
-        {#if filteredItems.length === 0}
+        {#if !$paletteStore.isLoaded}
+          <div class="px-4 py-3 text-sm text-center text-muted flex-1 flex items-center justify-center">
+            <span class="flex items-center gap-2">
+              <span class="inline-block w-3 h-3 rounded-full border-2 border-muted border-t-transparent animate-spin"></span>
+              Loading workspace files...
+            </span>
+          </div>
+        {:else if filteredItems.length === 0}
           <div class="px-4 py-3 text-sm text-center text-muted flex-1 flex items-center justify-center">No items found</div>
         {:else}
           {#each filteredItems as cmd, i (cmd.id)}

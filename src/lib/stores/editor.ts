@@ -2,6 +2,38 @@ import { writable, derived } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { getHumanReadableError } from '../utils/error';
 
+export interface ReplaceMatchOptions {
+  query: string;
+  replace: string;
+  caseSensitive: boolean;
+  useRegex: boolean;
+  wholeWord: boolean;
+}
+
+/** Escape a literal query so it can be embedded in a RegExp safely. */
+export function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Build a RegExp mirroring the Rust backend (`search.rs`):
+ *  * literal queries are escaped, regex queries pass through,
+ *  * whole-word wraps the pattern in `\b(?:...)\b`,
+ *  * case sensitivity maps to the `i` flag.
+ */
+export function buildReplaceRegex(query: string, opts: { caseSensitive: boolean; useRegex: boolean; wholeWord: boolean }): RegExp {
+  let pattern = opts.useRegex ? query : escapeRegExp(query);
+  if (opts.wholeWord) pattern = `\\b(?:${pattern})\\b`;
+  return new RegExp(pattern, opts.caseSensitive ? 'g' : 'gi');
+}
+
+/** Compute the replacement string for a matched substring (handles `$1` backrefs). */
+export function applyReplacement(matched: string, re: RegExp, opts: { useRegex: boolean; replace: string }): string {
+  const replacer = opts.useRegex ? opts.replace : opts.replace.replace(/\$/g, '$$');
+  const oneShot = new RegExp(re.source, re.flags.replace('g', ''));
+  return matched.replace(oneShot, replacer);
+}
+
 export interface ClosedTabEntry {
   path: string;
   cursorPos?: { line: number; column: number; endColumn?: number };
@@ -25,6 +57,8 @@ export interface EditorTab {
   autoSavePaused?: boolean;
   status?: 'active' | 'loaded' | 'suspended' | 'modified' | 'deleted' | 'conflict';
   undoHistory?: any;
+  isDiff?: boolean;
+  diffOriginalContent?: string | null;
 }
 
 export type TabInput = {
@@ -38,6 +72,8 @@ export type TabInput = {
   isLoading?: boolean;
   isUnsupported?: boolean;
   undoHistory?: any;
+  isDiff?: boolean;
+  diffOriginalContent?: string | null;
 };
 
 // Removed duplicate invoke
@@ -286,7 +322,7 @@ function createEditorStore() {
     tabs.update(state =>
       state.map(t => {
         if (t.id === id && !t.isModified && t.content !== null) {
-          return { ...t, content: null, originalContent: null, status: 'suspended' as const };
+          return { ...t, content: null, originalContent: null, status: 'suspended' as const, undoHistory: undefined };
         }
         return t;
       })
@@ -316,7 +352,7 @@ function createEditorStore() {
         if (isIdleTooLong || isOverLimit) {
           state = state.map(t =>
             t.id === tab.id
-              ? { ...t, content: null, originalContent: null, status: 'suspended' as const }
+              ? { ...t, content: null, originalContent: null, status: 'suspended' as const, undoHistory: undefined }
               : t
           );
           inMemoryCount--;
@@ -374,6 +410,26 @@ function createEditorStore() {
     tabs.update(state =>
       state.map(t => t.id === id ? { ...t, autoSavePaused: true } : t)
     );
+  }
+
+  /**
+   * Apply a Replace All to an open (in-memory) tab via the store. The new
+   * content is pushed through `updateContent`, which marks the tab modified
+   * and schedules an auto-save — the disk write happens through the same
+   * pipeline as manual edits.
+   *
+   * Returns the number of replaced occurrences, or 0 if none matched.
+   */
+  function applyReplacements(path: string, opts: ReplaceMatchOptions): number {
+    const tab = getTabsSnapshot().find(t => t.path === path && t.content !== null);
+    if (!tab || tab.content === null) return 0;
+    const re = buildReplaceRegex(opts.query, opts);
+    const matches = tab.content.match(re);
+    if (!matches || matches.length === 0) return 0;
+    const newContent = tab.content.replace(re, (m) => applyReplacement(m, re, opts));
+    if (newContent === tab.content) return 0;
+    updateContent(tab.id, newContent);
+    return matches.length;
   }
 
   function getTabsSnapshot(): EditorTab[] {
@@ -436,11 +492,19 @@ function createEditorStore() {
     const fileName = entry.path.split(/[/\\]/).pop() || 'Unknown';
     let content = '';
     const isImage = /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(fileName);
+    let isLargeFile = false;
     if (!isImage) {
       try {
         content = await invoke<string>('read_file_text', { path: entry.path });
       } catch (e) {
         if (String(e) === '__BINARY__') content = '';
+        else if (String(e) === '__LARGE_FILE__') {
+          try {
+            const chunked = await invoke<any>('read_file_chunked', { path: entry.path });
+            content = chunked.content;
+            isLargeFile = true;
+          } catch(err) { return; }
+        }
         else return; // If file doesn't exist anymore, abort
       }
     }
@@ -458,12 +522,23 @@ function createEditorStore() {
       name: fileName,
       content,
       language,
-      isPreview: false
+      isPreview: isLargeFile,
+      isLargeFile
     });
     setActiveTab(id);
     
     if (entry.cursorPos) updateCursor(id, entry.cursorPos.line, entry.cursorPos.column, entry.cursorPos.endColumn);
     if (entry.scrollTop) updateScroll(id, entry.scrollTop.top, entry.scrollTop.left);
+  }
+
+  function updateTab(id: string, props: Partial<EditorTab>) {
+    tabs.update(tbs => {
+      const idx = tbs.findIndex(t => t.id === id);
+      if (idx !== -1) {
+        tbs[idx] = { ...tbs[idx], ...props };
+      }
+      return tbs;
+    });
   }
 
   return {
@@ -480,6 +555,7 @@ function createEditorStore() {
     updateCursor,
     updateScroll,
     updateUndoHistory,
+    updateTab,
     getCursor,
     getScroll,
     markSaved,
@@ -499,6 +575,7 @@ function createEditorStore() {
     updateTabPath,
     reopenClosedTab,
     pauseAutoSave,
+    applyReplacements,
   };
 }
 

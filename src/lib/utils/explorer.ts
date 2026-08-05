@@ -46,10 +46,15 @@ export function getFileExt(name: string): string {
   return dot > 0 ? name.slice(dot + 1) : '';
 }
 
-export function isDir(path: string, flatList: { path: string; is_dir: boolean }[]): boolean {
-  const node = flatList.find(n => n.path === path);
-  return node ? node.is_dir : false;
+// PERF: Accepts either a Map (O(1)) or array (O(n)) for backward compat.
+// FileTree passes flatListMap for O(1) lookups.
+export function isDir(path: string, flatListOrMap: { path: string; is_dir: boolean }[] | Map<string, { path: string; is_dir: boolean }>): boolean {
+  if (flatListOrMap instanceof Map) {
+    return flatListOrMap.get(path)?.is_dir ?? false;
+  }
+  return flatListOrMap.find(n => n.path === path)?.is_dir ?? false;
 }
+
 
 export function isValidFileName(name: string): boolean {
   if (!name.trim()) return false;

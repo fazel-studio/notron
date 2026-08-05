@@ -29,7 +29,7 @@
   export function initGlobalWatcher() {
     if (globalWatcherInitialized) return;
     globalWatcherInitialized = true;
-    
+
     interface FsChangeItem {
       type: 'created' | 'deleted' | 'renamed' | 'modified';
       path: string;
@@ -38,6 +38,9 @@
       newPath?: string;
     }
 
+    // 5.1 — reacts to the Rust unified watcher's single `fs-change` event.
+    // This listener owns ONLY the Explorer cache/tree; open-tab state
+    // (delete / reload / rename) is handled by App.svelte's listener.
     listen<{ changes: FsChangeItem[] }>('fs-change', async (event) => {
       const { changes } = event.payload;
       const expandedSnap = uiStore.getExpandedPathsSetSnapshot();
@@ -49,24 +52,6 @@
           case 'deleted':
           case 'modified':
             if (change.parentPath) {
-              if (change.type === 'deleted') {
-                sharedNodeCache.delete(change.path);
-                editorStore.markTabDeleted(change.path);
-              } else if (change.type === 'modified') {
-                const tabsSnap = editorStore.getTabsSnapshot();
-                const tab = tabsSnap.find((t: any) => t.path === change.path);
-                if (tab && tab.status !== 'deleted') {
-                  const isModified = tab.isModified;
-                  if (!isModified) {
-                    invoke('read_file_text', { path: tab.path }).then((content) => {
-                      editorStore.setInitialContent(tab.id, content as string);
-                      uiStore.addToast('File Reloaded', 'success', tab.name);
-                    }).catch(() => {});
-                  } else {
-                    editorStore.markTabConflict(tab.id);
-                  }
-                }
-              }
               if (expandedSnap.has(change.parentPath)) {
                 try {
                   const fullNode = await invoke<RawFileNode>('read_directory', {
@@ -93,7 +78,7 @@
               sharedNodeCache.delete(change.oldPath);
               const parent = getParentPathSync(change.newPath);
               const oldParent = getParentPathSync(change.oldPath);
-              
+
               const updateParent = async (p: string) => {
                 if (expandedSnap.has(p)) {
                   try {
@@ -120,8 +105,6 @@
               if (parent !== oldParent) {
                 await updateParent(parent);
               }
-
-              editorStore.updateTabPath(change.oldPath, change.newPath);
             }
             break;
         }
@@ -142,16 +125,18 @@
   import VirtualList from './VirtualList.svelte';
   import { flattenTree, sortNodes } from '../utils/treeFlattener';
   import TreeNode from './TreeNode.svelte';
-
-  interface FileOpenMeta {
-    content: number[];
-    size: number;
-    is_large: boolean;
-  }
+  import Tooltip from './Tooltip.svelte';
 
   interface DirBatchEntry {
     path: string;
     children: RawFileNode[];
+  }
+
+  // B.2 — result of the canonical lazy-expand command.
+  interface ExpandResult {
+    path: string;
+    children: RawFileNode[];
+    cached: boolean;
   }
 
   interface Props { rootPath: string }
@@ -208,7 +193,14 @@
   });
   let pendingDrag: { paths: string[]; startX: number; startY: number } | null = null;
   let dragOccurred = false;
-  let ghostEl: HTMLDivElement | null = null;
+  let ghostEl = $state<HTMLDivElement | null>(null);
+
+  // B.5 — drag-over target computation is throttled to one pass per animation
+  // frame (~60fps). `dragover`/`pointermove` can fire hundreds of times/sec;
+  // hit-testing + validation must not run more than once per frame.
+  let lastPointerX = 0;
+  let lastPointerY = 0;
+  let dragTargetRaf: number | null = null;
 
   // ─── Rename inline ────────────────────────────────────────────
   let renamingPath    = $state<string | null>(null);
@@ -228,16 +220,46 @@
   let undoStack: UndoEntry[] = $state([]);
 
   // ─── Visual overlay ───────────────────────────────────────────
-  let fadedPaths = $derived.by(() => {
-    const s = new Set<string>();
-    if (clipboardOp === 'cut') clipboardPaths.forEach(p => s.add(p));
-    if (drag.active)           drag.paths.forEach(p => s.add(p));
-    return s;
-  });
+  // PERF FIX #4b: Hapus fadedPaths sebagai $derived Set.
+  // $derived Set = setiap drag.active/clipboardOp berubah → Set baru dibuat → SEMUA
+  // visible TreeNode re-render karena Svelte melihat referensi Set berubah.
+  // Sekarang inline check langsung di template: zero allocation, zero re-render overhead.
+  // fadedPaths.has(node.path) diganti: isNodeFaded(node.path)
+  function isNodeFaded(path: string): boolean {
+    if (clipboardOp === 'cut' && clipboardPaths.includes(path)) return true;
+    if (drag.active && drag.paths.includes(path)) return true;
+    return false;
+  }
 
   const _nodeCache = sharedNodeCache;
   let nodeCacheVersion = $state(0);
 
+  let hoveredPath = $state('');
+
+  function handleTreePointerMove(event: PointerEvent) {
+    if (drag.active || pendingDrag) {
+      if (hoveredPath !== '') hoveredPath = '';
+      return;
+    }
+    const el = (event.target as HTMLElement).closest('[role="treeitem"]');
+    if (el) {
+      const path = el.getAttribute('data-node-path');
+      if (path && path !== hoveredPath) {
+        hoveredPath = path;
+      }
+    } else {
+      if (hoveredPath !== '') hoveredPath = '';
+    }
+  }
+
+  function handleTreePointerLeave() {
+    if (hoveredPath !== '') hoveredPath = '';
+  }
+
+  // PERF FIX #3: loadingPaths TIDAK masuk ke flatList dependency.
+  // Sebelumnya loadingPaths dipass ke flattenTree() → setiap loading state change
+  // memicu full tree recompute. Sekarang loadingPaths hanya dikonsumsi langsung
+  // oleh TreeNode melalui prop `isLoading`, bukan via flatList.
   let loadingPaths = $state(new Set<string>());
 
   let ctxMenu = $state<{ isOpen: boolean; x: number; y: number; items: MenuItem[] }>({
@@ -246,10 +268,17 @@
 
   let expandedSet = $derived($expandedPathsStore);
 
+  // PERF FIX #2: Memoize sortNodes(rootChildren) secara terpisah.
+  // Sebelumnya dipanggil inside flatList derived → sortNodes() dipanggil ulang
+  // bahkan saat hanya nodeCacheVersion berubah (misal: expand subfolder).
+  let sortedRootChildren = $derived(sortNodes(rootChildren));
+
   let flatList = $derived.by(() => {
     void nodeCacheVersion;
     const creatingItem = creatingIn && creatingType ? { type: creatingType, parentPath: creatingIn } : null;
-    let list = flattenTree(sortNodes(rootChildren), expandedSet, _nodeCache, 0, creatingItem, loadingPaths);
+    // PERF: Gunakan sortedRootChildren yang sudah di-memoize, tidak sort ulang.
+    // loadingPaths sengaja TIDAK dipass agar perubahan loading state tidak trigger recompute flatList.
+    let list = flattenTree(sortedRootChildren, expandedSet, _nodeCache, 0, creatingItem);
     if (creatingItem && creatingItem.parentPath === rootPath) {
       if (creatingType === 'folder') {
         list.unshift({
@@ -281,6 +310,25 @@
     }
     return list;
   });
+
+  // PERF FIX #4: O(1) path → FlatTreeNode lookup map.
+  // Sebelumnya semua tempat pakai flatList.find(n => n.path === x) = O(n) linear scan.
+  // Saat drag: isValidDropTarget dipanggil setiap pointer move (60fps) dengan O(n) scan
+  // pada list yang bisa ribuan nodes. flatListMap membuatnya O(1).
+  let flatListMap = $derived.by(() => {
+    const map = new Map<string, import('../utils/treeFlattener').FlatTreeNode>();
+    for (const node of flatList) map.set(node.path, node);
+    return map;
+  });
+
+  // PERF FIX #4b: O(1) path → index lookup untuk keyboard nav & shift-select.
+  // findIndex() = O(n) scan. Map lookup = O(1). Dibuat sekali bersamaan flatListMap.
+  let flatListIndexMap = $derived.by(() => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < flatList.length; i++) map.set(flatList[i].path, i);
+    return map;
+  });
+
 
   $effect(() => {
     $showDotFilesStore;
@@ -359,8 +407,8 @@
     }
     try {
       const showDotFiles = uiStore.getSnapshot().showDotFiles;
-      const node = await invoke<RawFileNode>('read_directory', { path, showDotFiles });
-      const newRootChildren = sortNodes(node.children ?? []);
+      const res = await invoke<ExpandResult>('expand_folder', { path, showDotFiles });
+      const newRootChildren = sortNodes(res.children ?? []);
       if (newRootChildren.length > 10000) {
         const proceed = await promptLargeFolder();
         if (!proceed) {
@@ -385,8 +433,8 @@
   async function silentRefresh(path: string) {
     try {
       const showDotFiles = uiStore.getSnapshot().showDotFiles;
-      const node = await invoke<RawFileNode>('read_directory', { path, showDotFiles });
-      const newRootChildren = sortNodes(node.children ?? []);
+      const res = await invoke<ExpandResult>('expand_folder', { path, showDotFiles });
+      const newRootChildren = sortNodes(res.children ?? []);
       rootChildren = newRootChildren;
       sharedRootChildren = rootChildren;
       _nodeCache.set(path, rootChildren);
@@ -423,8 +471,9 @@
 
   function applyShiftSelect(targetPath: string) {
     const anchor     = anchorPath ?? activePath ?? targetPath;
-    const anchorIdx  = flatList.findIndex(n => n.path === anchor);
-    const targetIdx  = flatList.findIndex(n => n.path === targetPath);
+    // PERF: O(1) index lookup via flatListIndexMap
+    const anchorIdx  = flatListIndexMap.get(anchor) ?? -1;
+    const targetIdx  = flatListIndexMap.get(targetPath) ?? -1;
     if (anchorIdx === -1 || targetIdx === -1) {
       selectedPaths = new Set([targetPath]);
       activePath    = targetPath;
@@ -452,7 +501,11 @@
 
   function handleNodeClick(event: MouseEvent, node: FlatTreeNode) {
     event.stopPropagation();
-    if (dragOccurred) return;
+    window.dispatchEvent(new CustomEvent('notron:cancel-tooltips'));
+    if (dragOccurred) {
+      dragOccurred = false;
+      return;
+    }
 
     if (renamingPath) commitRename();
     if (creatingIn)   cancelCreate();
@@ -478,14 +531,21 @@
       uiStore.toggleExpandedPath(node.path, true);
       return;
     }
+    
+    // Prevent duplicate IPC requests if already loading
+    if (loadingPaths.has(node.path)) {
+      uiStore.toggleExpandedPath(node.path, true);
+      return;
+    }
+
     uiStore.toggleExpandedPath(node.path, true);
     loadingPaths = new Set(loadingPaths).add(node.path);
 
-    invoke<RawFileNode>('read_directory', {
+    invoke<ExpandResult>('expand_folder', {
       path: node.path,
       showDotFiles: uiStore.getSnapshot().showDotFiles,
-    }).then(async (fullNode) => {
-      const children = sortNodes(fullNode.children ?? []);
+    }).then(async (res) => {
+      const children = sortNodes(res.children ?? []);
       if (children.length > 10000) {
         const proceed = await promptLargeFolder();
         if (!proceed) {
@@ -506,9 +566,14 @@
   }
 
   function handleBackgroundClick(event: MouseEvent) {
-    if (dragOccurred) return;
-    if ((event.target as HTMLElement).closest('[data-node-path]')) return;
+    window.dispatchEvent(new CustomEvent('notron:cancel-tooltips'));
+    if (dragOccurred) {
+      dragOccurred = false;
+      return;
+    }
+    if ((event.target as HTMLElement).closest('[role="treeitem"]')) return;
     clearSelection();
+    activePath = rootPath;
     uiStore.setSelectedExplorerPath(rootPath);
     if (renamingPath) cancelRename();
     if (creatingIn)   cancelCreate();
@@ -527,6 +592,7 @@
   }
 
   function handleTreeKeyDown(event: KeyboardEvent) {
+    window.dispatchEvent(new CustomEvent('notron:cancel-tooltips'));
     if ((event.target as HTMLElement)?.tagName === 'INPUT') return;
     const ctrl = event.ctrlKey || event.metaKey;
 
@@ -549,7 +615,8 @@
     }
 
     if (!activePath) return;
-    const currentIdx = flatList.findIndex(n => n.path === activePath);
+    // PERF: O(1) index lookup via flatListIndexMap
+    const currentIdx = flatListIndexMap.get(activePath) ?? -1;
     if (currentIdx === -1) return;
 
     switch (event.key) {
@@ -582,7 +649,7 @@
           handleExpand(node);
         } else {
           const parentPath = getParentPath(node.path);
-          const parentIdx  = flatList.findIndex(n => n.path === parentPath);
+          const parentIdx  = flatListIndexMap.get(parentPath) ?? -1;
           if (parentIdx !== -1) {
             applySingleSelect(parentPath, flatList[parentIdx]);
             scrollNodeIntoView(parentPath);
@@ -605,12 +672,14 @@
   // ════════════════════════════════════════════════════════════════
 
   function showContextMenu(event: MouseEvent, node?: FlatTreeNode) {
-    window.dispatchEvent(new CustomEvent('notron:hide-tooltips'));
+    window.dispatchEvent(new CustomEvent('notron:cancel-tooltips'));
     event.preventDefault();
     event.stopPropagation();
 
     if (node && !selectedPaths.has(node.path)) {
-      applySingleSelect(node.path, node);
+      applySingleSelect(node.path, node, false);
+    } else if (!node) {
+      handleBackgroundClick(event);
     }
 
     const targets = selectedPaths.size > 0 ? [...selectedPaths] : (node ? [node.path] : []);
@@ -622,8 +691,8 @@
 
   function buildMenuItems(targets: string[], isBackground: boolean): MenuItem[] {
     const count      = targets.length;
-    const hasFolder  = targets.some(p => isDir(p, flatList));
-    const hasFile    = targets.some(p => !isDir(p, flatList));
+    const hasFolder  = targets.some(p => isDir(p, flatListMap));
+    const hasFile    = targets.some(p => !isDir(p, flatListMap));
     const isSingle   = count === 1;
     const label      = isSingle ? `"${getFileName(targets[0])}"` : `${count} items`;
     const canPaste   = clipboardPaths.length > 0 && clipboardOp !== null;
@@ -649,7 +718,7 @@
     const result: MenuItem[] = [
       ...(hasFile ? [{
         label: isSingle ? 'Open' : `Open ${count} files`,
-        action: () => targets.filter(p => !isDir(p, flatList)).forEach(p => openFileInTab(p)),
+        action: () => targets.filter(p => !isDir(p, flatListMap)).forEach(p => openFileInTab(p)),
       }] : []),
 
       ...(isSingle && !hasFolder ? [{
@@ -718,16 +787,16 @@
     let destFolder = rootPath;
     if (selectedPaths.size === 1) {
       const p = [...selectedPaths][0];
-      destFolder = isDir(p, flatList) ? p : getParentPath(p);
+      destFolder = isDir(p, flatListMap) ? p : getParentPath(p);
     } else if (activePath) {
-      destFolder = isDir(activePath, flatList) ? activePath : getParentPath(activePath);
+      destFolder = isDir(activePath, flatListMap) ? activePath : getParentPath(activePath);
     }
 
     const op = clipboardOp;
     const sources = [...clipboardPaths];
 
     for (const src of sources) {
-      if (isDir(src, flatList) && (destFolder === src || destFolder.startsWith(src + '/'))) {
+      if (isDir(src, flatListMap) && (destFolder === src || destFolder.startsWith(src + '/'))) {
         uiStore.addToast('Cannot paste folder into itself', 'alert');
         return;
       }
@@ -745,23 +814,18 @@
 
     try {
       if (op === 'copy') {
-        for (const src of sources) {
-          const name = getFileName(src);
-          const dest = `${destFolder}/${name}`;
-          try {
-            await invoke('copy_item', { sourcePath: src, destPath: dest });
-          } catch (err) {
-            uiStore.addToast(`Copy failed: ${humanizeError(err)}`, 'alert');
-          }
+        const copies = sources.map(src => ({ sourcePath: src, destPath: `${destFolder}/${getFileName(src)}` }));
+        try {
+          await invoke('copy_items', { copies: copies.map(c => ({ source_path: c.sourcePath, dest_path: c.destPath })) });
+        } catch (err) {
+          uiStore.addToast(`Copy failed: ${humanizeError(err)}`, 'alert');
         }
       } else {
         extraFadedPaths = new Set(sources);
-        for (const src of sources) {
-          const name = getFileName(src);
-          const dest = `${destFolder}/${name}`;
-          if (src === dest) continue;
+        const moves = sources.map(src => ({ oldPath: src, newPath: `${destFolder}/${getFileName(src)}` })).filter(m => m.oldPath !== m.newPath);
+        if (moves.length > 0) {
           try {
-            await invoke('rename_item', { oldPath: src, newPath: dest });
+            await invoke('rename_items', { moves: moves.map(m => ({ old_path: m.oldPath, new_path: m.newPath })) });
           } catch (err) {
             uiStore.addToast(`Move failed: ${humanizeError(err)}`, 'alert');
           }
@@ -825,12 +889,13 @@
   async function getOrFetchDirContents(folderPath: string): Promise<{ name: string; path: string; is_dir: boolean }[]> {
     if (_nodeCache.has(folderPath)) return _nodeCache.get(folderPath)!;
     try {
-      const node = await invoke<RawFileNode>('read_directory', {
+      const res = await invoke<ExpandResult>('expand_folder', {
         path: folderPath,
         showDotFiles: uiStore.getSnapshot().showDotFiles,
       });
-      _nodeCache.set(folderPath, sortNodes(node.children ?? []));
-      return _nodeCache.get(folderPath)!;
+      const children = sortNodes(res.children ?? []);
+      _nodeCache.set(folderPath, children);
+      return children;
     } catch {
       return [];
     }
@@ -880,11 +945,11 @@
     for (const p of parents) {
       if (expandedSet.has(p) || p === rootPath) {
         try {
-          const node = await invoke<RawFileNode>('read_directory', {
+          const res = await invoke<ExpandResult>('expand_folder', {
             path: p,
             showDotFiles: uiStore.getSnapshot().showDotFiles,
           });
-          _nodeCache.set(p, sortNodes(node.children ?? []));
+          _nodeCache.set(p, sortNodes(res.children ?? []));
         } catch {}
       }
     }
@@ -946,10 +1011,15 @@
     extraFadedPaths = new Set(targets);
 
     try {
+      await invoke('delete_items', { paths: targets });
       for (const p of targets) {
-        await invoke('delete_item', { path: p });
         editorStore.closeTab(p);
-        removeFromDirCache(getParentPath(p), p);
+        const parentPath = getParentPath(p);
+        removeFromDirCache(parentPath, p);
+        if (parentPath === rootPath) {
+          sharedRootChildren = sharedRootChildren.filter(c => c.path !== p);
+          rootChildren = sharedRootChildren;
+        }
         _nodeCache.delete(p);
       }
 
@@ -1053,7 +1123,7 @@
     renamingPath = null;
 
     try {
-      await invoke('rename_item', { oldPath, newPath });
+      await invoke('rename_item', { old_path: oldPath, new_path: newPath });
 
       renameDirCacheKey(oldPath, newPath);
       updateExpandedPathsAfterRename(oldPath, newPath);
@@ -1099,6 +1169,7 @@
         }
         return c;
       });
+      rootChildren = sharedRootChildren;
     }
   }
 
@@ -1115,7 +1186,7 @@
     if (renamingPath) cancelRename();
     if (creatingIn)   cancelCreate();
 
-    const parentNode = flatList.find(n => n.path === parentPath);
+    const parentNode = flatListMap.get(parentPath);
     if (parentNode && !parentNode.isExpanded) {
       await handleExpand(parentNode);
       await tick();
@@ -1162,7 +1233,12 @@
         await invoke('create_directory', { path: newPath });
       }
 
-      invalidateDirCache(parentPath);
+      const newNode = { name, path: newPath, is_dir: type === 'folder' };
+      addToDirCache(parentPath, newNode);
+      if (parentPath === rootPath) {
+        sharedRootChildren = sortNodes([...sharedRootChildren, newNode]);
+        rootChildren = sharedRootChildren;
+      }
       nodeCacheVersion++;
 
       selectedPaths = new Set([newPath]);
@@ -1187,6 +1263,7 @@
 
   function handleNodePointerDown(event: PointerEvent, node: FlatTreeNode) {
     if (event.button !== 0) return;
+    window.dispatchEvent(new CustomEvent('notron:cancel-tooltips'));
     if (renamingPath) { commitRename(); return; }
 
     dragOccurred = false;
@@ -1246,14 +1323,31 @@
   function onDragMove(event: PointerEvent) {
     if (!drag.active) return;
 
+    lastPointerX = event.clientX;
+    lastPointerY = event.clientY;
+
     // ✅ Direct DOM update for ghost position — bypasses Svelte reactivity entirely
     if (ghostEl) {
       ghostEl.style.left = `${event.clientX + 14}px`;
       ghostEl.style.top  = `${event.clientY - 8}px`;
     }
 
+    // B.5 — coalesce drop-target computation to one pass per animation frame.
+    // Raw pointermove can fire hundreds of times/sec; isValidDropTarget + the
+    // elementFromPoint hit-test must not run more often than the screen can
+    // refresh (same pattern as VS Code's drag feedback, throttled to ~60fps).
+    if (dragTargetRaf !== null) return;
+    dragTargetRaf = requestAnimationFrame(() => {
+      dragTargetRaf = null;
+      updateDragTarget();
+    });
+  }
+
+  function updateDragTarget() {
+    if (!drag.active) return;
+
     // ✅ pointer-events:none on ghost is already set — no need to hide/show
-    const el      = document.elementFromPoint(event.clientX, event.clientY);
+    const el      = document.elementFromPoint(lastPointerX, lastPointerY);
     const nodeEl  = el?.closest('[data-node-path]') as HTMLElement | null;
     const targetPath = nodeEl?.dataset.nodePath ?? null;
 
@@ -1266,7 +1360,7 @@
     let expandTimer: ReturnType<typeof setTimeout> | null = null;
 
     if (isValid && targetPath) {
-      const targetNode = flatList.find(n => n.path === targetPath);
+      const targetNode = flatListMap.get(targetPath);
       if (targetNode?.is_dir && !targetNode.isExpanded) {
         expandTimer = setTimeout(() => handleExpand(targetNode), 600);
       }
@@ -1280,7 +1374,8 @@
   }
 
   function isValidDropTarget(targetPath: string, draggedPaths: string[]): boolean {
-    const targetNode = flatList.find(n => n.path === targetPath);
+    // PERF: O(1) lookup via flatListMap instead of O(n) flatList.find()
+    const targetNode = flatListMap.get(targetPath);
     if (!targetNode && targetPath !== rootPath) return false;
     if (targetNode && !targetNode.is_dir) return false;
 
@@ -1307,7 +1402,7 @@
 
     if (!dropTargetValid || !dropTargetPath) return;
 
-    const targetNode = flatList.find(n => n.path === dropTargetPath);
+    const targetNode = flatListMap.get(dropTargetPath);
     const destFolder = dropTargetPath === rootPath
       ? rootPath
       : (targetNode?.is_dir ? dropTargetPath : getParentPath(dropTargetPath));
@@ -1334,71 +1429,150 @@
   }
 
   function cleanupDragListeners() {
+    if (dragTargetRaf !== null) {
+      cancelAnimationFrame(dragTargetRaf);
+      dragTargetRaf = null;
+    }
     window.removeEventListener('pointermove', onDragMove);
     window.removeEventListener('pointerup',   onDragEnd);
     window.removeEventListener('keydown',     onDragEscKey);
     window.removeEventListener('blur',        onDragWindowBlur);
   }
 
+  // ════════════════════════════════════════════════════════════════
+  // SECTION 8b — OPTIMISTIC MOVE + ROLLBACK (B.5)
+  // ════════════════════════════════════════════════════════════════
+
+  // B.5 — optimistic UI: the move is applied to the local tree state *in the
+  // same frame* the drop happens, then `rename_items` runs async in the
+  // background. If the commit fails (permission / name conflict / …), the
+  // frontend state is rolled back to the pre-drop snapshot. No optimistic
+  // without a rollback plan.
   async function executeMoveItems(sourcePaths: string[], destFolder: string) {
     for (const src of sourcePaths) {
-      if (isDir(src, flatList) && (destFolder === src || destFolder.startsWith(src + '/'))) {
+      if (isDir(src, flatListMap) && (destFolder === src || destFolder.startsWith(src + '/'))) {
         uiStore.addToast('Cannot move folder into itself', 'alert');
         return;
       }
     }
 
+    const moves = sourcePaths
+      .map(p => ({ oldPath: p, newPath: `${destFolder}/${getFileName(p)}` }))
+      .filter(m => m.oldPath !== m.newPath);
+    if (moves.length === 0) return;
+
+    const snap = snapshotExplorerState();
     extraFadedPaths = new Set(sourcePaths);
 
-    const movedPairs: Array<{ oldPath: string; newPath: string }> = [];
+    // Apply locally first → user sees the result instantly (target UX B.3).
+    const tabRenames = applyMovesOptimistic(moves, destFolder);
+
     try {
-      for (const p of sourcePaths) {
-        const name = getFileName(p);
-        const newPath = `${destFolder}/${name}`;
-        if (newPath === p) continue;
-        try {
-          await invoke('rename_item', { oldPath: p, newPath });
-          movedPairs.push({ oldPath: p, newPath });
-        } catch (err) {
-          console.error('move failed for', p, err);
-        }
+      // Single batched command for all items (B.5 — 1 IPC, not N round-trips).
+      await invoke('rename_items', { moves: moves.map(m => ({ old_path: m.oldPath, new_path: m.newPath })) });
+
+      // Reveal the moved items: expand the destination folder if it isn't
+      // expanded yet (reads from disk, which now contains the moved entries).
+      const destNode = flatListMap.get(destFolder);
+      if (destNode && !destNode.isExpanded) {
+        handleExpand(destNode).catch(() => {});
       }
 
-      for (const { oldPath, newPath } of movedPairs) {
-        const name = getFileName(newPath);
-        const oldParent = getParentPath(oldPath);
-
-        removeFromDirCache(oldParent, oldPath);
-        if (oldParent === rootPath) {
-          sharedRootChildren = sharedRootChildren.filter(c => c.path !== oldPath);
-        }
-
-        addToDirCache(destFolder, { name, path: newPath, is_dir: isDir(oldPath, flatList) });
-        if (destFolder === rootPath) {
-          sharedRootChildren = sortNodes([...sharedRootChildren, { name, path: newPath, is_dir: isDir(oldPath, flatList) }]);
-        }
-
-        renameDirCacheKey(oldPath, newPath);
-        updateOpenTabsAfterRename(oldPath, newPath);
-      }
-
-      nodeCacheVersion++;
-
-      const destNode = flatList.find(n => n.path === destFolder);
-      if (destNode && !destNode.isExpanded) await handleExpand(destNode);
-
-      const newPaths = movedPairs.map(p => p.newPath);
-      selectedPaths  = new Set(newPaths);
-      activePath     = newPaths[0] ?? null;
-
-      if (movedPairs.length > 0) {
-        uiStore.addToast(`Moved ${movedPairs.length} item(s)`, 'success');
+      if (moves.length > 0) {
+        uiStore.addToast(`Moved ${moves.length} item(s)`, 'success');
       }
     } catch (err) {
+      // Commit failed → roll back the optimistic update.
+      restoreExplorerState(snap, tabRenames);
       uiStore.addToast(`Move failed: ${humanizeError(err)}`, 'alert');
     } finally {
       extraFadedPaths = new Set();
     }
+  }
+
+  function snapshotExplorerState() {
+    return {
+      nodeCache: new Map(_nodeCache),
+      rootChildren: [...rootChildren],
+      sharedRootChildren: [...sharedRootChildren],
+      selectedPaths: new Set(selectedPaths),
+      activePath,
+      anchorPath,
+      expandedPaths: new Set(uiStore.getExpandedPathsSetSnapshot()),
+    };
+  }
+
+  // Apply the move to every piece of frontend state we own. Returns the tab
+  // renames performed (old→new) so a failed commit can reverse exactly them.
+  function applyMovesOptimistic(
+    moves: Array<{ oldPath: string; newPath: string }>,
+    destFolder: string,
+  ): Array<{ from: string; to: string }> {
+    const tabRenames: Array<{ from: string; to: string }> = [];
+
+    for (const { oldPath, newPath } of moves) {
+      const name = getFileName(newPath);
+      const oldParent = getParentPath(oldPath);
+      const isDirOld = isDir(oldPath, flatListMap);
+
+      removeFromDirCache(oldParent, oldPath);
+      if (oldParent === rootPath) {
+        sharedRootChildren = sharedRootChildren.filter(c => c.path !== oldPath);
+      }
+
+      addToDirCache(destFolder, { name, path: newPath, is_dir: isDirOld });
+      if (destFolder === rootPath) {
+        sharedRootChildren = sortNodes([...sharedRootChildren, { name, path: newPath, is_dir: isDirOld }]);
+      }
+      rootChildren = sharedRootChildren;
+
+      renameDirCacheKey(oldPath, newPath);
+      // B.5 — expanded-path set follows the moved folder (was missing before).
+      updateExpandedPathsAfterRename(oldPath, newPath);
+
+      // Update open tabs' paths now, recording exactly what we changed.
+      for (const tab of editorStore.getTabsSnapshot()) {
+        if (tab.path === oldPath) {
+          tabRenames.push({ from: newPath, to: oldPath });
+          editorStore.updateTabPath(oldPath, newPath);
+        } else if (tab.path.startsWith(oldPath + '/')) {
+          const newTabPath = newPath + tab.path.slice(oldPath.length);
+          tabRenames.push({ from: newTabPath, to: tab.path });
+          editorStore.updateTabPath(tab.path, newTabPath);
+        }
+      }
+    }
+
+    nodeCacheVersion++;
+
+    // B.5 — selection updates in the same frame as the drop (optimistic);
+    // a failed commit restores it from the snapshot.
+    const newPaths = moves.map(m => m.newPath);
+    selectedPaths  = new Set(newPaths);
+    activePath     = newPaths[0] ?? null;
+
+    return tabRenames;
+  }
+
+  function restoreExplorerState(
+    snap: ReturnType<typeof snapshotExplorerState>,
+    tabRenames: Array<{ from: string; to: string }>,
+  ) {
+    _nodeCache.clear();
+    for (const [k, v] of snap.nodeCache) _nodeCache.set(k, v);
+    sharedRootChildren = snap.sharedRootChildren;
+    rootChildren = snap.rootChildren;
+    selectedPaths = snap.selectedPaths;
+    activePath = snap.activePath;
+    anchorPath = snap.anchorPath;
+    uiStore.setExpandedPathsSet(snap.expandedPaths);
+
+    // Reverse exactly the tab renames we performed optimistically.
+    for (const r of tabRenames) {
+      editorStore.updateTabPath(r.from, r.to);
+    }
+
+    nodeCacheVersion++;
   }
 
   function handleRootAreaPointerUp(event: PointerEvent) {
@@ -1436,7 +1610,7 @@
           });
           break;
         case 'rename':
-          await invoke('rename_item', { oldPath: entry.payload.newPath, newPath: entry.payload.oldPath });
+          await invoke('rename_item', { old_path: entry.payload.newPath, new_path: entry.payload.oldPath });
           break;
         case 'create':
           await invoke('delete_item', { path: entry.payload.path });
@@ -1471,6 +1645,14 @@
       editorStore.addTab({ id: path, path, name, content: '', language: 'image', isPreview: true });
       return;
     }
+
+    // Deduplicate rapid clicks: if already loading, just activate the tab
+    const existing = editorStore.getTabsSnapshot().find(t => t.id === path);
+    if (existing && existing.isLoading) {
+      editorStore.addTab(existing);
+      return;
+    }
+
     editorStore.addTab({ id: path, path, name, content: null, language: 'plaintext', isPreview: true, isLoading: true });
     invoke<string>('read_file_text', { path }).then((content) => {
       editorStore.setInitialContent(path, content);
@@ -1479,21 +1661,23 @@
       if (errStr === '__BINARY__') {
         editorStore.setTabUnsupported(path, true);
         editorStore.setInitialContent(path, '');
+      } else if (errStr === '__LARGE_FILE__') {
+        editorStore.closeTab(path);
+        if (confirm(`"${name}" is large (>1MB). Open anyway? Syntax highlighting will be disabled.`)) {
+          editorStore.addTab({
+            id: path, path, name, content: '', language: 'plaintext', isPreview: true, isLargeFile: true, isLoading: true
+          });
+          invoke<any>('read_file_chunked', { path }).then(chunked => {
+            editorStore.setInitialContent(path, chunked.content);
+            editorStore.setTabLoading(path, false);
+          }).catch(e => {
+            console.error('Failed to load chunked file:', e);
+            editorStore.setTabLoading(path, false);
+          });
+        }
       } else {
-        invoke<FileOpenMeta>('open_file_with_meta', { path }).then((meta) => {
-          if (meta.is_large) {
-            editorStore.closeTab(path);
-            confirm(`"${name}" is large (>1MB). Open anyway? Syntax highlighting will be disabled.`) && editorStore.addTab({
-              id: path, path, name, content: '', language: 'plaintext', isPreview: true, isLargeFile: true,
-            });
-            return;
-          }
-          const content = new TextDecoder('utf-8').decode(new Uint8Array(meta.content)).replace(/\r\n/g, '\n');
-          editorStore.setInitialContent(path, content);
-        }).catch((fallbackErr) => {
-          console.error('Failed to open file:', path, fallbackErr);
-          editorStore.setTabLoading(path, false);
-        });
+        console.error('Failed to open file:', path, err);
+        editorStore.setTabLoading(path, false);
       }
     });
   }
@@ -1572,7 +1756,7 @@
   function resolveCreationTarget(): string {
     const selected = uiStore.getSnapshot().selectedExplorerPath;
     if (!selected || selected === rootPath) return rootPath;
-    const node = flatList.find(n => n.path === selected);
+    const node = flatListMap.get(selected);
     if (node) return node.is_dir ? selected : getParentPath(selected);
     return getParentPath(selected);
   }
@@ -1592,29 +1776,36 @@
   </div>
 
 {:else if rootChildren.length === 0}
-  <div 
-    class="p-4 text-xs text-muted flex-1 h-full outline-none transition-all {activePath === rootPath ? 'bg-surface-2 ring-1 ring-inset ring-focus' : ''}"
-    role="presentation"
-    onclick={handleBackgroundClick}
-    oncontextmenu={(e) => showContextMenu(e)}
-    data-node-path={rootPath}
-    onpointerup={handleRootAreaPointerUp}
-  >
-    Empty folder.
-  </div>
+  <Tooltip content={hoveredPath} disabled={!hoveredPath} followCursor={true} hoverDelay={400} wrapperClass="flex-1 flex flex-col min-h-0 min-w-0">
+    <div 
+      class="p-4 text-xs text-muted flex-1 h-full outline-none transition-all {activePath === rootPath ? 'bg-surface-2 ring-1 ring-inset ring-focus' : ''}"
+      role="presentation"
+      onclick={handleBackgroundClick}
+      oncontextmenu={(e) => showContextMenu(e)}
+      data-node-path={rootPath}
+      onpointerup={handleRootAreaPointerUp}
+      onpointermove={handleTreePointerMove}
+      onpointerleave={handleTreePointerLeave}
+    >
+      Empty folder.
+    </div>
+  </Tooltip>
 
 {:else}
-  <div
-    class="flex-1 h-full outline-none flex flex-col p-2 transition-all {activePath === rootPath ? 'bg-surface-2 ring-1 ring-inset ring-focus' : ''}"
-    role="tree"
-    tabindex="0"
-    data-node-path={rootPath}
-    onkeydown={handleTreeKeyDown}
-    oncontextmenu={(e) => showContextMenu(e)}
-    onpointerup={handleRootAreaPointerUp}
-    onclick={handleBackgroundClick}
-  >
-    <VirtualList items={flatList} itemHeight={26} overscan={5} class="flex-1">
+  <Tooltip content={hoveredPath} disabled={!hoveredPath} followCursor={true} hoverDelay={400} wrapperClass="flex-1 flex flex-col min-h-0 min-w-0">
+    <div
+      class="flex-1 h-full outline-none flex flex-col p-2 transition-all {activePath === rootPath ? 'bg-surface-2 ring-1 ring-inset ring-focus' : ''}"
+      role="tree"
+      tabindex="0"
+      data-node-path={rootPath}
+      onkeydown={handleTreeKeyDown}
+      oncontextmenu={(e) => showContextMenu(e)}
+      onpointerup={handleRootAreaPointerUp}
+      onclick={handleBackgroundClick}
+      onpointermove={handleTreePointerMove}
+      onpointerleave={handleTreePointerLeave}
+    >
+      <VirtualList items={flatList} itemHeight={26} overscan={3} class="flex-1">
       {#snippet item({ item: node }: { item: FlatTreeNode; index: number })}
         {#if node.is_creating && node.creating_type}
           <div
@@ -1679,11 +1870,10 @@
             {node}
             isSelected={selectedPaths.has(node.path)}
             isActive={activePath === node.path}
-            isFaded={fadedPaths.has(node.path) || extraFadedPaths.has(node.path)}
+            isFaded={isNodeFaded(node.path) || extraFadedPaths.has(node.path)}
             isDropTarget={drag.dropTargetPath === node.path && drag.dropTargetValid}
             isDropInvalid={drag.dropTargetPath === node.path && !drag.dropTargetValid}
             isCreatingChild={creatingIn === node.path}
-            ctxMenuOpen={ctxMenu.isOpen && ctxMenu.items.length > 0}
             isLoading={loadingPaths.has(node.path)}
             onFileClick={handleNodeClick}
             onContextMenu={(e) => showContextMenu(e, node)}
@@ -1693,8 +1883,9 @@
           />
         {/if}
       {/snippet}
-    </VirtualList>
-  </div>
+      </VirtualList>
+    </div>
+  </Tooltip>
 {/if}
 
 {#if drag.active}
@@ -1711,7 +1902,7 @@
   >
     <div class="ghost-inner">
       {#if drag.paths.length === 1}
-        {#if isDir(drag.paths[0], flatList)}
+        {#if isDir(drag.paths[0], flatListMap)}
           <Folder size={14} />
         {:else}
           <File size={14} />

@@ -32,7 +32,7 @@
   onMount(() => {
     const root = uiStore.getSnapshot().explorerRoot;
     if (root) {
-      invoke<string[]>('list_all_files', { path: root, excludeDirs: ['node_modules', '.git', 'target', 'dist', 'build'] })
+      invoke<string[]>('list_all_files', { path: root, excludeDirs: ['node_modules', '.git', 'target', 'dist', 'build'], maxResults: 50000 })
         .then(files => {
           allFiles = files.map(f => f.replace(/\\/g, '/'));
         })
@@ -74,29 +74,25 @@
     contentResults = [];
     
     try {
-      const filesToRead = selectedFiles;
-      for (const path of filesToRead) {
-        try {
-          const fileData: any = await invoke('open_file', { path });
-          const content: string = fileData.content;
-          if (!content) continue;
-          
-          const lines = content.split('\n');
-          const lowerQuery = query.toLowerCase();
-          
-          for (let i = 0; i < lines.length; i++) {
-            if (lines[i].toLowerCase().includes(lowerQuery)) {
-              contentResults = [...contentResults, {
-                path,
-                line: i + 1,
-                text: lines[i]
-              }];
-            }
+      // One IPC call for all files instead of N open_file calls (each of which
+      // also runs charset detection). batch_read_files returns null for
+      // binary/unreadable files, which we skip.
+      const contents = await invoke<Record<string, string | null>>('batch_read_files', { paths: selectedFiles })
+        .catch(() => ({} as Record<string, string | null>));
+      const lowerQuery = query.toLowerCase();
+      const newResults: SearchResult[] = [];
+
+      for (const path of selectedFiles) {
+        const content = contents[path];
+        if (!content) continue;
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].toLowerCase().includes(lowerQuery)) {
+            newResults.push({ path, line: i + 1, text: lines[i] });
           }
-        } catch (err) {
-          console.error("Error reading file", path, err);
         }
       }
+      contentResults = newResults;
     } catch (err) {
       console.error(err);
     } finally {

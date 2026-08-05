@@ -42,10 +42,17 @@ export interface RawFileNode {
  *
  * This is the core function for Section 3.1 — Tree Flattening.
  *
+ * PERF NOTE: loadingPaths parameter was removed intentionally.
+ * Previously it was passed here, making loadingPaths a dependency of flatList.
+ * Every loading state change (add/remove path) triggered a full tree recompute.
+ * Now loadingPaths is consumed directly by TreeNode via isLoading prop,
+ * completely decoupled from flatList computation.
+ *
  * @param nodes      - Array of top-level nodes (root's children)
  * @param expandedSet - Set of paths that are currently expanded
  * @param childrenCache - Map from path → loaded children (Section 3.3 Node Cache)
  * @param depth      - Current recursion depth (starts at 0)
+ * @param creatingItem - Optional item being created inline
  * @returns Flat array of visible nodes, ready for virtual scrolling
  */
 export function flattenTree(
@@ -54,7 +61,6 @@ export function flattenTree(
   childrenCache: Map<string, RawFileNode[]>,
   depth = 0,
   creatingItem?: { type: 'file' | 'folder'; parentPath: string } | null,
-  loadingPaths?: Set<string>
 ): FlatTreeNode[] {
   const result: FlatTreeNode[] = [];
 
@@ -73,7 +79,7 @@ export function flattenTree(
 
     if (isExpanded) {
       const children = childrenCache.get(node.path) ?? node.children ?? [];
-      const childFlat = flattenTree(children, expandedSet, childrenCache, depth + 1, creatingItem, loadingPaths);
+      const childFlat = flattenTree(children, expandedSet, childrenCache, depth + 1, creatingItem);
 
       if (creatingItem && creatingItem.parentPath === node.path) {
         if (creatingItem.type === 'folder') {
@@ -103,17 +109,6 @@ export function flattenTree(
             creating_type: 'file'
           });
         }
-      }
-
-      if (loadingPaths?.has(node.path) && children.length === 0) {
-        childFlat.unshift({
-          path: `__loading__${node.path}`,
-          name: 'Loading...',
-          depth: depth + 1,
-          is_dir: false,
-          isExpanded: false,
-          has_children: false,
-        });
       }
 
       for (const c of childFlat) result.push(c);

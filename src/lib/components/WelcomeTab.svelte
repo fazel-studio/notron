@@ -18,6 +18,11 @@
 
   function handleNewFile() { uiStore.openNewFileDialog('welcome'); }
 
+  function handleRemoveRecent(e: MouseEvent, path: string) {
+    e.stopPropagation();
+    uiStore.removeRecentWorkspace(path);
+  }
+
   async function handleOpenFile() {
     try {
       const selected = await open({ multiple: false });
@@ -25,18 +30,26 @@
         const fileName = selected.split(/[/\\]/).pop() || 'Unknown';
         let content = '';
         const isImage = /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(fileName);
+        let isLargeFile = false;
+        let isPreview = false;
         if (!isImage) {
           try {
             content = await invoke<string>('read_file_text', { path: selected });
           } catch (e) {
             if (String(e) === '__BINARY__') content = '';
-            else throw e;
+            else if (String(e) === '__LARGE_FILE__') {
+              const chunked = await invoke<any>('read_file_chunked', { path: selected });
+              content = chunked.content;
+              isLargeFile = true;
+              isPreview = true;
+            } else throw e;
           }
         }
         editorStore.addTab({
           id: `tab-${Date.now()}`, path: selected, name: fileName, content,
           language: isImage ? 'image' : await invoke<string>('detect_language', { path: selected }),
-          isPreview: false
+          isPreview,
+          isLargeFile
         });
       }
     } catch (err) { console.error(err); }
@@ -89,10 +102,16 @@
         {:else}
           <div class="flex flex-col">
             {#each displayedRecent as path (path)}
-              <button onclick={() => handleOpenRecent(path)} class="flex flex-col items-start w-full text-left opacity-80 hover:opacity-100 transition-opacity p-2 rounded hover:bg-hover">
-                <span class="font-medium truncate w-full">{path.split(/[/\\]/).pop()}</span>
-                <span class="text-xs opacity-50 truncate w-full">{path}</span>
-              </button>
+              <div class="group flex items-center w-full text-left opacity-80 hover:opacity-100 transition-opacity p-2 rounded hover:bg-hover">
+                <div class="flex flex-col flex-1 min-w-0">
+                  <button onclick={() => handleOpenRecent(path)} class="font-medium truncate w-full text-left">{path.split(/[/\\]/).pop()}</button>
+                  <button onclick={() => handleOpenRecent(path)} class="text-xs opacity-50 truncate w-full text-left">{path}</button>
+                </div>
+                <button onclick={(e) => handleRemoveRecent(e, path)} title="Remove from recent"
+                  class="shrink-0 p-1 rounded text-icon-muted hover:text-status-error hover:bg-hover opacity-0 group-hover:opacity-100 transition-opacity">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+              </div>
             {/each}
             {#if hasMore}
               <button onclick={() => uiStore.openRecentFoldersModal()} class="flex items-center gap-2 w-full text-left text-accent opacity-80 hover:opacity-100 transition-opacity p-2 rounded hover:bg-hover mt-2">

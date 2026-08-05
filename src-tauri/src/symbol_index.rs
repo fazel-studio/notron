@@ -354,123 +354,166 @@ fn detect_language_from_ext(path: &str) -> &'static str {
     }
 }
 
+/// Shared ignore rules (5.2, Module E) — Layer 2 search/scan exclude.
 fn is_ignored(path: &str) -> bool {
-    let lower = path.to_lowercase();
-    if lower.contains(".git") || lower.contains("node_modules") || lower.contains("dist") 
-        || lower.contains("target") || lower.contains("__pycache__") || lower.contains(".venv")
-        || lower.contains("vendor") || lower.contains(".next") || lower.contains("build")
-        || lower.contains(".svelte-kit") || lower.contains(".svn") || lower.contains(".hg") {
-        return true;
-    }
-    false
+    crate::ignore_rules::is_search_excluded_path(Path::new(path))
 }
 
 #[tauri::command]
-pub fn get_file_symbols(path: String) -> Result<Vec<SymbolLocation>, String> {
-    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let lang = detect_language_from_ext(&path);
-    if lang.is_empty() {
-        return Ok(Vec::new());
-    }
-    Ok(extract_symbols(&content, &path, lang))
-}
-
-#[tauri::command]
-pub fn index_workspace(root: &str) -> Result<IndexStats, String> {
-    let mut index = SymbolIndex::new();
-    let mut lang_set = std::collections::BTreeSet::new();
-
-    let root_path = Path::new(root);
-    if !root_path.exists() {
-        return Err("Workspace path does not exist".to_string());
-    }
-
-    for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
-        if index.stats.total_files > 50000 {
-            break;
-        }
-        let path_str = entry.path().to_string_lossy().into_owned();
-        if entry.file_type().is_dir() || is_ignored(&path_str) {
-            continue;
-        }
-        let lang = detect_language_from_ext(&path_str);
+pub async fn get_file_symbols(path: String) -> Result<Vec<SymbolLocation>, String> {
+    tokio::task::spawn_blocking(move || {
+        let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let lang = detect_language_from_ext(&path);
         if lang.is_empty() {
-            continue;
+            return Ok(Vec::new());
         }
-
-        if let Ok(content) = fs::read_to_string(entry.path()) {
-            let symbols = extract_symbols(&content, &path_str, lang);
-            for sym in symbols {
-                index.symbols.entry(sym.name.clone()).or_default().push(sym);
-                index.stats.total_symbols += 1;
-            }
-            index.stats.total_files += 1;
-            lang_set.insert(lang.to_string());
-        }
-    }
-    index.stats.languages = lang_set.into_iter().collect();
-
-    Ok(index.stats)
+        Ok(extract_symbols(&content, &path, lang))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn get_symbol_index(root: &str) -> Result<HashMap<String, Vec<SymbolLocation>>, String> {
-    let mut index = SymbolIndex::new();
+pub async fn index_workspace(root: String) -> Result<IndexStats, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut index = SymbolIndex::new();
+        let mut lang_set = std::collections::BTreeSet::new();
 
-    let root_path = Path::new(root);
-    if !root_path.exists() {
-        return Err("Workspace path does not exist".to_string());
-    }
-
-    for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
-        if index.stats.total_files > 50000 {
-            break;
-        }
-        let path_str = entry.path().to_string_lossy().into_owned();
-        if entry.file_type().is_dir() || is_ignored(&path_str) {
-            continue;
-        }
-        let lang = detect_language_from_ext(&path_str);
-        if lang.is_empty() {
-            continue;
+        let root_path = Path::new(&root);
+        if !root_path.exists() {
+            return Err("Workspace path does not exist".to_string());
         }
 
-        if let Ok(content) = fs::read_to_string(entry.path()) {
-            let symbols = extract_symbols(&content, &path_str, lang);
-            for sym in symbols {
-                index.symbols.entry(sym.name.clone()).or_default().push(sym);
+        for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
+            if index.stats.total_files > 50000 {
+                break;
             }
-            index.stats.total_files += 1;
-        }
-    }
+            let path_str = entry.path().to_string_lossy().into_owned();
+            if entry.file_type().is_dir() || is_ignored(&path_str) {
+                continue;
+            }
+            let lang = detect_language_from_ext(&path_str);
+            if lang.is_empty() {
+                continue;
+            }
 
-    Ok(index.symbols)
+            if let Ok(content) = fs::read_to_string(entry.path()) {
+                let symbols = extract_symbols(&content, &path_str, lang);
+                for sym in symbols {
+                    index.symbols.entry(sym.name.clone()).or_default().push(sym);
+                    index.stats.total_symbols += 1;
+                }
+                index.stats.total_files += 1;
+                lang_set.insert(lang.to_string());
+            }
+        }
+        index.stats.languages = lang_set.into_iter().collect();
+
+        Ok(index.stats)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn goto_definition(root: &str, symbol: &str, current_file: &str) -> Result<Vec<SymbolLocation>, String> {
-    let mut results = Vec::new();
-    let root_path = Path::new(root);
-    if !root_path.exists() {
-        return Err("Workspace path does not exist".to_string());
-    }
+pub async fn get_symbol_index(root: String) -> Result<HashMap<String, Vec<SymbolLocation>>, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut index = SymbolIndex::new();
 
-    // Check current file first (faster)
-    if let Ok(content) = fs::read_to_string(current_file) {
-        let lang = detect_language_from_ext(current_file);
-        let symbols = extract_symbols(&content, current_file, lang);
-        for sym in symbols {
-            if sym.name == symbol {
-                results.push(sym);
+        let root_path = Path::new(&root);
+        if !root_path.exists() {
+            return Err("Workspace path does not exist".to_string());
+        }
+
+        for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
+            if index.stats.total_files > 50000 {
+                break;
+            }
+            let path_str = entry.path().to_string_lossy().into_owned();
+            if entry.file_type().is_dir() || is_ignored(&path_str) {
+                continue;
+            }
+            let lang = detect_language_from_ext(&path_str);
+            if lang.is_empty() {
+                continue;
+            }
+
+            if let Ok(content) = fs::read_to_string(entry.path()) {
+                let symbols = extract_symbols(&content, &path_str, lang);
+                for sym in symbols {
+                    index.symbols.entry(sym.name.clone()).or_default().push(sym);
+                }
+                index.stats.total_files += 1;
             }
         }
-    }
 
-    // If not found, search whole workspace (limited scope)
-    if results.is_empty() {
+        Ok(index.symbols)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn goto_definition(root: String, symbol: String, current_file: String) -> Result<Vec<SymbolLocation>, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut results = Vec::new();
+        let root_path = Path::new(&root);
+        if !root_path.exists() {
+            return Err("Workspace path does not exist".to_string());
+        }
+
+        // Check current file first (faster)
+        if let Ok(content) = fs::read_to_string(&current_file) {
+            let lang = detect_language_from_ext(&current_file);
+            let symbols = extract_symbols(&content, &current_file, lang);
+            for sym in symbols {
+                if sym.name == symbol {
+                    results.push(sym);
+                }
+            }
+        }
+
+        // If not found, search whole workspace (limited scope)
+        if results.is_empty() {
+            let mut count = 0;
+            for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
+                if count > 5000 { break; }
+                let path_str = entry.path().to_string_lossy().into_owned();
+                if entry.file_type().is_dir() || is_ignored(&path_str) {
+                    continue;
+                }
+                let lang = detect_language_from_ext(&path_str);
+                if lang.is_empty() { continue; }
+                if let Ok(content) = fs::read_to_string(entry.path()) {
+                    let symbols = extract_symbols(&content, &path_str, lang);
+                    for sym in symbols {
+                        if sym.name == symbol {
+                            results.push(sym);
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn find_references(root: String, symbol: String) -> Result<Vec<ReferenceLocation>, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut results = Vec::new();
+        let root_path = Path::new(&root);
+        if !root_path.exists() {
+            return Err("Workspace path does not exist".to_string());
+        }
+
         let mut count = 0;
         for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
-            if count > 5000 { break; }
+            if count > 10000 { break; }
             let path_str = entry.path().to_string_lossy().into_owned();
             if entry.file_type().is_dir() || is_ignored(&path_str) {
                 continue;
@@ -478,94 +521,68 @@ pub fn goto_definition(root: &str, symbol: &str, current_file: &str) -> Result<V
             let lang = detect_language_from_ext(&path_str);
             if lang.is_empty() { continue; }
             if let Ok(content) = fs::read_to_string(entry.path()) {
-                let symbols = extract_symbols(&content, &path_str, lang);
-                for sym in symbols {
-                    if sym.name == symbol {
-                        results.push(sym);
+                let mut line_num = 1;
+                for line in content.lines() {
+                    if line.contains(&symbol) {
+                        results.push(ReferenceLocation {
+                            file_path: path_str.clone(),
+                            line: line_num,
+                            column: line.find(&symbol).unwrap_or(0) + 1,
+                            text: line.trim().to_string(),
+                        });
                         count += 1;
+                        if results.len() > 500 {
+                            return Ok(results);
+                        }
                     }
+                    line_num += 1;
                 }
             }
         }
-    }
 
-    Ok(results)
+        Ok(results)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn find_references(root: &str, symbol: &str) -> Result<Vec<ReferenceLocation>, String> {
-    let mut results = Vec::new();
-    let root_path = Path::new(root);
-    if !root_path.exists() {
-        return Err("Workspace path does not exist".to_string());
-    }
-
-    let mut count = 0;
-    for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
-        if count > 10000 { break; }
-        let path_str = entry.path().to_string_lossy().into_owned();
-        if entry.file_type().is_dir() || is_ignored(&path_str) {
-            continue;
+pub async fn rename_symbol(root: String, symbol: String, new_name: String, current_file: String) -> Result<u32, String> {
+    tokio::task::spawn_blocking(move || {
+        let root_path = Path::new(&root);
+        if !root_path.exists() {
+            return Err("Workspace path does not exist".to_string());
         }
-        let lang = detect_language_from_ext(&path_str);
-        if lang.is_empty() { continue; }
-        if let Ok(content) = fs::read_to_string(entry.path()) {
-            let mut line_num = 1;
-            for line in content.lines() {
-                if line.contains(symbol) {
-                    results.push(ReferenceLocation {
-                        file_path: path_str.clone(),
-                        line: line_num,
-                        column: line.find(symbol).unwrap_or(0) + 1,
-                        text: line.trim().to_string(),
-                    });
-                    count += 1;
-                    if results.len() > 500 {
-                        return Ok(results);
+
+        let mut replace_count = 0u32;
+        let mut count = 0;
+
+        for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
+            if count > 5000 { break; }
+            let path_str = entry.path().to_string_lossy().into_owned();
+            if entry.file_type().is_dir() || is_ignored(&path_str) {
+                continue;
+            }
+            let lang = detect_language_from_ext(&path_str);
+            if lang.is_empty() && path_str != current_file {
+                continue;
+            }
+
+            if let Ok(content) = fs::read_to_string(entry.path()) {
+                if content.contains(&symbol) {
+                    let new_content = content.replace(&symbol, &new_name);
+                    if content != new_content {
+                        let changes = content.matches(&symbol).count() as u32;
+                        fs::write(entry.path(), &new_content).map_err(|e| e.to_string())?;
+                        replace_count += changes;
                     }
                 }
-                line_num += 1;
             }
-        }
-    }
-
-    Ok(results)
-}
-
-#[tauri::command]
-pub fn rename_symbol(root: &str, symbol: &str, new_name: &str, current_file: &str) -> Result<u32, String> {
-    let root_path = Path::new(root);
-    if !root_path.exists() {
-        return Err("Workspace path does not exist".to_string());
-    }
-
-    let mut replace_count = 0u32;
-    let mut count = 0;
-
-    for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
-        if count > 5000 { break; }
-        let path_str = entry.path().to_string_lossy().into_owned();
-        if entry.file_type().is_dir() || is_ignored(&path_str) {
-            continue;
-        }
-        let lang = detect_language_from_ext(&path_str);
-        if lang.is_empty() && path_str != current_file {
-            continue;
+            count += 1;
         }
 
-        if let Ok(content) = fs::read_to_string(entry.path()) {
-            if content.contains(symbol) {
-                let new_content = content.replace(symbol, new_name);
-                let diff = content.matches(symbol).count() - new_content.matches(new_name).count();
-                if diff > 0 || content != new_content {
-                    let changes = content.matches(symbol).count() as u32;
-                    fs::write(entry.path(), &new_content).map_err(|e| e.to_string())?;
-                    replace_count += changes;
-                }
-            }
-        }
-        count += 1;
-    }
-
-    Ok(replace_count)
+        Ok(replace_count)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

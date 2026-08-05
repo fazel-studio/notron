@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
 
   let { content, side = 'top', wrapperClass = '', followCursor = false, hoverDelay = 0, disabled = false, children }: { content: string; side?: 'top' | 'bottom' | 'left' | 'right'; wrapperClass?: string; followCursor?: boolean; hoverDelay?: number; disabled?: boolean; children: import('svelte').Snippet } = $props();
   let visible = $state(false);
@@ -8,7 +8,7 @@
   let positionFrame: number | undefined;
   let showTimer: ReturnType<typeof setTimeout> | undefined;
   let pointer = { x: 0, y: 0 };
-  let cancelledByContextMenu = false;
+  let cancelled = false;
   let anchorRect = $state<DOMRect>();
   let measured = $state(false);
 
@@ -37,7 +37,7 @@
   }
   
   function handleMouseEnter(e: MouseEvent) {
-    cancelledByContextMenu = false;
+    cancelled = false;
     pointer = { x: e.clientX, y: e.clientY };
 
     if (disabled) return;
@@ -61,7 +61,7 @@
   }
 
   function scheduleShow() {
-    if (disabled || cancelledByContextMenu) return;
+    if (disabled || cancelled) return;
     if (showTimer !== undefined) clearTimeout(showTimer);
 
     if (hoverDelay > 0) {
@@ -89,13 +89,13 @@
   }
 
   function handleContextMenu() {
-    cancelledByContextMenu = true;
+    cancelled = true;
     hide();
   }
 
   function handleMouseLeave() {
     hide();
-    cancelledByContextMenu = false;
+    cancelled = false;
   }
 
   function positionAtCursor(cursorX: number, cursorY: number) {
@@ -169,13 +169,32 @@
   }
 
   $effect(() => {
-    if (disabled) hide();
+    if (disabled) {
+      untrack(() => hide());
+    } else {
+      content; // trigger tracking
+      cancelled = false; // Reset cancellation if we move to a different item!
+      
+      untrack(() => {
+        // If the user is currently hovering (timer is running or tooltip is visible),
+        // we must restart the delay when moving to a new item.
+        if (visible || showTimer !== undefined) {
+          hide();
+          scheduleShow();
+        }
+      });
+    }
   });
 
   onMount(() => {
     const forceHide = () => hide();
+    const forceCancel = () => { cancelled = true; hide(); };
     window.addEventListener('notron:hide-tooltips', forceHide);
-    return () => window.removeEventListener('notron:hide-tooltips', forceHide);
+    window.addEventListener('notron:cancel-tooltips', forceCancel);
+    return () => {
+      window.removeEventListener('notron:hide-tooltips', forceHide);
+      window.removeEventListener('notron:cancel-tooltips', forceCancel);
+    };
   });
 
   let positionClass = $derived.by(() => {

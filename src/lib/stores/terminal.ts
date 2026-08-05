@@ -16,6 +16,8 @@ interface TerminalState {
   isMaximized: boolean;
   height: number;
   isResizing: boolean;
+  activePanel: 'problems' | 'output' | 'terminal';
+  outputLogs: string[];
 }
 
 function createTerminalStore() {
@@ -25,7 +27,9 @@ function createTerminalStore() {
     isVisible: typeof window !== 'undefined' ? localStorage.getItem('terminal_isVisible') === 'true' : false,
     isMaximized: typeof window !== 'undefined' ? localStorage.getItem('terminal_isMaximized') === 'true' : false,
     height: typeof window !== 'undefined' ? parseInt(localStorage.getItem('terminal_height') || '250', 10) : 250,
-    isResizing: false
+    isResizing: false,
+    activePanel: 'terminal',
+    outputLogs: []
   });
 
   function update(fn: (s: TerminalState) => Partial<TerminalState>) {
@@ -67,6 +71,17 @@ function createTerminalStore() {
     },
     setTerminals: (terminals: TerminalInstance[], activeTerminalId: string | null) => update(() => ({ terminals, activeTerminalId })),
     setActive: (id: string) => update(() => ({ activeTerminalId: id })),
+    setActivePanel: (panel: 'problems' | 'output' | 'terminal') => {
+      state.update(s => {
+        localStorage.setItem('terminal_isVisible', 'true');
+        return { ...s, activePanel: panel, isVisible: true };
+      });
+    },
+    addOutputLog: (log: string) => update(s => {
+      const ts = new Date().toISOString().replace('T', ' ').substring(0, 23);
+      return { outputLogs: [...s.outputLogs, `${ts} [info] ${log}`] };
+    }),
+    clearOutput: () => update(() => ({ outputLogs: [] })),
     setResizing: (val: boolean) => update(() => ({ isResizing: val })),
     toggleVisibility: () => state.update(s => {
       const v = !s.isVisible;

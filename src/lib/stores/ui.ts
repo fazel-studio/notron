@@ -279,6 +279,11 @@ function createUiStore() {
       localStorage.setItem('recent_workspaces', JSON.stringify(newRecent));
       return { recentWorkspaces: newRecent };
     }),
+    removeRecentWorkspace: (path: string) => update(s => {
+      const newRecent = s.recentWorkspaces.filter((p: string) => p !== path);
+      localStorage.setItem('recent_workspaces', JSON.stringify(newRecent));
+      return { recentWorkspaces: newRecent };
+    }),
     setPendingTrustPath: (path: string | null) => update(() => ({ pendingTrustPath: path })),
     getSnapshot: (): UiState => {
       let val: UiState = null!;

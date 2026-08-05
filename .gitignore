@@ -26,6 +26,11 @@ src-tauri/binaries/
 *.sln
 *.sw?
 
+# AI Modules
+.kilo/
+.cline/
+
 # Others
 plannings/
-.kilo/
+reports/
+modules/

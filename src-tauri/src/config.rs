@@ -69,14 +69,22 @@ pub fn get_config(state: tauri::State<ConfigState>) -> Result<AppConfig, String>
 }
 
 #[tauri::command]
-pub fn set_config(config: AppConfig, state: tauri::State<ConfigState>, app_handle: tauri::AppHandle) -> Result<(), String> {
-    let mut lock = state.0.lock().unwrap();
-    *lock = config.clone();
-    
+pub async fn set_config(
+    config: AppConfig,
+    state: tauri::State<'_, ConfigState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    // Update in-memory state immediately (fast), persist to disk off the
+    // main thread so the handler never blocks the event loop (0.1).
+    {
+        let mut lock = state.0.lock().unwrap();
+        *lock = config.clone();
+    }
+
     let config_path = get_config_path(&app_handle);
-    save_config_to_file(&config_path, &config)?;
-    
-    Ok(())
+    tokio::task::spawn_blocking(move || save_config_to_file(&config_path, &config))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 // ── Critical Config (Phase 0: Pre-render sync read) ──
@@ -150,15 +158,18 @@ pub fn get_critical_config(state: tauri::State<CriticalConfigState>) -> Result<C
 }
 
 #[tauri::command]
-pub fn save_critical_config(
+pub async fn save_critical_config(
     config: CriticalConfig,
-    state: tauri::State<CriticalConfigState>,
+    state: tauri::State<'_, CriticalConfigState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut lock = state.0.lock().unwrap();
-    *lock = config.clone();
-    drop(lock);
-    save_critical_config_to_file(&app_handle, &config)?;
-    Ok(())
+    {
+        let mut lock = state.0.lock().unwrap();
+        *lock = config.clone();
+    }
+    // Persist off the main thread (0.1).
+    tokio::task::spawn_blocking(move || save_critical_config_to_file(&app_handle, &config))
+        .await
+        .map_err(|e| e.to_string())?
 }
 

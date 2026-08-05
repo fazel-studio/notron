@@ -6,6 +6,9 @@
   "permissions": [
     "core:default",
     "core:window:default",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
     "core:window:allow-set-title",
     "opener:default",
     "dialog:default",
@@ -33,6 +36,11 @@
         {
           "name": "cmd",
           "cmd": "cmd",
+          "args": true
+        },
+        {
+          "name": "git",
+          "cmd": "git",
           "args": true
         }
       ]

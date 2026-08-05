@@ -43,18 +43,26 @@
         const fileName = selected.split(/[/\\]/).pop() || 'Unknown';
         let content = '';
         const isImage = /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(fileName);
+        let isLargeFile = false;
+        let isPreview = false;
         if (!isImage) {
           try {
             content = await invoke<string>('read_file_text', { path: selected });
           } catch (e) {
             if (String(e) === '__BINARY__') content = '';
-            else throw e;
+            else if (String(e) === '__LARGE_FILE__') {
+              const chunked = await invoke<any>('read_file_chunked', { path: selected });
+              content = chunked.content;
+              isLargeFile = true;
+              isPreview = true;
+            } else throw e;
           }
         }
         editorStore.addTab({
           id: `tab-${Date.now()}`, path: selected, name: fileName, content,
           language: isImage ? 'image' : await invoke<string>('detect_language', { path: selected }),
-          isPreview: false
+          isPreview,
+          isLargeFile
         });
       }
     } catch (err) { console.error(err); }
@@ -217,6 +225,20 @@
         { label: 'Explorer', action: openExplorer },
         { label: 'Search', action: openSearch },
         { label: 'Smart Search', action: () => { window.dispatchEvent(new CustomEvent('open-smart-search')); closeAll(); }, sep: true },
+        { label: 'Terminal', action: () => {
+            if ($terminalStore.terminals.length === 0) {
+              const cwd = uiStore.getSnapshot().explorerRoot || '';
+              terminalStore.newTerminal('powershell', cwd);
+            }
+            terminalStore.setActivePanel('terminal');
+            closeAll();
+          }
+        },
+        { label: 'Output', action: () => {
+            terminalStore.setActivePanel('output');
+            closeAll();
+          }, sep: true
+        },
         { label: 'Welcome Page', action: () => {
             const w = $tabs.find((t: any) => t.language === 'welcome');
             if (w) editorStore.setActiveTab(w.id);

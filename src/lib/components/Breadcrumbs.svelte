@@ -120,15 +120,15 @@
 
   $effect(() => {
     const path = activeTab?.path;
-    if (path && !path.startsWith('Untitled') && path !== currentLoadedPath) {
+    if (path && !path.startsWith('Untitled') && path !== 'Welcome' && path !== currentLoadedPath) {
       currentLoadedPath = path;
       getFileSymbols(path).then(s => {
         symbols = s.sort((a, b) => a.line - b.line);
-      }).catch(err => {
-        console.error("Failed to load symbols:", err);
+      }).catch(_err => {
+        // Silently ignore: this can happen if the file is deleted or virtual
         symbols = [];
       });
-    } else if (!path || path.startsWith('Untitled')) {
+    } else if (!path || path.startsWith('Untitled') || path === 'Welcome') {
       currentLoadedPath = "";
       symbols = [];
     }
