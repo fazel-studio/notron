@@ -1,74 +1,143 @@
-# Product Requirements Document (PRD) - Notron
+# Product Requirements Document (PRD) — Notron
 
-## 1. Ringkasan Proyek
-**Notron** adalah aplikasi code editor desktop modern yang dirancang untuk kecepatan, efisiensi, dan pengalaman pengguna yang minimalis namun bertenaga. Dibangun menggunakan **Tauri** untuk backend (Rust) dan **Svelte 5** untuk frontend, Notron menawarkan performa aplikasi native dengan fleksibilitas teknologi web.
+## 1. Project Overview
 
-### 1.1. Artitektur:
-- Package Manager: Bun
-- Stack : Tauri + Stelve + Rust
-- Engine : Code Mirror 6
+**Notron** is a modern desktop code editor designed for speed, efficiency, and a minimal yet powerful user experience. Built with **Tauri** for the backend (Rust) and **Svelte 5** for the frontend, Notron delivers native application performance with the flexibility of web technologies.
 
-## 2. Target Pengguna
-*   **Software Engineers:** Yang membutuhkan editor ringan untuk pengeditan cepat atau manajemen proyek skala menengah.
-*   **Web Developers:** Pengguna yang terbiasa dengan ekosistem modern seperti VS Code tetapi menginginkan aplikasi yang lebih hemat sumber daya (RAM/CPU).
-*   **Writer/Note-takers:** Pengguna yang sering menggunakan Markdown.
+### 1.1. Architecture
 
-## 3. Fitur Utama
+- **Package Manager:** Bun
+- **Stack:** Tauri + Svelte + Rust
+- **Editor Engine:** CodeMirror 6
 
-### 3.1. Manajemen File & Workspace
-*   **File Tree Explorer:** Navigasi struktur folder secara hierarkis.
-*   **Operasi File (CRUD):** Membuat file/folder baru, mengubah nama, menghapus, serta mendukung operasi Copy, Cut, dan Paste.
-*   **Workspace Restoration:** Mengingat folder terakhir yang dibuka, posisi sidebar, folder yang di-expand, dan tab yang sedang terbuka saat aplikasi dijalankan kembali.
-*   **File Watcher:** Sinkronisasi real-time antara file di disk dengan tampilan di editor (menggunakan sistem rekursif yang dioptimasi).
+### 1.2. Goals
 
-### 3.2. Editor Kode (Core)
-*   **Engine CodeMirror 6:** Integrasi editor kelas dunia dengan performa tinggi.
-*   **Multi-tab Interface:** Mendukung pembukaan banyak file sekaligus dalam bentuk tab.
-*   **Syntax Highlighting:** Dukungan otomatis untuk berbagai bahasa (JS, TS, Rust, Python, Go, C++, dll).
-*   **Lazy Loading Content:** Hanya memuat konten file ke memori saat tab aktif untuk menghemat RAM.
-*   **Auto-save:** Penyimpanan otomatis berdasarkan durasi tertentu (configurable).
+- Provide a lightweight alternative to Electron-based editors with significantly lower memory and CPU usage.
+- Achieve fast startup and responsive interaction even on large workspaces.
+- Offer a modern, minimal UI that remains fully featured.
 
-### 3.3. Navigasi & Inteligensi Kode
-*   **Command Palette (Ctrl+Shift+P):** Akses cepat ke semua perintah aplikasi.
-*   **Symbol Engine:** Ekstraksi simbol (Function, Class, Variable) menggunakan Regex untuk fitur "Go to Definition" dan "Find References".
-*   **Go To Line (Ctrl+G):** Navigasi cepat ke baris tertentu dalam file.
-*   **Global Search:** Fitur pencarian teks di seluruh workspace dengan filter direktori (node_modules, .git, dll diabaikan secara otomatis).
+### 1.3. Non-Goals (Out of Scope for v1)
 
-### 3.4. Antarmuka Pengguna (UI/UX)
-*   **Custom Title Bar:** Menggunakan frameless window untuk tampilan yang lebih modern dan menyatu.
-*   **Theming:** Dukungan Tema Dark dan Light, serta opsi mengikuti sistem OS.
-*   **Skeleton Loading:** Tampilan awal yang cepat dengan placeholder saat data workspace sedang dimuat.
-*   **Markdown Preview:** Tampilan visual real-time untuk file `.md`.
-*   **Image Viewer:** Dukungan untuk melihat file gambar secara langsung di dalam tab.
+- Full IntelliSense / language server integration (planned for later via LSP).
+- Collaborative real-time editing (planned for a future phase).
+- Plugin ecosystem / extension marketplace (planned).
 
-## 4. Stack Teknologi
-*   **Frontend Framework:** Svelte 5 (menggunakan Runes untuk reactivity yang efisien).
-*   **Backend Runtime:** Tauri 2.0 (Rust).
-*   **Runtime/Package Manager:** Bun.
-*   **Editor Engine:** CodeMirror 6.
-*   **Database:** SQLite (melalui Rusqlite) untuk menyimpan pengaturan dan riwayat file.
-*   **Styling:** Vanilla CSS & Tailwind CSS.
+## 2. Target Users
 
-## 5. Kebutuhan Non-Fungsional
+- **Software Engineers:** Developers who need a lightweight editor for quick edits or medium-sized project management.
+- **Web Developers:** Users familiar with modern ecosystems such as VS Code who want a more resource-efficient application.
+- **Writers / Note-takers:** Users who frequently work with Markdown.
 
-### 5.1. Performa
-*   **Start-up Time:** Aplikasi harus dapat menampilkan UI fungsional dalam waktu < 2 detik.
-*   **Memory Usage:** Penggunaan memori harus tetap di bawah 200MB untuk penggunaan standar (di bawah Electron secara signifikan).
-*   **Reactivity:** UI tidak boleh hang saat melakukan operasi file tree yang dalam atau saat melakukan pencarian global.
+## 3. Core Features
 
-### 5.2. Keamanan
-*   **File Isolation:** Aplikasi hanya memiliki akses ke direktori yang diberikan izin oleh sistem operasi melalui Tauri API.
-*   **Data Persistence:** Pengaturan pengguna disimpan secara lokal di direktori `AppData` (Windows) atau setaranya di OS lain.
+### 3.1. File & Workspace Management
 
-## 6. Arsitektur Teknis Baru (Optimasi Svelte 5)
-Aplikasi telah dioptimasi untuk menggunakan **Svelte 5 Store Pattern** yang modern:
-*   Menghindari `.subscribe()` manual di komponen.
-*   Menggunakan `$derived` untuk state yang bersifat turunan.
-*   Implementasi `$effect` yang terisolasi untuk fitur berat seperti file watcher.
+- **File Tree Explorer:** Hierarchical navigation of the folder structure.
+- **File Operations (CRUD):** Create files/folders, rename, delete, plus Copy, Cut, and Paste operations (single and multi-select).
+- **Workspace Restoration:** Remembers the last opened folder, sidebar layout, expanded folders, and open tabs when the app is relaunched.
+- **File Watcher:** Real-time synchronization between files on disk and the editor view (using an optimized recursive watcher).
+- **Ignore & Exclude Rules:** Respect `.gitignore` and user-defined ignore patterns (e.g. `node_modules`, `.git`) to keep the tree and global search clean.
 
-## 7. Peta Jalan Pengembangan (Roadmap)
-*   [ ] Integrasi Terminal Terintegrasi.
-*   [ ] Sistem Extension/Plugin dasar.
-*   [ ] Integrasi Git (Branching, Commit, Push/Pull).
-*   [ ] Fitur Collaborative Editing melalui WebSockets.
-*   [ ] Peningkatan akurasi Symbol Engine menggunakan LSP (Language Server Protocol).
+### 3.2. Code Editor (Core)
+
+- **CodeMirror 6 Engine:** World-class editor integration with high performance.
+- **Multi-tab Interface:** Open many files simultaneously in tabs.
+- **Syntax Highlighting:** Automatic support for many languages (JS, TS, Rust, Python, Go, C++, HTML, CSS, JSON, Markdown, and more).
+- **Lazy Loading:** File contents are only loaded into memory when the tab is active to save RAM.
+- **Auto-save:** Automatic saving based on a configurable duration.
+- **Search & Replace:** In-editor find/replace with regex support.
+
+### 3.3. Navigation & Code Intelligence
+
+- **Command Palette** (`Ctrl+Shift+P`): Quick access to every application command.
+- **Symbol Engine:** Extraction of symbols (functions, classes, variables) via regex to power "Go to Definition" and "Find References".
+- **Go To Line** (`Ctrl+G`): Quick navigation to a specific line in a file.
+- **Global Search:** Search text across the entire workspace with automatic directory filtering (ripgrep engine).
+
+### 3.4. User Interface (UI/UX)
+
+- **Custom Title Bar:** Frameless window for a modern, integrated look.
+- **Theming:** Dark and Light themes, plus an option to follow the OS scheme.
+- **Skeleton Loading:** Fast initial rendering with placeholders while workspace data loads.
+- **Markdown Preview:** Real-time visual rendering for `.md` files.
+- **Image Viewer:** Preview image files directly in a tab.
+
+### 3.5. Terminal & Developer Tools
+
+- **Integrated Terminal:** xterm.js-powered terminal (via `tauri-pty`) with multiple instances.
+- **Source Control (Git):** Stage, commit, push/pull, discard, logs, and diff viewing.
+- **Run & Debug:** DAP (Debug Adapter Protocol) integration with breakpoints, call stack, and variables.
+
+## 4. Technology Stack
+
+| Category            | Technology                                              |
+| ------------------- | ------------------------------------------------------- |
+| Frontend Framework  | Svelte 5 (using Runes for efficient reactivity)         |
+| Backend Runtime     | Tauri 2.0 (Rust)                                        |
+| Runtime / Package Mgr | Bun                                                |
+| Editor Engine       | CodeMirror 6                                            |
+| Database            | SQLite (via rusqlite) for settings and file history     |
+| Styling             | Vanilla CSS & Tailwind CSS                              |
+
+## 5. Non-Functional Requirements
+
+### 5.1. Performance
+
+- **Startup Time:** The app must show a functional UI in under 2 seconds.
+- **Memory Usage:** Memory usage should stay below 200MB for standard use (significantly lower than Electron).
+- **Reactivity:** The UI must not hang during deep file tree operations or global search.
+
+### 5.2. Security
+
+- **File Isolation:** The app only has access to directories granted permission by the OS through the Tauri API.
+- **Data Persistence:** User settings are stored locally in the `AppData` directory (Windows) or equivalent on other OSes.
+- **Input Validation:** All IPC inputs are validated; paths are normalized and confined to allowed scopes.
+
+### 5.3. Reliability
+
+- **Crash Recovery:** On abnormal exit, dirty tab snapshots are persisted and restored on next launch.
+- **Logging:** Structured logging in debug builds and rolling file logs in production.
+
+## 6. Technical Architecture
+
+The application is optimized using the modern **Svelte 5 Store Pattern**:
+
+- Avoids manual `.subscribe()` calls in components.
+- Uses `$derived` for derived state.
+- Uses isolated `$effect` implementations for heavy features such as the file watcher.
+
+### 6.1. Frontend (Svelte 5)
+
+- `src/lib/components/` — UI components (Editor, FileTree, Terminal, CommandPalette, etc.).
+- `src/lib/stores/` — Svelte stores and runes (`editor`, `settings`, `terminal`, `theme`, `debug`, `git`, `palette`, `navigation`, `ui`).
+- `src/lib/services/` — Service layer (`dapClient`, `git`).
+- `src/lib/utils/` — Utilities (explorer, symbol engine, language detector, markdown renderer, stream helpers).
+
+### 6.2. Backend (Tauri / Rust)
+
+- `src-tauri/src/config.rs` — Application and critical configuration management.
+- `src-tauri/src/db.rs` — SQLite connection pool and tiered settings/state persistence.
+- `src-tauri/src/file_ops.rs` — File/directory operations and streaming reads.
+- `src-tauri/src/search.rs` — Global search (ripgrep engine) and replace-all.
+- `src-tauri/src/watcher_service.rs` — Unified file watcher service.
+- `src-tauri/src/workspace_cache.rs` — Rust-side explorer cache (source of truth for the tree).
+- `src-tauri/src/symbol_index.rs` — Symbol extraction and workspace indexing.
+- `src-tauri/src/git_service.rs` — Git integration and detection.
+- `src-tauri/src/debug_adapter.rs` — DAP session management.
+
+## 7. Development Roadmap
+
+- [x] Core editor, file tree, global search, and ignore rules.
+- [x] Integrated terminal.
+- [x] Git source control and Run/Debug (DAP).
+- [ ] Extension/plugin system (basic).
+- [ ] Full Git integration enhancements (branching, merge, rebase).
+- [ ] Collaborative editing via WebSockets.
+- [ ] Symbol Engine accuracy improvements using LSP (Language Server Protocol).
+
+## 8. Success Metrics
+
+- Startup time under 2 seconds on typical hardware.
+- Memory usage below 200MB during standard editing sessions.
+- Global search across a 100k+ file repository completes without blocking the UI.
+- Community adoption: number of GitHub stars, contributors, and open issues resolved.

@@ -95,20 +95,35 @@
     return () => { unlisten.then((fn) => fn()).catch(() => {}); };
   });
 
-  // Intercept window close: prompt for unsaved changes before closing
+  // Intercept window close: prompt for unsaved changes before closing.
+  // Tauri's onCloseRequested wrapper destroys the window when the handler does
+  // NOT call event.preventDefault(). Closes are therefore forced with
+  // destroy() (not a re-entrant close()) so the guard flag + beforeunload stay
+  // consistent and the window reliably shuts down.
   $effect(() => {
     const appWindow = getCurrentWindow();
     const unlisten = appWindow.onCloseRequested((event) => {
+      // A close was already confirmed earlier, so stop guarding the window.
       if (pendingCloseConfirmed) return;
-      event.preventDefault();
+
       const modified = editorStore.getTabsSnapshot().filter((t: any) =>
         t.isModified || (t.path.startsWith('Untitled') && t.content && t.content.trim() !== '')
       );
+
+      // No unsaved changes → close the window immediately, persisting the
+      // session and clearing the crash flag so next launch isn't flagged as
+      // "unexpected close".
       if (modified.length === 0) {
+        event.preventDefault();
         pendingCloseConfirmed = true;
-        appWindow.close();
+        saveWorkspaceSession();
+        invoke('set_crash_flag', { value: false }).catch(() => {});
+        appWindow.destroy();
         return;
       }
+
+      // Unsaved changes → block the close and prompt the user.
+      event.preventDefault();
       isClosingWindow = true;
       closeQueue = modified.map((t: any) => t.id);
       closingTabId = closeQueue[0];
@@ -984,7 +999,11 @@
       isClosingWindow = false;
       closingTabId = null;
       pendingCloseConfirmed = true;
-      getCurrentWindow().close();
+      // Persist the session + clear the crash flag, then force-close. destroy()
+      // bypasses beforeunload, so save explicitly instead of relying on it.
+      saveWorkspaceSession();
+      invoke('set_crash_flag', { value: false }).catch(() => {});
+      getCurrentWindow().destroy();
     }
   }
 

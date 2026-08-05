@@ -215,9 +215,11 @@ div:not(.cm-content):not(.cm-line):not(.selectable)::selection {
   color: inherit;
 }
 
-button, [role="button"], [role="menuitem"], [role="tab"] {
-  background-color: transparent;
-  cursor: pointer;
+@layer base {
+  button, [role="button"], [role="menuitem"], [role="tab"] {
+    background-color: transparent;
+    cursor: pointer;
+  }
 }
 
 ::-webkit-scrollbar {

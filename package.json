@@ -1,8 +1,32 @@
 {
   "name": "notron",
-  "private": true,
   "version": "0.1.0",
+  "description": "Notron is a modern, minimal yet powerful desktop code editor built with Tauri (Rust) and Svelte 5, powered by the CodeMirror 6 engine.",
   "type": "module",
+  "license": "MIT",
+  "author": "Fazelllyyy (Zulfazli) <zulfazlilsm@gmail.com>",
+  "homepage": "https://github.com/fazelllyyy/notron#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fazelllyyy/notron.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fazelllyyy/notron/issues"
+  },
+  "keywords": [
+    "editor",
+    "code-editor",
+    "tauri",
+    "svelte",
+    "rust",
+    "svelte-5",
+    "codemirror",
+    "desktop",
+    "ide"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",

@@ -1,8 +1,10 @@
 [package]
 name = "notron"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Notron is a modern, minimal yet powerful desktop code editor built with Tauri (Rust) and Svelte 5, powered by the CodeMirror 6 engine."
+authors = ["Fazelllyyy (Zulfazli) <zulfazlilsm@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/fazelllyyy/notron"
 edition = "2021"
 
 [lib]
