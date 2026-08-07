@@ -15,25 +15,9 @@ use serde::Serialize;
 use tauri::{Manager, Emitter};
 
 #[tauri::command]
-fn show_main_window(window: tauri::Window, state: tauri::State<'_, config::CriticalConfigState>) -> Result<(), String> {
-    let critical_config = state.0.lock().unwrap().clone();
-    
-    if !critical_config.window_maximized {
-        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-            width: critical_config.window_width as f64,
-            height: critical_config.window_height as f64,
-        }));
-        if let (Some(x), Some(y)) = (critical_config.window_x, critical_config.window_y) {
-            let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
-        }
-    }
-
-    if critical_config.window_maximized {
-        let _ = window.maximize();
-    }
+fn show_main_window(window: tauri::Window) -> Result<(), String> {
     let _ = window.show();
     let _ = window.set_focus();
-    
     Ok(())
 }
 
@@ -256,6 +240,23 @@ pub fn run() {
 
             // Phase 0: Read critical config synchronously BEFORE anything else
             let critical_cfg = config::read_critical_config(app.handle());
+            
+            if let Some(window) = app.get_webview_window("main") {
+                if !critical_cfg.window_maximized {
+                    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                        width: critical_cfg.window_width as f64,
+                        height: critical_cfg.window_height as f64,
+                    }));
+                    if let (Some(x), Some(y)) = (critical_cfg.window_x, critical_cfg.window_y) {
+                        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
+                    }
+                }
+                
+                if critical_cfg.window_maximized {
+                    let _ = window.maximize();
+                }
+            }
+
             app.manage(config::CriticalConfigState(std::sync::Mutex::new(critical_cfg)));
             {
                 let timers = app.state::<startup::StartupTimers>();

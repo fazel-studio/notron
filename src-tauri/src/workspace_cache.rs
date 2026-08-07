@@ -180,7 +180,7 @@ pub fn scan_dir_blocking(path: &str, _show_dot_files: bool) -> Result<Vec<crate:
         // Check if this entry is gitignored (shown but dimmed, like VS Code).
         let is_ignored = gitignore
             .as_ref()
-            .map(|gi| gi.matched(&entry_path, is_dir).is_ignore())
+            .map(|gi| gi.matched_path_or_any_parents(&entry_path, is_dir).is_ignore())
             .unwrap_or(false);
 
         children.push(crate::file_ops::FileNode {

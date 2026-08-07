@@ -102,7 +102,7 @@
     if (repo && repo.staged.length === 0) {
       const hasUnstaged = repo.unstaged.length > 0 || repo.untracked.length > 0;
       if (!hasUnstaged) {
-        uiStore.addToast('Commit', 'info', 'There are no changes to commit.');
+        uiStore.addToast('Commit', undefined, 'There are no changes to commit.');
         return;
       }
       

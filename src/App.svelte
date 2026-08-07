@@ -641,8 +641,12 @@
     }
     recordStartupPhase('frontend-ready');
     setTimeout(() => {
-      invoke('show_main_window').catch(e => console.error('Failed to show window', e));
-    }, 50);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          invoke('show_main_window').catch(e => console.error('Failed to show window', e));
+        });
+      });
+    }, 150);
 
     // Phase 3: Load active tab content + show welcome if no tabs
     await loadActiveTabContent();
