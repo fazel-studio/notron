@@ -34,7 +34,11 @@
 
   let gitRepo = $derived($gitRepoStore.repo);
   let gitLoading = $derived($gitRepoStore.repoLoading || $gitRepoStore.syncing || $gitRepoStore.availabilityLoading);
-  let gitChangesCount = $derived(gitRepo ? gitRepo.staged.length + gitRepo.unstaged.length + gitRepo.conflicted.length : 0);
+  let gitChangesCount = $derived(gitRepo ? gitRepo.staged.length + repoUnstagedLength(gitRepo) + gitRepo.conflicted.length : 0);
+
+  function repoUnstagedLength(repo: any) {
+    return repo.unstaged.length + repo.untracked.length;
+  }
 
   let closingTabId = $state<string | null>(null);
   let isClosingWindow = $state(false);

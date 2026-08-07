@@ -1687,6 +1687,11 @@
     }
 
     editorStore.addTab({ id: path, path, name, content: null, language: 'plaintext', isPreview: true, isLoading: true });
+    
+    invoke<string>('detect_language', { path }).then((language) => {
+      editorStore.updateTab(path, { language });
+    }).catch(() => {});
+
     invoke<string>('read_file_text', { path }).then((content) => {
       editorStore.setInitialContent(path, content);
     }).catch((err) => {

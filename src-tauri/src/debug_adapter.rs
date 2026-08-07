@@ -101,6 +101,8 @@ pub struct DebugConfig {
     pub env_file: Option<String>,
     /// Optional override for the Python interpreter when `debug_type = python`.
     pub python_path: Option<String>,
+    /// Optional override for the Ruby debugger executable (`rdbg`) path.
+    pub ruby_path: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -140,6 +142,8 @@ impl DebugState {
 
 const NODE_ENTRY_POINTS: &[&str] = &["index.js", "main.js", "app.js", "server.js"];
 const PY_ENTRY_POINTS: &[&str] = &["main.py", "app.py", "__main__.py", "manage.py"];
+const GO_ENTRY_POINTS: &[&str] = &["main.go", "cmd/main.go", "cmd/app/main.go"];
+const RB_ENTRY_POINTS: &[&str] = &["main.rb", "app.rb", "bin/rails"];
 
 /// Auto-detect the debug adapter family for a given path (file or folder).
 pub fn detect_debug_type(path: &Path) -> Option<String> {
@@ -150,6 +154,8 @@ pub fn detect_debug_type(path: &Path) -> Option<String> {
                 return Some("node".to_string())
             }
             "py" | "pyw" => return Some("python".to_string()),
+            "go" => return Some("go".to_string()),
+            "rb" | "rake" | "gemspec" => return Some("ruby".to_string()),
             _ => {}
         }
     }
@@ -164,6 +170,12 @@ pub fn detect_debug_type(path: &Path) -> Option<String> {
     if PY_ENTRY_POINTS.contains(&name.as_str()) {
         return Some("python".to_string());
     }
+    if GO_ENTRY_POINTS.contains(&name.as_str()) {
+        return Some("go".to_string());
+    }
+    if RB_ENTRY_POINTS.contains(&name.as_str()) {
+        return Some("ruby".to_string());
+    }
 
     if path.is_dir() {
         if path.join("package.json").exists() {
@@ -171,6 +183,12 @@ pub fn detect_debug_type(path: &Path) -> Option<String> {
         }
         if path.join("pyproject.toml").exists() || path.join("requirements.txt").exists() {
             return Some("python".to_string());
+        }
+        if path.join("go.mod").exists() || path.join("Gopkg.toml").exists() {
+            return Some("go".to_string());
+        }
+        if path.join("Gemfile").exists() || path.join(".ruby-version").exists() {
+            return Some("ruby".to_string());
         }
     }
 
@@ -309,6 +327,72 @@ fn find_node_runtime() -> Option<String> {
         }
     }
     None
+}
+
+/// Locate `dlv` (Go: the Delve debugger with DAP support, §F.5.2 strategy C).
+/// Prefers a workspace-local install, then GOPATH/bin, then PATH.
+fn find_dlv(cwd: Option<&Path>) -> Option<String> {
+    if let Some(dir) = cwd {
+        for rel in ["bin/dlv", "vendor/bin/dlv", "dlv"] {
+            let p = dir.join(rel);
+            if p.exists() {
+                return Some(p.to_string_lossy().into_owned());
+            }
+        }
+    }
+    for c in ["dlv"] {
+        if let Some(found) = which(c) {
+            return Some(found);
+        }
+    }
+    // GOPATH/bin fallback (developer Go toolchains install it there)
+    if let Ok(gopath) = std::env::var("GOPATH") {
+        let p = Path::new(&gopath).join("bin").join(if cfg!(windows) { "dlv.exe" } else { "dlv" });
+        if p.exists() {
+            return Some(p.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+/// Locate the Ruby debugger (`rdbg` from the `debug` gem, default since Ruby
+/// 3.1, §F.5.2 strategy C). Checks PATH, then `bundle exec rdbg`, then
+/// `gem which`-style resolution is left to a probe on the resolved executable.
+fn find_rdbg(cwd: Option<&Path>, explicit: Option<&str>) -> Option<String> {
+    if let Some(p) = explicit {
+        if Path::new(p).exists() || which(p).is_some() {
+            return Some(p.to_string());
+        }
+    }
+    // In project bundler context, bundle exec rdbg is authoritative.
+    if let Some(dir) = cwd {
+        let has_gemfile = dir.join("Gemfile").exists() || dir.join("gems.rb").exists();
+        let has_bundler = which("bundle").is_some();
+        if has_gemfile && has_bundler && which("bundle").is_some() {
+            return Some("bundle".to_string()); // invoked as `bundle exec rdbg …`
+        }
+    }
+    if let Some(found) = which("rdbg") {
+        return Some(found);
+    }
+    // Ruby 3.1+ bundles the `debug` gem but `rdbg` may be a gem executable.
+    if let Some(ruby) = which("ruby") {
+        if ruby_has_debug_gem(&ruby) {
+            return Some("ruby".to_string()); // invoked as `ruby -r debug/open …`
+        }
+    }
+    None
+}
+
+/// Ask `ruby` whether the `debug` gem is resolvable.
+fn ruby_has_debug_gem(ruby: &str) -> bool {
+    std::process::Command::new(ruby)
+        .args(["-e", "require 'debug'; puts 'ok'"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn find_python(cwd: Option<&Path>, explicit: Option<&str>) -> Option<String> {
@@ -483,6 +567,70 @@ fn resolve_adapter(app: &tauri::AppHandle, config: &DebugConfig) -> Result<Adapt
                 "--wait-for-client".to_string(),
                 program,
             ];
+            program_args.extend(config.args.iter().cloned());
+
+            Ok(AdapterPlan::Socket {
+                host: "127.0.0.1".to_string(),
+                port,
+                program: program_args,
+                cwd: config.cwd.clone(),
+            })
+        }
+        "go" => {
+            if config.request != "launch" {
+                return Err("Go attach is not supported yet".to_string());
+            }
+            // §F.5.2 strategy C — detect `dlv` first (strategy A download
+            // on-demand is a future AdapterProvisioningService enhancement).
+            let cwd = config.cwd.as_ref().map(|c| Path::new(c));
+            let dlv = find_dlv(cwd)
+                .ok_or_else(|| "Delve (`dlv`) not found on PATH/GOPATH. Install: `go install github.com/go-delve/delve/cmd/dlv@latest`".to_string())?;
+            let port = pick_free_port()?;
+            let listen = format!("127.0.0.1:{port}");
+            // `dlv dap --listen=addr` runs Delve as a headless DAP server; the
+            // target program is spawned by Delve itself on the DAP `launch`
+            // request. We attach as the DAP client.
+            Ok(AdapterPlan::Socket {
+                host: "127.0.0.1".to_string(),
+                port,
+                program: vec![dlv, "dap".to_string(), format!("--listen={listen}")],
+                cwd: config.cwd.clone(),
+            })
+        }
+        "ruby" | "rdbg" => {
+            if config.request != "launch" {
+                return Err("Ruby attach is not supported yet".to_string());
+            }
+            let program = config
+                .program
+                .clone()
+                .ok_or_else(|| "Debug config requires a \"program\"".to_string())?;
+            let cwd = config.cwd.as_ref().map(|c| Path::new(c));
+            let rdbg = find_rdbg(cwd, config.ruby_path.as_deref())
+                .ok_or_else(|| "Ruby debugger (`rdbg` / `debug` gem) not found on PATH. Ruby 3.1+ bundles it; otherwise run `gem install debug`.".to_string())?;
+            let port = pick_free_port()?;
+
+            // `rdbg --open --port N <script>` runs the program as a debuggee and
+            // serves the DAP protocol on a local TCP port we attach to.
+            let mut program_args = if rdbg == "bundle" {
+                vec![
+                    "bundle".to_string(),
+                    "exec".to_string(),
+                    "rdbg".to_string(),
+                    "--open".to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                    program,
+                ]
+            } else {
+                vec![
+                    rdbg,
+                    "--open".to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                    program,
+                ]
+            };
             program_args.extend(config.args.iter().cloned());
 
             Ok(AdapterPlan::Socket {

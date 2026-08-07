@@ -98,7 +98,23 @@
 
   async function handleCommit() {
     if (!commitMessage.trim()) return;
-    isCommitting = true;
+    
+    if (repo && repo.staged.length === 0) {
+      const hasUnstaged = repo.unstaged.length > 0 || repo.untracked.length > 0;
+      if (!hasUnstaged) {
+        uiStore.addToast('Commit', 'info', 'There are no changes to commit.');
+        return;
+      }
+      
+      const proceed = confirm("There are no staged changes to commit. Would you like to stage all your changes and commit them directly?");
+      if (!proceed) return;
+      
+      isCommitting = true;
+      await handleStageAll();
+    } else {
+      isCommitting = true;
+    }
+
     const ok = await gitRepoStore.commit(commitMessage);
     isCommitting = false;
     if (ok) commitMessage = '';
@@ -338,16 +354,62 @@
         ></textarea>
       </div>
 
-      <button
-        onclick={handleCommit}
-        disabled={isCommitting || !commitMessage.trim() || repo.staged.length === 0}
-        class="flex items-center justify-center gap-2 w-full py-2 mt-1 bg-accent hover:bg-accent-hover disabled:bg-surface-2 disabled:text-muted disabled:cursor-not-allowed text-on-accent rounded text-sm transition-colors font-medium border disabled:border-subtle border-transparent"
-      >
-        {#if isCommitting}
-          <Loader2 class="w-4 h-4 animate-spin" />
+      {#if repo && repo.staged.length === 0 && repo.unstaged.length === 0 && repo.untracked.length === 0}
+        {#if !repo.has_upstream}
+          <button
+            onclick={handlePush}
+            disabled={syncing}
+            class="flex items-center justify-center gap-2 w-full py-2 mt-1 bg-accent hover:bg-accent-hover disabled:bg-surface-2 disabled:text-muted disabled:cursor-not-allowed text-on-accent rounded text-sm transition-colors font-medium border border-transparent"
+          >
+            {#if syncing}
+              <Loader2 class="w-4 h-4 animate-spin" />
+            {:else}
+              <Upload class="w-4 h-4" />
+            {/if}
+            <span>Publish Branch</span>
+          </button>
+        {:else if repo.ahead > 0 || repo.behind > 0}
+          <button
+            onclick={async () => {
+              if (repo && repo.behind > 0) {
+                const ok = await gitRepoStore.sync('git_pull', 'pull');
+                if (!ok) return;
+              }
+              if (repo && repo.ahead > 0) {
+                const ok = await gitRepoStore.sync('git_push', 'push');
+                if (ok) uiStore.addToast('Git Sync', 'success', 'Successfully synced with remote');
+              }
+            }}
+            disabled={syncing}
+            class="flex items-center justify-center gap-2 w-full py-2 mt-1 bg-accent hover:bg-accent-hover disabled:bg-surface-2 disabled:text-muted disabled:cursor-not-allowed text-on-accent rounded text-sm transition-colors font-medium border border-transparent"
+          >
+            {#if syncing}
+              <Loader2 class="w-4 h-4 animate-spin" />
+            {:else}
+              <RefreshCw class="w-4 h-4" />
+            {/if}
+            <span>Sync Changes {repo.behind > 0 ? `${repo.behind}↓ ` : ''}{repo.ahead > 0 ? `${repo.ahead}↑` : ''}</span>
+          </button>
+        {:else}
+          <button
+            disabled={true}
+            class="flex items-center justify-center gap-2 w-full py-2 mt-1 bg-accent disabled:bg-surface-2 disabled:text-muted disabled:cursor-not-allowed text-on-accent rounded text-sm transition-colors font-medium border disabled:border-subtle border-transparent"
+          >
+            <span>Commit</span>
+          </button>
         {/if}
-        <span>Commit</span>
-      </button>
+      {:else}
+        <button
+          onclick={handleCommit}
+          disabled={isCommitting || !commitMessage.trim()}
+          class="flex items-center justify-center gap-2 w-full py-2 mt-1 bg-accent hover:bg-accent-hover disabled:bg-surface-2 disabled:text-muted disabled:cursor-not-allowed text-on-accent rounded text-sm transition-colors font-medium border disabled:border-subtle border-transparent"
+        >
+          {#if isCommitting}
+            <Loader2 class="w-4 h-4 animate-spin" />
+          {/if}
+          <span>Commit</span>
+        </button>
+      {/if}
 
       {#if syncing && progress}
         <div class="flex flex-col gap-1 mt-1">
@@ -538,7 +600,7 @@
         <div role="button" tabindex="0" class="flex items-center px-2 py-1 bg-surface-2 border-b border-subtle cursor-pointer hover:bg-hover shrink-0" onclick={() => changesVisible = !changesVisible} onkeydown={(e) => { if (e.key === 'Enter') changesVisible = !changesVisible; }}>
           <ChevronRight class="w-3.5 h-3.5 mr-1 text-icon-default" />
           <span class="text-xs font-semibold uppercase text-secondary">Changes</span>
-          <span class="ml-auto bg-surface-3 rounded-full px-1.5 py-0.5 text-[10px]">{repo.staged.length + repo.unstaged.length + repo.conflicted.length}</span>
+          <span class="ml-auto bg-surface-3 rounded-full px-1.5 py-0.5 text-[10px]">{repo.staged.length + repo.unstaged.length + repo.untracked.length + repo.conflicted.length}</span>
         </div>
       {/if}
 

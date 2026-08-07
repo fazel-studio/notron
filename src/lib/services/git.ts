@@ -215,3 +215,13 @@ export async function getGitFileContent(cwd: string, path: string, revision: str
     return "";
   }
 }
+
+export async function getGitFileDiff(cwd: string, path: string): Promise<string> {
+  if (!cwd || !path) return "";
+  try {
+    return await invoke<string>('git_file_diff', { cwd, path });
+  } catch (err) {
+    console.warn('Failed to get git file diff:', err);
+    return "";
+  }
+}

@@ -88,6 +88,14 @@ export async function getLanguageExtension(filename: string): Promise<Extension>
       const { wast } = await import('@codemirror/lang-wast');
       return wast();
     }
+    case 'svelte': {
+      const { svelte } = await import('codemirror-lang-svelte');
+      return svelte();
+    }
+    case 'grammar': {
+      const { lezer } = await import('@codemirror/lang-lezer');
+      return lezer();
+    }
 
     // --- Legacy Modes ---
     case 'sh': case 'bash': case 'zsh': case 'fish': {

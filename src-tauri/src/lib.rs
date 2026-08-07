@@ -418,6 +418,7 @@ pub fn run() {
             git_service::git_fetch,
             git_service::git_cancel_op,
             git_service::get_git_file_content,
+            git_service::git_file_diff,
             git_service::git_log,
             git_service::get_commit_files,
             // ── Module F — Run and Debug (DAP) ──

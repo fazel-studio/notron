@@ -290,7 +290,12 @@ pub async fn start_fs_watch(
                     // Drain .git key-file events (external git activity).
                     while let Ok(event) = grx.try_recv() {
                         if let Ok(e) = event {
-                            if !e.paths.is_empty() {
+                            for path in e.paths {
+                                if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                                    if filename.ends_with(".lock") {
+                                        continue;
+                                    }
+                                }
                                 git_dirty = true;
                                 last_event_time = Instant::now();
                             }

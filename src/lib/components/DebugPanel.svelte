@@ -26,6 +26,7 @@
     prepareDebugUrlConfiguration,
     refreshDebugConfigurations,
     runSelectedConfiguration,
+    saveResolvedEntryAsConfig,
     stepInto,
     stepOut,
     stepOver,
@@ -87,6 +88,29 @@
   function breakpointCountFor(file: string) {
     return breakpoints.filter(bp => bp.file === file).length;
   }
+
+  let selectedConfig = $derived(
+    configurations.find(c => c.name === selectedConfigurationName) || configurations[0] || null
+  );
+  let isSelectedDetected = $derived(selectedConfig?.source === 'detected');
+
+  function tierLabel(tier: string | undefined) {
+    if (!tier) return 'detected';
+    return tier; // manifest | framework | heuristic | active
+  }
+
+  function saveSelectedConfig() {
+    const cfg = selectedConfig;
+    if (!cfg) return;
+    saveResolvedEntryAsConfig({
+      name: cfg.name,
+      type: cfg.type as any,
+      program: cfg.program || '',
+      cwd: cfg.cwd || '',
+      source: cfg.detectedTier || 'heuristic',
+      tier: cfg.detectedTier || 'heuristic'
+    });
+  }
 </script>
 
 <div class="h-full flex flex-col bg-canvas text-primary overflow-hidden font-sans select-none">
@@ -123,12 +147,23 @@
                 {:else}
                   {#each configurations as config}
                     <option value={config.name}>
-                      {config.name}{config.source === 'detected' ? ' (detected)' : ''}
+                      {config.name}{config.source === 'detected' ? ` (${tierLabel(config.detectedTier)})` : ''}
                     </option>
                   {/each}
                 {/if}
               </select>
             </div>
+
+            {#if isSelectedDetected}
+              <div class="flex items-center gap-1">
+                <button
+                  class="flex-1 h-6 border border-subtle text-[11px] text-secondary hover:text-primary hover:bg-hover rounded-sm transition-colors"
+                  onclick={saveSelectedConfig}
+                >
+                  Save as launch configuration
+                </button>
+              </div>
+            {/if}
 
             <div class="space-y-4">
               <p class="text-[12px] text-secondary leading-snug">

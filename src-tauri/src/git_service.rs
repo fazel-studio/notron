@@ -237,6 +237,9 @@ async fn run_git_raw(
     if let Ok(path_env) = std::env::var("PATH") {
         cmd.env("PATH", path_env);
     }
+    // Prevent git from updating the index or running background fetches,
+    // which would trigger the file watcher and cause an infinite refresh loop.
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
     cmd.args(args);
     if let Some(c) = cwd {
         cmd.current_dir(c);
@@ -1117,6 +1120,14 @@ pub struct GitLogEntry {
     pub date: String,
     pub refs: String,
     pub stats: String,
+}
+
+#[tauri::command]
+pub async fn git_file_diff(app: AppHandle, cwd: String, path: String, state: State<'_, GitState>) -> Result<String, String> {
+    let git = state.git_command().ok_or("Git is not available")?;
+    let rel_path = path.replace("\\", "/");
+    // Show diff against HEAD to include both staged and unstaged changes for the gutter
+    run_git(&git, &["diff", "-U0", "HEAD", "--", &rel_path], &cwd, &state, Some(&app)).await
 }
 
 #[tauri::command]

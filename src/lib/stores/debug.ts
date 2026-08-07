@@ -39,8 +39,20 @@ export interface DebugConfiguration {
   env?: Record<string, string>;
   envFile?: string;
   pythonPath?: string;
+  rubyPath?: string;
   stopOnEntry?: boolean;
   source: 'launch.json' | 'detected';
+  /**
+   * §F.6 — how this config was resolved (manifest/framework/heuristic/active),
+   * shown as a hint in the Run dropdown and used for the "Save as launch
+   * configuration" action.
+   */
+  detectedTier?: 'manifest' | 'framework' | 'heuristic' | 'active';
+  /**
+   * §F.6 — dev-server command for framework entries (e.g. "next dev"). Used by
+   * the terminal Run path when there is no single program file.
+   */
+  command?: string;
 }
 
 interface DebugStoreState {

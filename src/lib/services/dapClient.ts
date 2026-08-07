@@ -4,6 +4,12 @@ import { debugStore, type DebugConfiguration } from '../stores/debug';
 import { editorStore } from '../stores/editor';
 import { uiStore } from '../stores/ui';
 import { terminalStore } from '../stores/terminal';
+import {
+  entryToDebugConfig,
+  resolveEntries,
+  resolvePythonInterpreter,
+  type ResolvedEntry
+} from './entryPointResolver';
 import { get } from 'svelte/store';
 
 // ── DAP client ──────────────────────────────────────────────────────────────
@@ -237,30 +243,63 @@ async function detectConfigurations(workspaceFolder: string, activeFile: string 
     }
   }
 
+  // ── §F.6 — Entry Point Resolution Engine (manifest → framework → heuristic).
+  // Replaces the old hardcoded extension check: reads package.json / pyproject
+  // BEFORE guessing filenames, so "src/index.js" is honored over a root one.
+  const activeDir = activeFile ? dirname(activeFile) : undefined;
+  const resolved = await resolveEntries(workspaceFolder, activeDir);
+  const resolvedConfigs = resolved.map(entryToDebugConfig);
+
+  // For Python we can pin the venv interpreter for the *manifest* entries so
+  // the debugger attaches to the same environment the developer uses (§F.6.3#4).
+  const pythonEntries = resolved.filter(e => e.type === 'python' && e.program);
+  if (pythonEntries.length > 0) {
+    const py = await resolvePythonInterpreter(workspaceFolder);
+    if (py !== 'python') {
+      for (const cfg of resolvedConfigs) {
+        if (cfg.type === 'python') cfg.pythonPath = py;
+      }
+    }
+  }
+
+  // ── §F.6.1#5 — active file fallback (only for explicit "Current File" runs).
+  // Collected separately and appended last — it is the weakest tier.
+  const currentFileConfigs: DebugConfiguration[] = [];
   if (activeFile) {
     const lower = activeFile.toLowerCase();
     if (/\.(js|cjs|mjs|ts)$/.test(lower)) {
-      configs.push({
+      currentFileConfigs.push({
         name: 'Launch Current File',
         type: 'node',
         request: 'launch',
         program: activeFile,
         cwd: dirname(activeFile),
-        source: 'detected'
+        source: 'detected',
+        detectedTier: 'active'
       });
     } else if (lower.endsWith('.py')) {
-      configs.push({
+      currentFileConfigs.push({
         name: 'Python: Current File',
         type: 'python',
         request: 'launch',
         program: activeFile,
         cwd: dirname(activeFile),
-        source: 'detected'
+        source: 'detected',
+        detectedTier: 'active'
       });
     }
   }
 
-  return configs;
+  // §F.6.1 — confidence order: launch.json (explicit) → engine (manifest /
+  // framework / heuristic) → "Current File" fallback. Dedup by (type + program)
+  // while never collapsing framework dev-servers that have no program file.
+  const ordered = [...configs, ...resolvedConfigs, ...currentFileConfigs];
+  return ordered.filter((cfg, i, arr) => {
+    if (!cfg.program) return true;
+    const sig = `${cfg.type}|${cfg.program}`;
+    // keep the first occurrence → launch.json/manifest precedence is preserved.
+    return arr.findIndex(c => `${c.type}|${c.program}` === sig) === i;
+  });
 }
 
 export async function refreshDebugConfigurations() {
@@ -308,6 +347,63 @@ export async function createLaunchJsonFile() {
   }
 }
 
+/**
+ * §F.6.5 — "Save as launch configuration": lift an auto-detected entry point
+ * into an explicit launch.json entry so the heuristic can never be re-guessed.
+ */
+export async function saveResolvedEntryAsConfig(entry: ResolvedEntry) {
+  const workspaceFolder = getWorkspaceRoot();
+  if (!workspaceFolder) {
+    uiStore.addToast('Open a workspace first', 'alert');
+    return;
+  }
+
+  const vsCodeDir = `${workspaceFolder}\\.vscode`;
+  const launchPath = `${vsCodeDir}\\launch.json`;
+  const program = entry.program || '${workspaceFolder}\\index.js';
+  const type = entry.type; // node | python | go | ruby
+
+  const current = await readLaunchJson(workspaceFolder);
+  let configurations: any[];
+  if (current) {
+    try {
+      configurations = JSON.parse(stripJsonComments(current.raw)).configurations || [];
+    } catch {
+      configurations = [];
+    }
+  } else {
+    configurations = [];
+  }
+
+  // Avoid duplicates by (type + program)
+  if (!configurations.some(c => c && c.program === program && c.type === type)) {
+    const entryCfg: Record<string, unknown> = {
+      type,
+      request: 'launch',
+      name: entry.name,
+      program,
+      cwd: entry.cwd || '${workspaceFolder}'
+    };
+    // Preserve framework dev-server commands so they stay runnable.
+    if (entry.command) entryCfg['runtimeExecutable'] = entry.command;
+    configurations.push(entryCfg);
+  }
+
+  const body = {
+    version: '0.2.0',
+    configurations
+  };
+
+  try {
+    await invoke('create_directory', { path: vsCodeDir }).catch(() => {});
+    await invoke('save_file', { path: launchPath, content: JSON.stringify(body, null, 2) });
+    uiStore.addToast(`${entry.name} saved to launch.json`, 'success');
+    await refreshDebugConfigurations();
+  } catch (err) {
+    uiStore.addToast('Failed to save configuration', 'alert', String(err));
+  }
+}
+
 function quoteShellArg(arg: string) {
   if (!arg) return '""';
   return /[\s"]/g.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg;
@@ -321,6 +417,17 @@ function buildTerminalCommand(config: DebugConfiguration, mode: 'run' | 'debug')
 
   if (resolved.request === 'attach') {
     return { unsupported: `Attach request is not supported yet for "${resolved.name}".` };
+  }
+
+  // §F.6 framework dev-server entries carry a `command` hint the resolver
+  // produced (e.g. "next dev", "vite", "python manage.py runserver"). Their
+  // `program` may be empty — run the command directly in the terminal.
+  if (config.command && mode === 'run') {
+    return {
+      cwd: config.cwd || workspaceFolder,
+      label: config.name,
+      command: config.command
+    };
   }
 
   if (resolved.type === 'node' || resolved.type === 'pwa-node' || resolved.type === 'node-terminal') {
@@ -359,6 +466,31 @@ function buildTerminalCommand(config: DebugConfiguration, mode: 'run' | 'debug')
     };
   }
 
+  // §F.5.2 — Go (Run mode): `go run <file>`, Debug mode goes through DAP.
+  if (resolved.type === 'go') {
+    if (!resolved.program) {
+      return { unsupported: `Configuration "${resolved.name}" does not define a program.` };
+    }
+    return {
+      cwd: resolved.cwd || workspaceFolder,
+      label: resolved.name,
+      command: ['go', 'run', resolved.program, ...(resolved.args || [])].map(quoteShellArg).join(' ')
+    };
+  }
+
+  // §F.5.2 — Ruby (Run mode): `ruby <file>`, Debug mode goes through rdbg/DAP.
+  if (resolved.type === 'ruby' || resolved.type === 'rdbg') {
+    if (!resolved.program) {
+      return { unsupported: `Configuration "${resolved.name}" does not define a program.` };
+    }
+    const executable = resolved.runtimeExecutable || 'ruby';
+    return {
+      cwd: resolved.cwd || workspaceFolder,
+      label: resolved.name,
+      command: [executable, resolved.program, ...(resolved.args || [])].map(quoteShellArg).join(' ')
+    };
+  }
+
   if ((resolved.type === 'chrome' || resolved.type === 'pwa-chrome') && resolved.url) {
     return {
       unsupported: `Browser URL launch is not wired yet. Edit launch.json or use the generated Debug URL configuration scaffold.`
@@ -385,6 +517,7 @@ function launchInTerminal(command: string, cwd: string, label: string) {
 function normalizeDebugType(type: string): string {
   if (type === 'pwa-node' || type === 'node-terminal') return 'node';
   if (type === 'debugpy') return 'python';
+  if (type === 'rdbg') return 'ruby';
   return type;
 }
 
@@ -413,7 +546,8 @@ async function startDebugSession(config: DebugConfiguration) {
     args: resolved.args || [],
     env: resolved.env,
     envFile: resolved.envFile,
-    pythonPath: resolved.pythonPath
+    pythonPath: resolved.pythonPath,
+    rubyPath: (resolved as any).rubyPath
   };
 
   debugStore.setSessionMode('dap');
