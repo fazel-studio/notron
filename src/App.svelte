@@ -57,7 +57,7 @@
   let GoToLineComponent = $state<any>(null);
   let SearchPanelComponent = $state<any>(null);
   let SourceControlPanelComponent = $state<any>(null);
-  let DebugPanelComponent = $state<any>(null);
+  let RunPanelComponent = $state<any>(null);
   let MarkdownPreviewComponent = $state<any>(null);
   let ImageViewerComponent = $state<any>(null);
   let EditorComponent = $state<any>(null);
@@ -166,8 +166,8 @@
     if ($ui.activeSidebarPanel === 'git' && $ui.isSidebarOpen && !SourceControlPanelComponent) {
       import('./lib/components/SourceControlPanel.svelte').then(m => SourceControlPanelComponent = m.default);
     }
-    if ($ui.activeSidebarPanel === 'debug' && $ui.isSidebarOpen && !DebugPanelComponent) {
-      import('./lib/components/DebugPanel.svelte').then(m => DebugPanelComponent = m.default);
+    if ($ui.activeSidebarPanel === 'run' && $ui.isSidebarOpen && !RunPanelComponent) {
+      import('./lib/components/RunPanel.svelte').then(m => RunPanelComponent = m.default);
     }
   });
 
@@ -1151,6 +1151,11 @@
     if (cmdOrCtrl && key === 'b') {
       e.preventDefault(); uiStore.toggleSidebar();
     }
+    if (cmdOrCtrl && e.shiftKey && key === 'd') {
+      e.preventDefault();
+      uiStore.setSidebarOpen(true);
+      uiStore.setActiveSidebarPanel('run');
+    }
     if (cmdOrCtrl && key === 'd') {
       e.preventDefault();
       // Per-file find widget (VS Code "Ctrl+D" habit). The editor ignores the
@@ -1173,8 +1178,6 @@
     uiStore.initFromStorage();
     terminalStore.initFromStorage();
     gitRepoStore.init();
-
-    import('./lib/services/dapClient').then(m => m.setupDapListeners());
 
     // Start staged startup
     lastLoadedRoot = uiStore.getSnapshot().explorerRoot;
@@ -1561,15 +1564,15 @@
             {/if}
           </button>
         </Tooltip>
-        <Tooltip content="Run and Debug (Ctrl+Shift+D)" side="right" hoverDelay={300}>
-          <button aria-label="Run and Debug" onclick={() => { if ($ui.isSidebarOpen && $ui.activeSidebarPanel === 'debug') uiStore.setSidebarOpen(false); else { uiStore.setActiveSidebarPanel('debug'); uiStore.setSidebarOpen(true); } }} class="p-2 mb-2 bg-transparent cursor-pointer relative transition-colors hover:text-icon-active"
-            class:text-icon-active-tab={$ui.activeSidebarPanel === 'debug' && $ui.isSidebarOpen}
-            class:text-icon-default={!($ui.activeSidebarPanel === 'debug' && $ui.isSidebarOpen)}
+        <Tooltip content="Run (Ctrl+Shift+D)" side="right" hoverDelay={300}>
+          <button aria-label="Run" onclick={() => { if ($ui.isSidebarOpen && $ui.activeSidebarPanel === 'run') uiStore.setSidebarOpen(false); else { uiStore.setActiveSidebarPanel('run'); uiStore.setSidebarOpen(true); } }} class="p-2 mb-2 bg-transparent cursor-pointer relative transition-colors hover:text-icon-active"
+            class:text-icon-active-tab={$ui.activeSidebarPanel === 'run' && $ui.isSidebarOpen}
+            class:text-icon-default={!($ui.activeSidebarPanel === 'run' && $ui.isSidebarOpen)}
           >
-            {#if $ui.activeSidebarPanel === 'debug' && $ui.isSidebarOpen}
+            {#if $ui.activeSidebarPanel === 'run' && $ui.isSidebarOpen}
               <div class="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-8 bg-indicator-active"></div>
             {/if}
-            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="14" x="8" y="6" rx="4"/><path d="m19 7-3 2"/><path d="m5 7 3 2"/><path d="m19 19-3-2"/><path d="m5 19 3-2"/><path d="M20 13h-4"/><path d="M4 13h4"/><path d="m10 4 1 2"/><path d="m14 4-1 2"/></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 18 12 6 21 6 3"/></svg>
           </button>
         </Tooltip>
       </div>
@@ -1601,7 +1604,7 @@
           }}
         ></div>
         <div class="h-9 flex items-center justify-between px-4 text-xs font-semibold tracking-widest select-none uppercase text-secondary">
-          <span>{$ui.activeSidebarPanel === 'explorer' ? 'Explorer' : $ui.activeSidebarPanel === 'search' ? 'Search' : $ui.activeSidebarPanel === 'git' ? 'Source Control' : 'Run and Debug'}</span>
+          <span>{$ui.activeSidebarPanel === 'explorer' ? 'Explorer' : $ui.activeSidebarPanel === 'search' ? 'Search' : $ui.activeSidebarPanel === 'git' ? 'Source Control' : 'Run'}</span>
           {#if $ui.activeSidebarPanel === 'explorer'}
             <Tooltip content="Toggle VCS/System Hidden Files (.git, .svn, …)">
               <button aria-label="Toggle Hidden VCS Files" onclick={() => uiStore.toggleShowDotFiles()} class="p-1 rounded transition-colors hover:bg-hover" class:text-accent={$ui.showDotFiles} class:text-icon-default={!$ui.showDotFiles} class:hover:text-icon-active={true}>
@@ -1683,9 +1686,9 @@
             <div class="flex flex-col h-full overflow-hidden">
               <SourceControlPanelComponent />
             </div>
-          {:else if $ui.activeSidebarPanel === 'debug' && DebugPanelComponent}
+          {:else if $ui.activeSidebarPanel === 'run' && RunPanelComponent}
             <div class="flex flex-col h-full overflow-hidden">
-              <DebugPanelComponent />
+              <RunPanelComponent />
             </div>
           {/if}
         </div>

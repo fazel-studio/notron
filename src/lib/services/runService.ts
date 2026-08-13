@@ -1,46 +1,20 @@
-import { Channel, invoke } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { debugStore, type DebugConfiguration } from '../stores/debug';
+import { runStore, type RunConfiguration } from '../stores/run';
 import { editorStore } from '../stores/editor';
 import { uiStore } from '../stores/ui';
 import { terminalStore } from '../stores/terminal';
 import {
-  entryToDebugConfig,
+  entryToRunConfig,
   resolveEntries,
   resolvePythonInterpreter,
   type ResolvedEntry
 } from './entryPointResolver';
 import { get } from 'svelte/store';
 
-// ── DAP client ──────────────────────────────────────────────────────────────
-// The frontend is the DAP *client* (like VS Code): it owns the protocol state
-// machine (initialize → launch → setBreakpoints → configurationDone → step).
-// The adapter process and the raw framing live in Rust (§F.5.1). Frames are
-// streamed to us over a per-session tauri Channel (ordering guaranteed, §0.3)
-// and user requests are forwarded back through `debug_send_message`.
-
-let seqCounter = 1;
-const pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: any) => void }>();
-
-async function sendRequest(command: string, args: any = {}) {
-  const seq = seqCounter++;
-  const payload = {
-    seq,
-    type: 'request',
-    command,
-    arguments: args
-  };
-
-  const sessionId = get(debugStore).sessionId;
-  if (sessionId === null) return Promise.reject(new Error('No active debug session'));
-
-  return new Promise((resolve, reject) => {
-    pendingRequests.set(seq, { resolve, reject });
-    invoke('debug_send_message', { sessionId, message: JSON.stringify(payload) }).catch(reject);
-  });
-}
-
-// ── Config helpers (F.2.2 variable substitution, shared run/debug schema) ──
+// ── Run service ─────────────────────────────────────────────────────────────
+// Runs a launch configuration in the integrated terminal (PTY). There is no
+// DAP adapter anymore — Notron runs programs, not debuggers.
 
 function getWorkspaceRoot() {
   return uiStore.getSnapshot().explorerRoot || '';
@@ -135,7 +109,7 @@ function substituteVariables(value: string, workspaceFolder: string, activeFile:
   return value ? resolved : value;
 }
 
-function resolveConfiguration(config: DebugConfiguration, workspaceFolder: string, activeFile: string | null): DebugConfiguration {
+function resolveConfiguration(config: RunConfiguration, workspaceFolder: string, activeFile: string | null): RunConfiguration {
   const resolveValue = (value?: string) => value ? substituteVariables(value, workspaceFolder, activeFile) : value;
   return {
     ...config,
@@ -189,11 +163,11 @@ async function openEditorTab(path: string) {
   editorStore.setActiveTab(path);
 }
 
-export async function openFileForDebugging() {
+export async function openFileForRunning() {
   const selected = await openDialog({ multiple: false });
   if (selected && typeof selected === 'string') {
     await openEditorTab(selected);
-    await refreshDebugConfigurations();
+    await refreshRunConfigurations();
   }
 }
 
@@ -208,8 +182,8 @@ async function readLaunchJson(workspaceFolder: string) {
   }
 }
 
-async function detectConfigurations(workspaceFolder: string, activeFile: string | null): Promise<DebugConfiguration[]> {
-  const configs: DebugConfiguration[] = [];
+async function detectConfigurations(workspaceFolder: string, activeFile: string | null): Promise<RunConfiguration[]> {
+  const configs: RunConfiguration[] = [];
   const launch = await readLaunchJson(workspaceFolder);
 
   if (launch) {
@@ -234,7 +208,6 @@ async function detectConfigurations(workspaceFolder: string, activeFile: string 
             : undefined,
           envFile: typeof item.envFile === 'string' ? item.envFile : undefined,
           pythonPath: typeof item.pythonPath === 'string' ? item.pythonPath : undefined,
-          stopOnEntry: item.stopOnEntry === true,
           source: 'launch.json'
         });
       }
@@ -248,10 +221,10 @@ async function detectConfigurations(workspaceFolder: string, activeFile: string 
   // BEFORE guessing filenames, so "src/index.js" is honored over a root one.
   const activeDir = activeFile ? dirname(activeFile) : undefined;
   const resolved = await resolveEntries(workspaceFolder, activeDir);
-  const resolvedConfigs = resolved.map(entryToDebugConfig);
+  const resolvedConfigs = resolved.map(entryToRunConfig);
 
   // For Python we can pin the venv interpreter for the *manifest* entries so
-  // the debugger attaches to the same environment the developer uses (§F.6.3#4).
+  // the program runs in the same environment the developer uses (§F.6.3#4).
   const pythonEntries = resolved.filter(e => e.type === 'python' && e.program);
   if (pythonEntries.length > 0) {
     const py = await resolvePythonInterpreter(workspaceFolder);
@@ -264,7 +237,7 @@ async function detectConfigurations(workspaceFolder: string, activeFile: string 
 
   // ── §F.6.1#5 — active file fallback (only for explicit "Current File" runs).
   // Collected separately and appended last — it is the weakest tier.
-  const currentFileConfigs: DebugConfiguration[] = [];
+  const currentFileConfigs: RunConfiguration[] = [];
   if (activeFile) {
     const lower = activeFile.toLowerCase();
     if (/\.(js|cjs|mjs|ts)$/.test(lower)) {
@@ -302,11 +275,11 @@ async function detectConfigurations(workspaceFolder: string, activeFile: string 
   });
 }
 
-export async function refreshDebugConfigurations() {
+export async function refreshRunConfigurations() {
   const workspaceFolder = getWorkspaceRoot();
   const activeFile = getActiveFilePath();
   const configurations = await detectConfigurations(workspaceFolder, activeFile);
-  debugStore.setConfigurations(configurations);
+  runStore.setConfigurations(configurations);
   return configurations;
 }
 
@@ -341,7 +314,7 @@ export async function createLaunchJsonFile() {
     await invoke('save_file', { path: launchPath, content: template });
     await openEditorTab(launchPath);
     uiStore.addToast('launch.json created', 'success');
-    await refreshDebugConfigurations();
+    await refreshRunConfigurations();
   } catch (err) {
     uiStore.addToast('Failed to create launch.json', 'alert', String(err));
   }
@@ -398,7 +371,7 @@ export async function saveResolvedEntryAsConfig(entry: ResolvedEntry) {
     await invoke('create_directory', { path: vsCodeDir }).catch(() => {});
     await invoke('save_file', { path: launchPath, content: JSON.stringify(body, null, 2) });
     uiStore.addToast(`${entry.name} saved to launch.json`, 'success');
-    await refreshDebugConfigurations();
+    await refreshRunConfigurations();
   } catch (err) {
     uiStore.addToast('Failed to save configuration', 'alert', String(err));
   }
@@ -409,8 +382,9 @@ function quoteShellArg(arg: string) {
   return /[\s"]/g.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg;
 }
 
-// ── Run (without debug): spawn the process in a terminal PTY, no DAP adapter ─
-function buildTerminalCommand(config: DebugConfiguration, mode: 'run' | 'debug') {
+// ── Run: spawn the process in a terminal PTY ───────────────────────────────
+
+function buildTerminalCommand(config: RunConfiguration) {
   const workspaceFolder = getWorkspaceRoot();
   const activeFile = getActiveFilePath();
   const resolved = resolveConfiguration(config, workspaceFolder, activeFile);
@@ -422,7 +396,7 @@ function buildTerminalCommand(config: DebugConfiguration, mode: 'run' | 'debug')
   // §F.6 framework dev-server entries carry a `command` hint the resolver
   // produced (e.g. "next dev", "vite", "python manage.py runserver"). Their
   // `program` may be empty — run the command directly in the terminal.
-  if (config.command && mode === 'run') {
+  if (config.command) {
     return {
       cwd: config.cwd || workspaceFolder,
       label: config.name,
@@ -438,10 +412,6 @@ function buildTerminalCommand(config: DebugConfiguration, mode: 'run' | 'debug')
       return { unsupported: `Configuration "${resolved.name}" does not define a program.` };
     }
 
-    if (mode === 'debug') {
-      runtimeArgs.unshift('--inspect-brk');
-    }
-
     return {
       cwd: resolved.cwd || workspaceFolder,
       label: resolved.name,
@@ -455,9 +425,7 @@ function buildTerminalCommand(config: DebugConfiguration, mode: 'run' | 'debug')
     }
 
     const executable = resolved.runtimeExecutable || 'python';
-    const args = mode === 'debug'
-      ? ['-m', 'pdb', resolved.program, ...(resolved.args || [])]
-      : [resolved.program, ...(resolved.args || [])];
+    const args = [resolved.program, ...(resolved.args || [])];
 
     return {
       cwd: resolved.cwd || workspaceFolder,
@@ -466,7 +434,7 @@ function buildTerminalCommand(config: DebugConfiguration, mode: 'run' | 'debug')
     };
   }
 
-  // §F.5.2 — Go (Run mode): `go run <file>`, Debug mode goes through DAP.
+  // §F.5.2 — Go: `go run <file>`
   if (resolved.type === 'go') {
     if (!resolved.program) {
       return { unsupported: `Configuration "${resolved.name}" does not define a program.` };
@@ -478,7 +446,7 @@ function buildTerminalCommand(config: DebugConfiguration, mode: 'run' | 'debug')
     };
   }
 
-  // §F.5.2 — Ruby (Run mode): `ruby <file>`, Debug mode goes through rdbg/DAP.
+  // §F.5.2 — Ruby: `ruby <file>`
   if (resolved.type === 'ruby' || resolved.type === 'rdbg') {
     if (!resolved.program) {
       return { unsupported: `Configuration "${resolved.name}" does not define a program.` };
@@ -493,7 +461,7 @@ function buildTerminalCommand(config: DebugConfiguration, mode: 'run' | 'debug')
 
   if ((resolved.type === 'chrome' || resolved.type === 'pwa-chrome') && resolved.url) {
     return {
-      unsupported: `Browser URL launch is not wired yet. Edit launch.json or use the generated Debug URL configuration scaffold.`
+      unsupported: `Browser URL launch is not wired yet. Edit launch.json to configure the URL.`
     };
   }
 
@@ -508,271 +476,10 @@ function launchInTerminal(command: string, cwd: string, label: string) {
     name: label
   });
   terminalStore.setActivePanel('terminal');
-  debugStore.setSessionMode('terminal');
-  debugStore.setLastRunLabel(label);
+  runStore.setLastRunLabel(label);
 }
 
-// ── Debug (with DAP): real adapter session driven from Rust ────────────────
-
-function normalizeDebugType(type: string): string {
-  if (type === 'pwa-node' || type === 'node-terminal') return 'node';
-  if (type === 'debugpy') return 'python';
-  if (type === 'rdbg') return 'ruby';
-  return type;
-}
-
-async function startDebugSession(config: DebugConfiguration) {
-  const workspaceFolder = getWorkspaceRoot();
-  const activeFile = getActiveFilePath();
-  const resolved = resolveConfiguration(config, workspaceFolder, activeFile);
-
-  if (resolved.request === 'attach') {
-    uiStore.addToast('Attach not supported yet', 'alert', `Configuration "${resolved.name}" uses attach.`);
-    return;
-  }
-  if (!resolved.program) {
-    uiStore.addToast('Missing program', 'alert', `Configuration "${resolved.name}" does not define a program.`);
-    return;
-  }
-
-  const channel = new Channel<DebugSessionEvent>();
-  channel.onmessage = handleSessionEvent;
-
-  const rustConfig = {
-    debugType: normalizeDebugType(resolved.type),
-    request: 'launch',
-    program: resolved.program,
-    cwd: resolved.cwd,
-    args: resolved.args || [],
-    env: resolved.env,
-    envFile: resolved.envFile,
-    pythonPath: resolved.pythonPath,
-    rubyPath: (resolved as any).rubyPath
-  };
-
-  debugStore.setSessionMode('dap');
-  debugStore.setState('running');
-  debugStore.setVariables([]);
-  debugStore.setCallStack([]);
-  debugStore.setActiveFrame(null);
-  debugStore.clearConsole();
-
-  try {
-    const sessionId = await invoke<number>('debug_start_session', { config: rustConfig, channel });
-    debugStore.setSessionId(sessionId);
-
-    await sendRequest('initialize', {
-      clientID: 'notron',
-      clientName: 'Notron Editor',
-      adapterID: normalizeDebugType(resolved.type),
-      pathFormat: 'path',
-      linesStartAt1: true,
-      columnsStartAt1: true,
-      supportsVariableType: true,
-      supportsVariablePaging: true,
-      supportsRunInTerminalRequest: true,
-      supportsMemoryReferences: true,
-      locale: 'en'
-    });
-
-    // The rest (launch, breakpoints, exception breakpoints, configurationDone)
-    // happens when the adapter emits "initialized" — see handleDapEvent.
-    uiStore.setStatus(`Debugging ${resolved.name}`, 2200);
-  } catch (e) {
-    console.error('Failed to start debug session', e);
-    uiStore.addToast('Debug failed to start', 'alert', String(e));
-    await stopDebugSession();
-  }
-}
-
-interface DebugSessionEvent {
-  kind: 'dap' | 'output' | 'terminated';
-  payload?: string;
-  stream?: string;
-  line?: string;
-  code?: number | null;
-}
-
-function handleSessionEvent(event: DebugSessionEvent) {
-  switch (event.kind) {
-    case 'dap':
-      try {
-        const payload = JSON.parse(event.payload || '');
-        if (payload.type === 'response') {
-          const req = pendingRequests.get(payload.request_seq);
-          if (req) {
-            if (payload.success) req.resolve(payload.body);
-            else req.reject(payload.message);
-            pendingRequests.delete(payload.request_seq);
-          }
-        } else if (payload.type === 'event') {
-          handleDapEvent(payload);
-        }
-      } catch {
-        // ignore malformed debug frames
-      }
-      break;
-    case 'output':
-      debugStore.addConsoleOutput(event.line || '');
-      break;
-    case 'terminated':
-      stopDebugSession();
-      break;
-  }
-}
-
-let initializedHandshake = false;
-
-async function handleDapEvent(payload: any) {
-  switch (payload.event) {
-    case 'initialized': {
-      // F.1.3 / F.4 — Notron is the breakpoint source of truth: re-send all
-      // breakpoints & exception filters every time a session starts.
-      if (initializedHandshake) return;
-      initializedHandshake = true;
-
-      const state = get(debugStore);
-      try {
-        await sendRequest('launch', {
-          program: state.configurations.find(c => c.name === state.selectedConfigurationName)?.program
-        });
-      } catch {
-        // launch args are optional; adapters resolve them from the session.
-      }
-
-      try {
-        const filters: string[] = [];
-        if (state.exceptionBreakpoints.caught) filters.push('all');
-        if (state.exceptionBreakpoints.uncaught && !state.exceptionBreakpoints.caught) filters.push('uncaught');
-        await sendRequest('setExceptionBreakpoints', { filters });
-      } catch {
-        // adapter may not support exception breakpoints
-      }
-
-      const bpsByFile = new Map<string, typeof state.breakpoints>();
-      for (const bp of state.breakpoints) {
-        if (!bpsByFile.has(bp.file)) bpsByFile.set(bp.file, []);
-        bpsByFile.get(bp.file)!.push(bp);
-      }
-      for (const [file, bps] of bpsByFile.entries()) {
-        try {
-          await sendRequest('setBreakpoints', {
-            source: { path: file },
-            breakpoints: bps.map(b => ({ line: b.line }))
-          });
-        } catch {
-          // ignore per-file failures
-        }
-      }
-
-      await sendRequest('configurationDone');
-      break;
-    }
-    case 'stopped':
-      debugStore.setState('paused');
-      fetchStackTrace(payload.body.threadId || 1);
-      break;
-    case 'continued':
-      debugStore.setState('running');
-      debugStore.setCallStack([]);
-      debugStore.setVariables([]);
-      debugStore.setActiveFrame(null);
-      break;
-    case 'output':
-      debugStore.addConsoleOutput(payload.body?.output ?? '');
-      break;
-    case 'exited':
-    case 'terminated':
-      stopDebugSession();
-      break;
-  }
-}
-
-async function fetchStackTrace(threadId: number) {
-  try {
-    const res: any = await sendRequest('stackTrace', { threadId });
-    if (res?.stackFrames) {
-      debugStore.setCallStack(res.stackFrames);
-      if (res.stackFrames.length > 0) {
-        debugStore.setActiveFrame(res.stackFrames[0]);
-        fetchVariables(res.stackFrames[0].id);
-      }
-    }
-  } catch (e) {
-    console.error(e);
-  }
-}
-
-async function fetchVariables(frameId: number) {
-  try {
-    const scopesRes: any = await sendRequest('scopes', { frameId });
-    if (scopesRes?.scopes?.length) {
-      const localScope = scopesRes.scopes[0];
-      const varRes: any = await sendRequest('variables', { variablesReference: localScope.variablesReference });
-      if (varRes?.variables) {
-        debugStore.setVariables(varRes.variables);
-      }
-    }
-  } catch (e) {
-    console.error(e);
-  }
-}
-
-export async function stopDebugSession() {
-  await sendRequest('disconnect', { terminateDebuggee: true }).catch(() => {});
-  const sessionId = get(debugStore).sessionId;
-  if (sessionId !== null) {
-    await invoke('debug_stop_session', { sessionId }).catch(() => {});
-  }
-  debugStore.reset();
-}
-
-export async function pauseDebugSession() {
-  await sendRequest('pause', { threadId: 1 });
-}
-
-export async function stepOver() {
-  await sendRequest('next', { threadId: 1 });
-  debugStore.setState('running');
-}
-
-export async function stepInto() {
-  await sendRequest('stepIn', { threadId: 1 });
-  debugStore.setState('running');
-}
-
-export async function stepOut() {
-  await sendRequest('stepOut', { threadId: 1 });
-  debugStore.setState('running');
-}
-
-export async function continueDebug() {
-  await sendRequest('continue', { threadId: 1 });
-  debugStore.setState('running');
-}
-
-// F.6 #8 — Debug Console is a REPL (DAP `evaluate`) architecturally separate
-// from the Integrated Terminal (where a PTY runs the target stdin/stdout).
-export async function debugEvaluate(expression: string) {
-  const state = get(debugStore);
-  if (state.state !== 'paused' || !state.activeFrame) {
-    debugStore.addConsoleOutput('Expressions can only be evaluated while the program is paused.');
-    return;
-  }
-  debugStore.addConsoleOutput(expression);
-  try {
-    const res: any = await sendRequest('evaluate', {
-      expression,
-      frameId: state.activeFrame.id,
-      context: 'repl'
-    });
-    debugStore.addConsoleOutput(res?.result !== undefined ? String(res.result) : '');
-  } catch (e) {
-    debugStore.addConsoleOutput(String(e));
-  }
-}
-
-export async function runSelectedConfiguration(mode: 'run' | 'debug' = 'debug') {
+export async function runSelectedConfiguration() {
   const workspaceFolder = getWorkspaceRoot();
 
   if (!workspaceFolder) {
@@ -780,24 +487,19 @@ export async function runSelectedConfiguration(mode: 'run' | 'debug' = 'debug') 
     return;
   }
 
-  const snapshot = get(debugStore);
+  const snapshot = get(runStore);
   if (snapshot.configurations.length === 0) {
-    await refreshDebugConfigurations();
+    await refreshRunConfigurations();
   }
 
-  const latest = get(debugStore);
+  const latest = get(runStore);
   const selected = latest.configurations.find(c => c.name === latest.selectedConfigurationName) || latest.configurations[0];
   if (!selected) {
     uiStore.addToast('No configuration found', 'alert', 'Open a runnable file or create a launch.json first.');
     return;
   }
 
-  if (mode === 'debug') {
-    await startDebugSession(selected);
-    return;
-  }
-
-  const built = buildTerminalCommand(selected, mode);
+  const built = buildTerminalCommand(selected);
   if ('unsupported' in built) {
     uiStore.addToast('Run not available', 'alert', built.unsupported);
     return;
@@ -806,51 +508,3 @@ export async function runSelectedConfiguration(mode: 'run' | 'debug' = 'debug') 
   launchInTerminal(built.command, built.cwd, `Run: ${built.label}`);
   uiStore.setStatus(`Running ${built.label}`, 2200);
 }
-
-export async function openJavaScriptDebugTerminal() {
-  const workspaceFolder = getWorkspaceRoot();
-  terminalStore.newTerminal('powershell', workspaceFolder, {
-    initialCommand: 'node inspect',
-    name: 'JavaScript Debug'
-  });
-  terminalStore.setActivePanel('terminal');
-  uiStore.setStatus('JavaScript Debug Terminal ready', 2200);
-}
-
-export async function prepareDebugUrlConfiguration() {
-  const workspaceFolder = getWorkspaceRoot();
-  if (!workspaceFolder) {
-    uiStore.addToast('Open a workspace first', 'alert');
-    return;
-  }
-
-  const launchPath = `${workspaceFolder}\\.vscode\\launch.json`;
-  const content = `{
-  "version": "0.2.0",
-  "configurations": [
-    {
-      "type": "pwa-chrome",
-      "request": "launch",
-      "name": "Debug URL",
-      "url": "http://localhost:3000",
-      "webRoot": "${'${workspaceFolder}'}"
-    }
-  ]
-}
-`;
-
-  try {
-    await invoke('create_directory', { path: `${workspaceFolder}\\.vscode` }).catch(() => {});
-    await invoke('save_file', { path: launchPath, content });
-    await openEditorTab(launchPath);
-    uiStore.addToast('Debug URL scaffold created', 'success');
-    await refreshDebugConfigurations();
-  } catch (err) {
-    uiStore.addToast('Failed to prepare Debug URL', 'alert', String(err));
-  }
-}
-
-// Legacy entrypoint kept for App.svelte compatibility: since v2 the debug
-// transport is a per-session Channel (not a global event), there is nothing to
-// pre-register here.
-export function setupDapListeners() {}

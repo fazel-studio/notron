@@ -109,8 +109,8 @@ The application is optimized using the modern **Svelte 5 Store Pattern**:
 ### 6.1. Frontend (Svelte 5)
 
 - `src/lib/components/` — UI components (Editor, FileTree, Terminal, CommandPalette, etc.).
-- `src/lib/stores/` — Svelte stores and runes (`editor`, `settings`, `terminal`, `theme`, `debug`, `git`, `palette`, `navigation`, `ui`).
-- `src/lib/services/` — Service layer (`dapClient`, `git`).
+- `src/lib/stores/` — Svelte stores and runes (`editor`, `settings`, `terminal`, `theme`, `run`, `git`, `palette`, `navigation`, `ui`).
+- `src/lib/services/` — Service layer (`runService`, `git`).
 - `src/lib/utils/` — Utilities (explorer, symbol engine, language detector, markdown renderer, stream helpers).
 
 ### 6.2. Backend (Tauri / Rust)
@@ -123,7 +123,6 @@ The application is optimized using the modern **Svelte 5 Store Pattern**:
 - `src-tauri/src/workspace_cache.rs` — Rust-side explorer cache (source of truth for the tree).
 - `src-tauri/src/symbol_index.rs` — Symbol extraction and workspace indexing.
 - `src-tauri/src/git_service.rs` — Git integration and detection.
-- `src-tauri/src/debug_adapter.rs` — DAP session management.
 
 ## 7. Development Roadmap
 

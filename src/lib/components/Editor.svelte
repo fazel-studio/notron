@@ -78,8 +78,6 @@
   import { editorStore, buildReplaceRegex, applyReplacement } from '../stores/editor';
   import { uiStore } from '../stores/ui';
   import { themeStore } from '../stores/theme';
-  import { debugStore } from '../stores/debug';
-  import { createBreakpointGutter, createActiveLineExtension } from '../utils/debugExtensions';
   import { gitGutter, hunksField, baselineContentFacet, gitGutterKeymap } from '@fazelstudio/codemirror-gitgutter';
   import { getGitFileContent, stageFile } from '../services/git';
   
@@ -155,7 +153,6 @@
   const tabSizeCompartment = new Compartment();
   const minimapCompartment = new Compartment();
   const gutterCompartment = new Compartment();
-  const debugCompartment = new Compartment();
   const gitGutterCompartment = new Compartment();
 
   /** Builds the mini-map extensions, or an empty array when no mini-map is wanted. */
@@ -315,10 +312,6 @@
       updateListener,
       langCompartment.of([]),
       themeCompartment.of(isDark ? oneDark : lightTheme),
-      debugCompartment.of([
-        createBreakpointGutter(filePath),
-        createActiveLineExtension(filePath)
-      ]),
       gutterCompartment.of([lintGutter()]),
       lineNumbersCompartment.of(settings.effectiveSettings.line_numbers ? [
         lineNumbers(), 
@@ -383,22 +376,6 @@
     if (!editorView) return;
     editorView.dispatch({
       effects: themeCompartment.reconfigure(dark ? oneDark : lightTheme)
-    });
-  });
-
-  // Re-render debug extensions when debug state or breakpoints change
-  let debugState = $derived($debugStore.state);
-  let debugBps = $derived($debugStore.breakpoints);
-  let debugFrame = $derived($debugStore.activeFrame);
-
-  $effect(() => {
-    debugState; debugBps; debugFrame; // subscribe
-    if (!editorView) return;
-    editorView.dispatch({
-      effects: debugCompartment.reconfigure([
-        createBreakpointGutter(filePath),
-        createActiveLineExtension(filePath)
-      ])
     });
   });
 

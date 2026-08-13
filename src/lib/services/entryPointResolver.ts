@@ -28,7 +28,7 @@
 //            manifest's mtime changes.
 
 import { invoke } from '@tauri-apps/api/core';
-import type { DebugConfiguration } from '../stores/debug';
+import type { RunConfiguration } from '../stores/run';
 
 // ── Public model ────────────────────────────────────────────────────────────
 
@@ -588,8 +588,8 @@ export async function resolveEntries(root: string, activeDir?: string): Promise<
   return ranked;
 }
 
-/** Convert a resolved entry into a detected DebugConfiguration. */
-export function entryToDebugConfig(entry: ResolvedEntry): DebugConfiguration {
+/** Convert a resolved entry into a detected RunConfiguration. */
+export function entryToRunConfig(entry: ResolvedEntry): RunConfiguration {
   return {
     name: entry.name,
     type: entry.type,
