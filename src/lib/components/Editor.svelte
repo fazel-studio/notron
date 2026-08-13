@@ -5,15 +5,30 @@
   import { highlightSelectionMatches } from '@codemirror/search';
   import { bracketMatching, foldKeymap, indentOnInput, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
   import { closeBrackets, autocompletion, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete';
-  import { EditorView } from '@codemirror/view';
+  import { EditorView, scrollPastEnd } from '@codemirror/view';
+  import { stickyScroll } from '@fazelstudio/codemirror-stickyscroll';
+
+  import { indentationMarkers } from '@replit/codemirror-indentation-markers';
 
   const COMMON_EXTENSIONS = [
     EditorView.theme({
       "&": { backgroundColor: "transparent !important", height: "100%" },
-      ".cm-gutters": { backgroundColor: "var(--bg-canvas) !important", borderRight: "1px solid var(--border-subtle) !important", paddingLeft: "0px !important", paddingRight: "0px !important" },
-      ".cm-lineNumbers .cm-gutterElement": { paddingLeft: "4px !important", paddingRight: "4px !important", minWidth: "20px !important", textAlign: "right" },
-      ".cm-foldGutter .cm-gutterElement": { paddingLeft: "0px !important", paddingRight: "0px !important", width: "12px !important", textAlign: "center" },
-      ".cm-scroller": { overflow: "auto !important", overscrollBehaviorX: "none !important" }
+      ".cm-gutters": { backgroundColor: "var(--bg-canvas) !important", borderRight: "none !important", borderLeft: "none !important" },
+      ".cm-lineNumbers .cm-gutterElement": { paddingLeft: "8px !important", paddingRight: "8px !important", minWidth: "32px !important", textAlign: "right" },
+      ".cm-foldGutter .cm-gutterElement": { paddingLeft: "0px !important", paddingRight: "0px !important", width: "20px !important", textAlign: "center", cursor: "pointer" },
+      ".cm-scroller": { overflow: "auto !important", overscrollBehaviorX: "none !important" },
+      ".cm-gutters:not(:hover) .custom-fold-marker.is-open": { opacity: 0 },
+      ".cm-gutters:hover .custom-fold-marker.is-open": { opacity: 1 },
+      ".custom-fold-marker": { transition: "opacity 0.2s" }
+    }),
+    indentationMarkers({
+      hideFirstIndent: true,
+      colors: {
+        light: 'var(--border-subtle)',
+        dark: 'var(--border-subtle)',
+        activeLight: 'var(--text-muted)',
+        activeDark: 'var(--text-muted)'
+      }
     }),
     highlightSpecialChars(),
     history(),
@@ -29,6 +44,8 @@
     crosshairCursor(),
     highlightActiveLine(),
     highlightSelectionMatches(),
+    scrollPastEnd(),
+    stickyScroll(),
     keymap.of([
       ...defaultKeymap,
       ...historyKeymap,
@@ -47,7 +64,7 @@
 
 <script lang="ts">
   import { onMount, onDestroy, mount, unmount } from 'svelte';
-  import { Compartment } from '@codemirror/state';
+  import { Compartment, type Extension } from '@codemirror/state';
   import { lineNumbers, highlightActiveLineGutter } from '@codemirror/view';
   import { foldGutter } from '@codemirror/language';
   import { lintGutter } from '@codemirror/lint';
@@ -56,7 +73,6 @@
   import EditorFoldMarker from './EditorFoldMarker.svelte';
   import { oneDark } from '@codemirror/theme-one-dark';
   import { showMinimap } from '@replit/codemirror-minimap';
-  import { gitChangesState, type GitMarker } from '../utils/gitGutter';
   import { invoke } from '@tauri-apps/api/core';
   import { settingsStore } from '../stores/settings.svelte';
   import { editorStore, buildReplaceRegex, applyReplacement } from '../stores/editor';
@@ -64,8 +80,8 @@
   import { themeStore } from '../stores/theme';
   import { debugStore } from '../stores/debug';
   import { createBreakpointGutter, createActiveLineExtension } from '../utils/debugExtensions';
-  import { gitGutter, parseGitDiff, gitChangesEffect } from '../utils/gitGutter';
-  import { getGitFileDiff } from '../services/git';
+  import { gitGutter, hunksField, baselineContentFacet, gitGutterKeymap } from '@fazelstudio/codemirror-gitgutter';
+  import { getGitFileContent, stageFile } from '../services/git';
   
   let { tabId, content, filePath }: { tabId: string; content: string; filePath: string } = $props();
 
@@ -142,9 +158,63 @@
   const debugCompartment = new Compartment();
   const gitGutterCompartment = new Compartment();
 
+  /** Builds the mini-map extensions, or an empty array when no mini-map is wanted. */
+  function minimapExtension(): Extension[] {
+    return [
+      showMinimap.compute([hunksField, baselineContentFacet], (state) => {
+        let gitGutterRecord: Record<number, string> = {};
+
+        try {
+          const baseline = state.facet(baselineContentFacet);
+          const hunks = baseline ? (state.field(hunksField, false) ?? []) : [];
+          for (const hunk of hunks) {
+            let color = '#34d399'; // default success green
+            if (hunk.type === 'modified') color = '#60a5fa'; // info blue
+            else if (hunk.type === 'deleted') color = '#f87171'; // error red
+            if (hunk.type === 'deleted') {
+              const line = Math.min(hunk.fromB, state.doc.lines);
+              if (line >= 1) gitGutterRecord[line] = color;
+            } else {
+              for (let l = hunk.fromB; l <= Math.min(hunk.toB, state.doc.lines); l++) {
+                gitGutterRecord[l] = color;
+              }
+            }
+          }
+        } catch (_) {
+          // State might not be fully initialized
+        }
+
+        return {
+          create: (view) => {
+            const dom = document.createElement('div');
+            dom.className = 'cm-minimap-container';
+
+            // Forward wheel events to the editor's scrollDOM since the minimap
+            // is placed outside of it.
+            dom.addEventListener('wheel', (e) => {
+              e.preventDefault();
+              view.scrollDOM.scrollTop += e.deltaY;
+              view.scrollDOM.scrollLeft += e.deltaX;
+            }, { passive: false });
+
+            // FORCE it out of the scroller to guarantee it sits on top of text
+            setTimeout(() => {
+              if (view.dom) {
+                view.dom.appendChild(dom);
+              }
+            }, 50);
+            return { dom };
+          },
+          displayText: 'characters',
+          showOverlay: 'always',
+          gutters: [gitGutterRecord]
+        };
+      }),
+    ];
+  }
+
   const settings = settingsStore;
   const ui = uiStore;
-  let minimapDom: HTMLElement | null = null;
 
   async function loadLanguage() {
     if (isLargeFile) {
@@ -245,99 +315,20 @@
       updateListener,
       langCompartment.of([]),
       themeCompartment.of(isDark ? oneDark : lightTheme),
+      debugCompartment.of([
+        createBreakpointGutter(filePath),
+        createActiveLineExtension(filePath)
+      ]),
+      gutterCompartment.of([lintGutter()]),
       lineNumbersCompartment.of(settings.effectiveSettings.line_numbers ? [
         lineNumbers(), 
         customFoldGutter, 
         highlightActiveLineGutter()
       ] : []),
+      gitGutterCompartment.of([]),
       wordWrapCompartment.of(settings.effectiveSettings.word_wrap ? EditorView.lineWrapping : []),
       tabSizeCompartment.of(EditorState.tabSize.of(settings.effectiveSettings.tab_size)),
-      gutterCompartment.of([lintGutter()]),
-      minimapCompartment.of(!isLargeFile && $ui.isMinimapEnabled ? [
-        showMinimap.compute([gitChangesState], (state) => {
-          let gitGutterRecord: Record<number, string> = {};
-          
-          try {
-            const markers = state.field(gitChangesState) as any;
-            markers.between(0, state.doc.length, (from: number, _to: number, value: any) => {
-              const line = state.doc.lineAt(from);
-              const marker = value as GitMarker;
-              let color = '#34d399'; // default success green
-              if (marker.type === 'modified') color = '#60a5fa'; // info blue
-              else if (marker.type === 'deleted') color = '#f87171'; // error red
-              else if (marker.type === 'added') color = '#34d399'; // success green
-              gitGutterRecord[line.number] = color;
-            });
-          } catch (e) {
-            // State might not be fully initialized
-          }
-
-          return {
-            create: (view) => {
-              const dom = document.createElement('div');
-              dom.className = 'cm-minimap-container';
-              
-              // Add custom drag and scroll functionality
-              let isDragging = false;
-              
-              dom.addEventListener('wheel', (e) => {
-                e.preventDefault();
-                view.scrollDOM.scrollTop += e.deltaY;
-                view.scrollDOM.scrollLeft += e.deltaX;
-              }, { passive: false });
-
-              dom.addEventListener('mousedown', (e) => {
-                // Only initiate drag if left button
-                if (e.button !== 0) return;
-                isDragging = true;
-                
-                // Calculate proportion and scroll immediately
-                const updateScroll = (evt: MouseEvent) => {
-                    const rect = dom.getBoundingClientRect();
-                    const y = Math.max(0, Math.min(rect.height, evt.clientY - rect.top));
-                    const percentage = y / rect.height;
-                    const targetScroll = percentage * (view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight);
-                    view.scrollDOM.scrollTop = targetScroll;
-                };
-                
-                updateScroll(e);
-
-                const onMouseMove = (evt: MouseEvent) => {
-                  if (isDragging) {
-                      updateScroll(evt);
-                  }
-                };
-
-                const onMouseUp = () => {
-                  isDragging = false;
-                  window.removeEventListener('mousemove', onMouseMove);
-                  window.removeEventListener('mouseup', onMouseUp);
-                };
-
-                window.addEventListener('mousemove', onMouseMove);
-                window.addEventListener('mouseup', onMouseUp);
-              });
-
-              // FORCE it out of the scroller to guarantee it sits on top of text
-              setTimeout(() => {
-                if (view.dom) {
-                  view.dom.appendChild(dom);
-                }
-              }, 50);
-              minimapDom = dom;
-              return { dom };
-            },
-            displayText: 'characters',
-            showOverlay: 'always',
-            gutters: [gitGutterRecord]
-          };
-        })
-      ] : []),
-      debugCompartment.of([
-        createBreakpointGutter(filePath),
-        createActiveLineExtension(filePath)
-      ]),
-      gitGutterCompartment.of(isLargeFile ? [] : [gitGutter]),
+      minimapCompartment.of(!isLargeFile && $ui.isMinimapEnabled ? minimapExtension() : []),
     ];
 
     let state = editorStates.get(tabId);
@@ -436,26 +427,41 @@
   });
 
   $effect(() => {
-    const enabled = $ui.isMinimapEnabled;
-    if (!editorView || isLargeFile) return;
-    if (minimapDom) {
-      minimapDom.style.display = enabled ? '' : 'none';
-    }
-    if (!enabled) {
-      editorView.scrollDOM.style.paddingRight = '';
-    }
+    // Reactively (re)create or tear down the minimap. The minimap is a facet
+    // value tied to the editor state, so toggling it must RECONFIGURE the
+    // compartment — merely flipping `style.display` does nothing when the
+    // editor was mounted with the minimap disabled (the compartment is empty).
+    if (!editorView) return;
+    const enabled = !isLargeFile && $ui.isMinimapEnabled;
+    editorView.dispatch({
+      effects: minimapCompartment.reconfigure(enabled ? minimapExtension() : []),
+    });
   });
 
-  async function updateGitGutter() {
+  async function loadGitBaseline() {
     if (isLargeFile || !editorView || !$ui.explorerRoot) return;
+    const explorerRoot = $ui.explorerRoot;
+
+    // git show HEAD:<path> requires a repo-relative path, not an absolute path.
+    const relativePath = filePath.startsWith(explorerRoot)
+      ? filePath.slice(explorerRoot.length).replace(/^[\/\\]+/, '')
+      : filePath;
+
     try {
-      const diff = await getGitFileDiff($ui.explorerRoot, filePath);
-      const changes = parseGitDiff(diff, editorView.state.doc);
+      const baseline = await getGitFileContent(explorerRoot, relativePath, 'HEAD');
       editorView.dispatch({
-        effects: gitChangesEffect.of(changes)
+        effects: gitGutterCompartment.reconfigure(baseline
+          ? [
+              gitGutter({
+                baseline,
+                onStageHunk: (_hunk) => stageFile(explorerRoot, relativePath),
+              }),
+              keymap.of(gitGutterKeymap),
+            ]
+          : [])
       });
     } catch (e) {
-      console.warn('Failed to update git gutter', e);
+      console.warn('Failed to load git baseline', e);
     }
   }
 
@@ -463,7 +469,7 @@
     // Whenever tabStatus changes (e.g. to saved) or on mount
     tabStatus;
     if (editorView) {
-      updateGitGutter();
+      loadGitBaseline();
     }
   });
 
@@ -562,7 +568,7 @@
   }
 
   let style = $derived(`font-size: ${settings.effectiveSettings.font_size}px; font-family: ${settings.effectiveSettings.font_family};`);
-  let rightGap = $derived((!isLargeFile && $ui.isMinimapEnabled) ? 164 : 0);
+  let rightGap = $derived((!isLargeFile && $ui.isMinimapEnabled) ? 150 : 0);
 
   onMount(() => {
     setupEditor();

@@ -120,9 +120,10 @@
       if (modified.length === 0) {
         event.preventDefault();
         pendingCloseConfirmed = true;
-        saveWorkspaceSession();
-        invoke('set_crash_flag', { value: false }).catch(() => {});
-        appWindow.destroy();
+        saveWorkspaceSession().then(() => {
+          invoke('set_crash_flag', { value: false }).catch(() => {});
+          appWindow.destroy();
+        });
         return;
       }
 
@@ -587,10 +588,10 @@
             
             // Apply terminal state
             terminalStore.setTerminals(parsed.terminals || [], parsed.activeTerminalId || null);
-            if (parsed.terminalVisible !== undefined) terminalStore.setVisibility(parsed.terminalVisible);
             if (parsed.terminalMaximized !== undefined) terminalStore.setMaximize(parsed.terminalMaximized);
             if (parsed.terminalHeight !== undefined) terminalStore.setHeight(parsed.terminalHeight);
             if (parsed.terminalActivePanel !== undefined) terminalStore.setActivePanel(parsed.terminalActivePanel);
+            if (parsed.terminalVisible !== undefined) terminalStore.setVisibility(parsed.terminalVisible);
 
             // Phase 3: Lazy Tab Initialization
             if (parsed.tabs && parsed.tabs.length > 0) {
@@ -795,10 +796,10 @@
             if (parsed.replaceQuery !== undefined) uiStore.setReplaceQuery(parsed.replaceQuery);
 
             terminalStore.setTerminals(parsed.terminals || [], parsed.activeTerminalId || null);
-            if (parsed.terminalVisible !== undefined) terminalStore.setVisibility(parsed.terminalVisible);
             if (parsed.terminalMaximized !== undefined) terminalStore.setMaximize(parsed.terminalMaximized);
             if (parsed.terminalHeight !== undefined) terminalStore.setHeight(parsed.terminalHeight);
             if (parsed.terminalActivePanel !== undefined) terminalStore.setActivePanel(parsed.terminalActivePanel);
+            if (parsed.terminalVisible !== undefined) terminalStore.setVisibility(parsed.terminalVisible);
 
             if (parsed.tabs !== undefined) {
               const lazyTabs = parsed.tabs.map((t: any) => ({
@@ -1009,9 +1010,10 @@
       pendingCloseConfirmed = true;
       // Persist the session + clear the crash flag, then force-close. destroy()
       // bypasses beforeunload, so save explicitly instead of relying on it.
-      saveWorkspaceSession();
-      invoke('set_crash_flag', { value: false }).catch(() => {});
-      getCurrentWindow().destroy();
+      saveWorkspaceSession().then(() => {
+        invoke('set_crash_flag', { value: false }).catch(() => {});
+        getCurrentWindow().destroy();
+      });
     }
   }
 

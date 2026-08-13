@@ -237,7 +237,7 @@ div:not(.cm-content):not(.cm-line):not(.selectable)::selection {
 }
 
 .cm-minimap-container {
-  cursor: pointer;
+  cursor: default;
   position: absolute !important;
   right: 14px !important;
   top: 0 !important;
@@ -293,33 +293,4 @@ body.is-dragging [data-node-path].drop-valid {
 }
 body.is-dragging [data-node-path]:not(.drop-valid) {
   cursor: no-drop !important;
-}
-
-/* Git Gutter */
-.git-gutter-marker {
-  width: 3px;
-  height: 100%;
-  margin-left: 2px;
-}
-.git-gutter-added {
-  background-color: var(--color-success, #2ea043);
-}
-.git-gutter-modified {
-  background-color: var(--color-info, #3b82f6);
-}
-.git-gutter-deleted {
-  width: 0;
-  height: 0;
-  border-top: 5px solid transparent;
-  border-bottom: 5px solid transparent;
-  border-left: 5px solid var(--color-error, #f85149);
-  margin-top: 5px;
-  transform: translateX(1px);
-}
-.cm-git-gutter {
-  width: 4px;
-  cursor: pointer;
-}
-.cm-git-gutter:hover {
-  background-color: var(--bg-hover);
 }

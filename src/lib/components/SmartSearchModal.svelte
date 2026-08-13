@@ -5,7 +5,6 @@
   import { Search, File, Loader2 } from 'lucide-svelte';
   import { uiStore } from '../stores/ui';
   import { editorStore } from '../stores/editor';
-  import { onMount } from 'svelte';
 
   let { isOpen, onClose }: { isOpen: boolean; onClose: () => void } = $props();
 
@@ -29,12 +28,19 @@
     fileQuery.trim() === '' ? [] : allFiles.filter(f => !selectedFiles.includes(f) && f.toLowerCase().includes(fileQuery.toLowerCase())).slice(0, 50)
   );
 
-  onMount(() => {
-    const root = uiStore.getSnapshot().explorerRoot;
-    if (root) {
+  let lastLoadedRoot = $state<string | null>(null);
+
+  $effect(() => {
+    const root = $uiStore.explorerRoot;
+    if (root && root !== lastLoadedRoot) {
+      lastLoadedRoot = root;
       invoke<string[]>('list_all_files', { path: root, excludeDirs: ['node_modules', '.git', 'target', 'dist', 'build'], maxResults: 50000 })
         .then(files => {
           allFiles = files.map(f => f.replace(/\\/g, '/'));
+          selectedFiles = []; // Clear selection when root changes
+          query = '';
+          fileQuery = '';
+          hasSearched = false;
         })
         .catch(console.error);
     }

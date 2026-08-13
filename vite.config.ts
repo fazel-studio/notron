@@ -8,6 +8,11 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [tailwindcss(), svelte()],
 
+  resolve: {
+    // Force a single copy of CodeMirror core even for linked/local packages
+    dedupe: ['@codemirror/state', '@codemirror/view', '@codemirror/language'],
+  },
+
   clearScreen: false,
   server: {
     port: 1420,
