@@ -34,7 +34,7 @@
   }
 </script>
 
-<svelte:window onclick={handleClickOutside} />
+<svelte:window onclick={handleClickOutside} oncontextmenu={handleClickOutside} />
 
 <div role="presentation" style="display: contents" oncontextmenu={handleContextMenu}>
   {@render children()}
@@ -46,11 +46,11 @@
     class="fixed inset-0 z-[99]"
     role="presentation"
     onclick={handleClickOutside}
-    oncontextmenu={(e) => e.preventDefault()}
+    oncontextmenu={(e) => { e.preventDefault(); handleClickOutside(); }}
     onkeydown={(e) => { if (e.key === 'Escape') handleClickOutside(); }}
   ></div>
   <div
-    class="fixed min-w-[160px] rounded-md border p-1 shadow-md z-[100] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary"
+    class="fixed min-w-[220px] rounded-md border p-1 shadow-md z-[100] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary"
     style="left: {pos.x}px; top: {pos.y}px;"
   >
     {#each items as item (item.id)}

@@ -43,6 +43,7 @@ globset = "0.4"
 rayon = "1.12.0"
 grep = "0.3"
 tempfile = "3"
+discord-rich-presence = "1.1.0"
 
 [profile.dev]
 incremental = true

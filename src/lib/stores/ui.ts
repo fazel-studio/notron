@@ -27,7 +27,9 @@ interface UiState {
   searchRefreshCounter: number;
   searchCollapseCounter: number;
   searchResultCount: number;
-  toasts: { id: string; type: 'success' | 'alert'; title: string; message?: string }[];
+  toasts: { id: string; type: 'success' | 'alert' | 'process'; title: string; message?: string }[];
+  isCloneRepositoryModalOpen: boolean;
+  cloneStatus: { name: string; opId: string } | null;
 }
 
 // PERF FIX: expandedPaths is now a SEPARATE writable<Set>.
@@ -69,6 +71,8 @@ function createUiStore() {
     searchCollapseCounter: 0,
     searchResultCount: 0,
     toasts: [],
+    isCloneRepositoryModalOpen: false,
+    cloneStatus: null,
   });
 
   let globalStatusTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -89,7 +93,7 @@ function createUiStore() {
     }
   }
 
-  function addToast(title: string, type: 'success' | 'alert' = 'success', message?: string) {
+  function addToast(title: string, type: 'success' | 'alert' | 'process' = 'success', message?: string): string {
     const id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
     state.update(s => {
       const newToasts = [...s.toasts, { id, type, title, message }];
@@ -104,6 +108,26 @@ function createUiStore() {
         removeToast(id);
       }, 5000);
     }
+    return id;
+  }
+
+  /** Show the single persistent process toast. Any existing process toast is replaced. */
+  function addProcessToast(title: string, message?: string): string {
+    let id = '';
+    state.update(s => {
+      const cleaned = s.toasts.filter(t => t.type !== 'process');
+      id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+      const newToasts = [...cleaned, { id, type: 'process' as const, title, message }];
+      if (newToasts.length > 5) {
+        newToasts.shift();
+      }
+      return { ...s, toasts: newToasts };
+    });
+    return id;
+  }
+
+  function removeProcessToast() {
+    state.update(s => ({ ...s, toasts: s.toasts.filter(t => t.type !== 'process') }));
   }
 
   function removeToast(id: string) {
@@ -137,7 +161,10 @@ function createUiStore() {
     expandedPaths: { subscribe: expandedPathsStore.subscribe },
 
     initFromStorage: () => {
-      const savedWorkspace = localStorage.getItem('last_workspace');
+      // New windows opened via "New Window" (clean=true) must always start
+      // with no active workspace, regardless of what is stored in localStorage.
+      const isCleanWindow = typeof window !== 'undefined' && window.location.search.includes('clean=true');
+      const savedWorkspace = isCleanWindow ? null : localStorage.getItem('last_workspace');
       const savedRecent = JSON.parse(localStorage.getItem('recent_workspaces') || '[]');
       const savedSidebarWidth = parseInt(localStorage.getItem('sidebarWidth') || '240', 10);
       const savedSidebarOpen = localStorage.getItem('isSidebarOpen') !== 'false';
@@ -173,6 +200,10 @@ function createUiStore() {
     closeNewFileDialog: () => update(() => ({ isNewFileDialogOpen: false, newFileDialogSource: null })),
     openRecentFoldersModal: () => update(() => ({ isRecentFoldersModalOpen: true })),
     closeRecentFoldersModal: () => update(() => ({ isRecentFoldersModalOpen: false })),
+    openCloneRepositoryModal: () => update(() => ({ isCloneRepositoryModalOpen: true })),
+    closeCloneRepositoryModal: () => update(() => ({ isCloneRepositoryModalOpen: false })),
+    setCloneStatus: (status: { name: string; opId: string }) => update(() => ({ cloneStatus: status })),
+    clearCloneStatus: () => update(() => ({ cloneStatus: null })),
     triggerExplorerRefresh: () => update(s => ({ explorerRefreshCounter: s.explorerRefreshCounter + 1 })),
     triggerExplorerCollapse: () => {
       expandedPathsStore.set(new Set());
@@ -186,8 +217,11 @@ function createUiStore() {
     triggerSearchRefresh: () => update(s => ({ searchRefreshCounter: s.searchRefreshCounter + 1 })),
     triggerSearchCollapseAll: () => update(s => ({ searchCollapseCounter: s.searchCollapseCounter + 1 })),
     setSearchResultCount: (count: number) => update(() => ({ searchResultCount: count })),
+    setGlobalStatus: (status: string | null) => update(() => ({ globalStatus: status })),
     addToast,
     removeToast,
+    addProcessToast,
+    removeProcessToast,
     toggleMinimap: () => update(s => ({ isMinimapEnabled: !s.isMinimapEnabled })),
     setMinimapEnabled: (enabled: boolean) => update(() => ({ isMinimapEnabled: enabled })),
     saveTierUiState: () => {

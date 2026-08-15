@@ -362,6 +362,19 @@
     return map;
   });
 
+  let activeFolderPath = $derived.by(() => {
+    if (!activePath) return null;
+    const node = flatListMap.get(activePath);
+    if (node?.is_dir) return activePath;
+    return getParentPath(activePath);
+  });
+
+  let activeFolderDepth = $derived.by(() => {
+    if (!activeFolderPath) return -1;
+    const node = flatListMap.get(activeFolderPath);
+    return node ? node.depth : -1;
+  });
+
 
   $effect(() => {
     $showDotFilesStore;
@@ -1673,7 +1686,7 @@
 
   function openFileInTab(path: string) {
     const name = getFileName(path);
-    const isImg = /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(name);
+    const isImg = /\.(png|jpe?g|gif|webp|ico)$/i.test(name);
     if (isImg) {
       editorStore.addTab({ id: path, path, name, content: '', language: 'image', isPreview: true });
       return;
@@ -1801,7 +1814,7 @@
 </script>
 
 {#if errorMsg}
-  <div class="p-4 text-xs text-red-500">Failed to load: {errorMsg}.<br/><br/>Resetting workspace...</div>
+  <div class="p-4 text-xs" style="color: var(--color-error)">Failed to load: {errorMsg}.<br/><br/>Resetting workspace...</div>
 
 {:else if isInitialLoading}
   <div class="flex flex-col gap-1.5 p-2 pt-1">
@@ -1832,7 +1845,7 @@
 {:else}
   <Tooltip content={hoveredPath} disabled={!hoveredPath} followCursor={true} hoverDelay={400} wrapperClass="flex-1 flex flex-col min-h-0 min-w-0">
     <div
-      class="flex-1 h-full outline-none flex flex-col p-2 transition-all {activePath === rootPath ? 'bg-surface-2 ring-1 ring-inset ring-focus' : ''}"
+      class="group/tree flex-1 h-full outline-none flex flex-col p-2 transition-all {activePath === rootPath ? 'bg-surface-2 ring-1 ring-inset ring-focus' : ''}"
       role="tree"
       tabindex="0"
       data-node-path={rootPath}
@@ -1908,6 +1921,8 @@
             {node}
             isSelected={selectedPaths.has(node.path)}
             isActive={activePath === node.path}
+            {activeFolderPath}
+            {activeFolderDepth}
             isFaded={isNodeFaded(node.path) || extraFadedPaths.has(node.path)}
             isDropTarget={drag.dropTargetPath === node.path && drag.dropTargetValid}
             isDropInvalid={drag.dropTargetPath === node.path && !drag.dropTargetValid}
@@ -2046,8 +2061,8 @@
   </div>
   {#snippet footer()}
     <div class="flex justify-end gap-2">
-      <button class="px-4 py-1.5 rounded bg-surface-3 hover:bg-surface-4 text-primary text-sm transition-colors" onclick={handleLargeFolderCancel}>Cancel</button>
-      <button class="px-4 py-1.5 rounded bg-orange-600 hover:bg-orange-500 text-white text-sm transition-colors" onclick={handleLargeFolderProceed}>Proceed</button>
+      <button class="px-4 py-1.5 rounded bg-surface-2 hover:bg-active text-primary text-sm transition-colors" onclick={handleLargeFolderCancel}>Cancel</button>
+      <button class="px-4 py-1.5 rounded hover:brightness-110 text-[var(--text-inverse)] text-sm transition-colors" style="background-color: var(--color-warning)" onclick={handleLargeFolderProceed}>Proceed</button>
     </div>
   {/snippet}
 </Modal>

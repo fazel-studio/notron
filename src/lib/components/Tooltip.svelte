@@ -11,6 +11,8 @@
   let cancelled = false;
   let anchorRect = $state<DOMRect>();
   let measured = $state(false);
+  let anchorEl = $state<HTMLDivElement>();
+  let anchorObserver: MutationObserver | undefined;
 
   const CURSOR_GAP = 6;
   const VIEWPORT_GAP = 6;
@@ -197,6 +199,20 @@
     };
   });
 
+  $effect(() => {
+    // A tooltip whose anchor is destroyed without firing a mouseleave (e.g.
+    // the git gutter peek view being closed) must not linger on screen.
+    if (visible && anchorEl) {
+      anchorObserver ??= new MutationObserver(() => {
+        if (visible && anchorEl && !anchorEl.isConnected) {
+          hide();
+        }
+      });
+      anchorObserver.observe(document.body, { childList: true, subtree: true });
+      return () => anchorObserver?.disconnect();
+    }
+  });
+
   let positionClass = $derived.by(() => {
     const classes: string[] = ['fixed', 'z-[2147483647]', 'm-0', 'max-w-[calc(100vw-12px)]'];
     
@@ -226,6 +242,7 @@
 </script>
 
 <div
+  bind:this={anchorEl}
   class="relative inline-flex {wrapperClass}"
   role="presentation"
   onmouseenter={handleMouseEnter}

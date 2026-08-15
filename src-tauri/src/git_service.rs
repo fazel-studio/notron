@@ -1109,6 +1109,29 @@ pub async fn git_fetch(
     run_streaming(&git, &["fetch", "--progress"], &cwd, "fetch", &op_id, &progress, &state).await
 }
 
+/// Clone a repository into `dest`. `git clone` creates the destination folder,
+/// so the child process runs with the PARENT of `dest` as its working directory.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn git_clone(
+    url: String,
+    dest: String,
+    op_id: Option<String>,
+    progress: tauri::ipc::Channel<GitProgress>,
+    state: State<'_, GitState>,
+) -> Result<(), String> {
+    let git = state.git_command().ok_or("Git is not available")?;
+    if url.trim().is_empty() || dest.trim().is_empty() {
+        return Err("URL and destination are required".to_string());
+    }
+    let parent = Path::new(&dest)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| dest.clone());
+    let op_id = op_id.unwrap_or_else(|| format!("clone-{}", now_ms()));
+    run_streaming(&git, &["clone", "--progress", &url, &dest], &parent, "clone", &op_id, &progress, &state).await
+}
+
 // ── D.2(4) — History: lazy & paged ──────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

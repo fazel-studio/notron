@@ -35,10 +35,6 @@ export async function getSymbolIndex(root: string): Promise<Record<string, Symbo
   return invoke<Record<string, SymbolLocation[]>>('get_symbol_index', { root });
 }
 
-export async function getFileSymbols(path: string): Promise<SymbolLocation[]> {
-  return invoke<SymbolLocation[]>('get_file_symbols', { path });
-}
-
 export async function gotoDefinition(root: string, symbol: string, currentFile: string): Promise<SymbolLocation[]> {
   return invoke<SymbolLocation[]>('goto_definition', { root, symbol, currentFile });
 }

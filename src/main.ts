@@ -6,9 +6,11 @@ import './app.css';
   try {
     const stored = localStorage.getItem('notron_theme');
     const theme = stored || 'system';
-    const isDark = theme === 'dark' || theme === 'black' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-    document.documentElement.classList.toggle('dark', isDark);
-    document.documentElement.classList.toggle('black', theme === 'black');
+    const isDark = theme === 'dark' || theme === 'hc-dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    const html = document.documentElement;
+    html.classList.toggle('dark', isDark);
+    html.classList.toggle('hc-dark', theme === 'hc-dark');
+    html.classList.toggle('hc-light', theme === 'hc-light');
   } catch {
     // fallback: no-op
   }

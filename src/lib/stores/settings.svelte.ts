@@ -10,9 +10,11 @@ export interface AppSettings {
   auto_save: boolean;
   auto_save_delay_ms: number;
   default_encoding: string;
-  icon_theme: 'off' | 'default';
+  icon_theme: 'off' | 'default' | 'material';
   search_exclude: string[];
   search_include: string[];
+  default_svg_view: 'image' | 'code' | 'split';
+  discord_presence: boolean;
 }
 
 export const HARDCODED_DEFAULTS: AppSettings = {
@@ -28,6 +30,8 @@ export const HARDCODED_DEFAULTS: AppSettings = {
   icon_theme: 'default',
   search_exclude: [],
   search_include: [],
+  default_svg_view: 'image',
+  discord_presence: true,
 };
 
 class SettingsStore {

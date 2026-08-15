@@ -8,18 +8,21 @@
   import { getHumanReadableError } from './lib/utils/error';
   import { settingsStore } from './lib/stores/settings.svelte';
   import { themeStore } from './lib/stores/theme';
+  import { getFileIcon } from './lib/components/TreeNode.svelte';
   import FileTree from './lib/components/FileTree.svelte';
   import Tooltip from './lib/components/Tooltip.svelte';
+  import MaterialIcon from './lib/components/MaterialIcon.svelte';
+  import { preloadMaterialIcons } from './lib/utils/materialIconRenderer.svelte';
   import TitleMenuBar from './lib/components/TitleMenuBar.svelte';
   import CloseTabDialog from './lib/components/CloseTabDialog.svelte';
   import WelcomeTab from './lib/components/WelcomeTab.svelte';
   import NewFileDialog from './lib/components/NewFileDialog.svelte';
   import TrustModal from './lib/components/TrustModal.svelte';
   import RecentFoldersModal from './lib/components/RecentFoldersModal.svelte';
-  import Breadcrumbs from './lib/components/Breadcrumbs.svelte';
   import TerminalPanel from './lib/components/TerminalPanel.svelte';
   import SmartSearchModal from './lib/components/SmartSearchModal.svelte';
   import ToastContainer from './lib/components/ToastContainer.svelte';
+  import SvgViewToggle from './lib/components/SvgViewToggle.svelte';
   import { terminalStore } from './lib/stores/terminal';
   import { paletteStore, type PaletteItem } from './lib/stores/palette';
   import { navigationStore } from './lib/stores/navigation';
@@ -99,6 +102,23 @@
     return () => { unlisten.then((fn) => fn()).catch(() => {}); };
   });
 
+  // Record navigation history when active tab changes
+  let lastActiveTabId = $state<string | null>(null);
+  $effect(() => {
+    const tabId = $activeTabId;
+    if (!tabId || tabId === lastActiveTabId) return;
+    const tab = $tabs.find((t: any) => t.id === tabId);
+    if (tab && tab.path && !tab.path.startsWith('Untitled') && tab.language !== 'welcome' && tab.language !== 'settings') {
+      const cursor = editorStore.getCursor(tabId);
+      navigationStore.recordNavigation({
+        path: tab.path,
+        line: cursor?.line || 1,
+        col: cursor?.column || 1
+      });
+    }
+    lastActiveTabId = tabId;
+  });
+
   // Intercept window close: prompt for unsaved changes before closing.
   // Tauri's onCloseRequested wrapper destroys the window when the handler does
   // NOT call event.preventDefault(). Closes are therefore forced with
@@ -141,6 +161,17 @@
     if (settingsStore.effectiveSettings.theme) {
       themeStore.setTheme(settingsStore.effectiveSettings.theme);
     }
+  });
+
+  // Warm the material icon cache as soon as the material theme is active, so
+  // first renders are synchronous (no <img> load flash).
+  let prevIconTheme = $state(settingsStore.effectiveSettings.icon_theme);
+  $effect(() => {
+    const t = settingsStore.effectiveSettings.icon_theme;
+    if (t === 'material' && prevIconTheme !== 'material') {
+      preloadMaterialIcons();
+    }
+    prevIconTheme = t;
   });
 
   // Lazy load components only when needed (Bagian 17.1)
@@ -247,6 +278,7 @@
       {
         id: 'close',
         label: 'Close Tab',
+        shortcut: 'Ctrl+W',
         action: () => { handleTabClose(tabId); }
       },
       {
@@ -333,11 +365,13 @@
       {
         id: 'new_text_file',
         label: 'New Text File',
+        shortcut: 'Ctrl+N',
         action: handleNewTextFile
       },
       {
         id: 'open_file',
         label: 'Open File',
+        shortcut: 'Ctrl+O',
         action: handleOpenFileCtx
       },
       { separator: true },
@@ -362,7 +396,7 @@
     }
   });
   $effect(() => {
-    if (activeTab?.language === 'image' && !ImageViewerComponent) {
+    if ((activeTab?.language === 'image' || activeTab?.path.toLowerCase().endsWith('.svg')) && !ImageViewerComponent) {
       import('./lib/components/ImageViewer.svelte').then(m => ImageViewerComponent = m.default);
     }
   });
@@ -720,6 +754,12 @@
         ensurePaletteLoaded();
       }
     });
+    // Preload material icon SVGs so first renders are instant (no <img> flash)
+    idle(() => {
+      if (settingsStore.effectiveSettings.icon_theme === 'material') {
+        preloadMaterialIcons();
+      }
+    });
   }
 
   async function loadActiveTabContent() {
@@ -1073,10 +1113,60 @@
     }, 50);
   }
 
+  let chordPrefix: string | null = null;
+  let chordTimeout: number | null = null;
+
+  function clearChord() {
+    chordPrefix = null;
+    if (chordTimeout) clearTimeout(chordTimeout);
+    chordTimeout = null;
+    uiStore.setGlobalStatus(null);
+  }
+
   function handleGlobalKeydown(e: KeyboardEvent) {
     const isMac = navigator.userAgent.toLowerCase().includes('mac');
     const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
     const key = e.key.toLowerCase();
+
+    // ── CHORD LOGIC (e.g. Ctrl+K -> Ctrl+W) ──
+    if (chordPrefix === 'Ctrl+K') {
+      e.preventDefault();
+      e.stopPropagation();
+      if ((cmdOrCtrl && key === 'w') || key === 'w') {
+        const tabs = editorStore.getTabsSnapshot();
+        tabs.forEach((t: any) => handleTabClose(t.id));
+      } else if ((cmdOrCtrl && key === 'o') || key === 'o') {
+        import('@tauri-apps/plugin-dialog').then(({ open }) => {
+          open({ directory: true }).then((selected) => {
+            if (selected) {
+              const path = Array.isArray(selected) ? selected[0] : selected;
+              window.dispatchEvent(new CustomEvent('request-workspace-switch', { detail: { path } }));
+            }
+          });
+        });
+      }
+      clearChord();
+      return;
+    }
+
+    if (cmdOrCtrl && key === 'k' && !e.shiftKey) {
+      e.preventDefault();
+      chordPrefix = 'Ctrl+K';
+      uiStore.setGlobalStatus("Ctrl+K was pressed. Waiting for second key of chord...");
+      chordTimeout = setTimeout(() => {
+        clearChord();
+      }, 3000) as unknown as number;
+      return;
+    }
+
+    // Close Tab (Ctrl+W / Ctrl+F4)
+    if ((cmdOrCtrl && key === 'w') || e.key === 'F4') {
+      if (cmdOrCtrl && !e.shiftKey) {
+        e.preventDefault();
+        const activeTabId = editorStore.getActiveTabIdSnapshot();
+        if (activeTabId) editorStore.closeTab(activeTabId);
+      }
+    }
 
     // ── BLOKIR FITUR BAWAAN BROWSER ──
     // 1. Find / Search / Sidebar panels
@@ -1355,30 +1445,10 @@
     };
   });
 
-  // Auto-save with debounce (Bagian 5.4)
-  $effect(() => {
-    if (!settingsStore.effectiveSettings.auto_save) return;
-    const modifiedTabs = $tabs.filter((t: any) => t.isModified && t.content !== null && !t.path.startsWith('Untitled'));
-    if (modifiedTabs.length === 0) return;
-
-    const timer = setTimeout(async () => {
-      for (const tab of modifiedTabs) {
-        try {
-          if (tab.content !== null && !tab.autoSavePaused) {
-            await invoke('save_file', { path: tab.path, content: tab.content });
-            editorStore.markSaved(tab.id);
-          }
-        } catch (err) {
-          console.error("Auto save failed for", tab.path, err);
-          uiStore.addToast('Auto Save Failed', 'alert', getHumanReadableError(err));
-          editorStore.pauseAutoSave(tab.id);
-        }
-      }
-      editorStore.clearSaveStatus();
-    }, settingsStore.effectiveSettings.auto_save_delay_ms || 1500);
-
-    return () => clearTimeout(timer);
-  });
+  // Auto-save is handled inside editorStore.scheduleAutoSave (triggered by
+  // updateContent), which honors the auto_save setting and auto_save_delay_ms.
+  // Keeping it in one place avoids double-saving and makes the unsaved dot
+  // clear at the configured delay.
 
   // Memory management: enforce tab suspension periodically (Bagian 8.2)
   $effect(() => {
@@ -1404,14 +1474,26 @@
   });
 
   // Global event listeners
+  function handleGlobalMouseUp(e: MouseEvent) {
+    if (e.button === 3) { // Mouse Back
+      e.preventDefault();
+      import('./lib/stores/navigation').then(m => m.navigationStore.navigateBack());
+    } else if (e.button === 4) { // Mouse Forward
+      e.preventDefault();
+      import('./lib/stores/navigation').then(m => m.navigationStore.navigateForward());
+    }
+  }
+
   $effect(() => {
     window.addEventListener('keydown', handleGlobalKeydown);
+    window.addEventListener('mouseup', handleGlobalMouseUp);
     const preventCM = (e: MouseEvent) => e.preventDefault();
     window.addEventListener('contextmenu', preventCM);
     const openCmd = () => openCommandPalette('>');
     window.addEventListener('open-command-palette', openCmd);
     return () => {
       window.removeEventListener('keydown', handleGlobalKeydown);
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
       window.removeEventListener('contextmenu', preventCM);
       window.removeEventListener('open-command-palette', openCmd);
     };
@@ -1420,11 +1502,10 @@
 
 <div class="h-screen w-screen flex flex-col overflow-hidden bg-canvas text-primary"
   class:dark={isDark}
-  class:black={$themeStore.theme === 'black'}
 >
 
 
-  <div class="h-9 flex items-center justify-between px-2 select-none bg-surface-2 text-primary" data-tauri-drag-region>
+  <div class="h-9 flex items-center justify-between px-2 select-none bg-surface-2 text-primary border-b border-subtle" data-tauri-drag-region>
     <div class="flex items-center h-full" data-tauri-drag-region="false">
       <img src="/notron.png" alt="Notron Logo" class="w-4 h-4 ml-1 pointer-events-none" />
       <TitleMenuBar />
@@ -1486,7 +1567,7 @@
       <button
         aria-label="Close"
         onclick={() => getCurrentWindow().close()}
-        class="w-[46px] h-full flex items-center justify-center text-icon-default hover:bg-red-500 hover:text-white transition-colors"
+        class="w-[46px] h-full flex items-center justify-center text-icon-default hover:bg-[var(--color-error)] hover:text-[var(--text-inverse)] transition-colors"
       >
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
@@ -1587,7 +1668,7 @@
       <div style="width: {$ui.sidebarWidth}px" class="flex flex-col border-r z-50 relative shrink-0 border-subtle bg-surface">
         <div
           role="presentation"
-          class="absolute right-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-blue-500 active:bg-blue-500 z-50 transition-colors delay-100"
+          class="absolute right-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-[var(--accent)] active:bg-[var(--accent-active)] z-50 transition-colors delay-100"
           onmousedown={(e) => {
             e.preventDefault();
             const startX = e.clientX;
@@ -1697,13 +1778,13 @@
 
     <div class="flex flex-1 flex-col overflow-hidden bg-canvas">
       {#if $tabs.length > 0}
-        <div class="flex h-9 overflow-hidden shrink-0 bg-surface-2">
+        <div class="flex h-9 shrink-0 bg-surface-2 border-b border-subtle relative z-20">
           <div role="region" aria-label="Tabs" class="flex-1 flex overflow-x-auto scrollbar-hide" oncontextmenu={handleEmptyTabAreaContextMenu}>
             {#each $tabs as tab (tab.id)}
               <div
                 role="tab"
                 tabindex="0"
-                class="flex shrink-0 items-center gap-2 px-3 min-w-32 max-w-48 border-r cursor-pointer border-subtle"
+                class="flex shrink-0 items-center gap-2 px-3 min-w-32 max-w-48 cursor-pointer border-t border-l border-r border-subtle -ml-px first:ml-0"
                 class:bg-canvas={$activeTabId === tab.id}
                 class:text-primary={$activeTabId === tab.id}
                 class:border-t-2={$activeTabId === tab.id}
@@ -1723,8 +1804,20 @@
                     <path fill-rule="evenodd" d="M 480 260 L 475 267 L 473 273 L 473 333 L 475 340 L 481 351 L 495 365 L 508 375 L 517 384 L 522 387 L 538 402 L 678 522 L 696 536 L 729 565 L 963 761 L 972 765 L 986 765 L 998 760 L 1046 735 L 1052 731 L 1059 724 L 1063 715 L 1063 645 L 1058 629 L 1052 620 L 1041 609 L 1006 581 L 861 458 L 721 336 L 592 221 L 582 215 L 577 214 L 568 214 L 562 216 L 498 249 Z "/>
                     <path fill-rule="evenodd" d="M 1029 196 L 999 208 L 994 209 L 961 223 L 956 224 L 943 230 L 938 231 L 928 236 L 918 239 L 911 243 L 905 249 L 902 254 L 900 261 L 900 484 L 1041 601 L 1056 617 L 1061 627 L 1063 635 L 1063 217 L 1058 207 L 1051 200 L 1042 196 Z "/>
                   </svg>
+                {:else if tab.language === 'image'}
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-icon-default"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+                {:else if tab.language === 'settings'}
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-icon-default"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                {:else if tab.language === 'markdown-preview'}
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-icon-default"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
                 {:else}
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+                  {@const iconTheme = settingsStore.effectiveSettings.icon_theme}
+                  {#if iconTheme === 'default' || !iconTheme}
+                    {@const Icon = getFileIcon(tab.name)}
+                    <Icon size={14} class="shrink-0 text-icon-default" />
+                  {:else if iconTheme === 'material'}
+                    <MaterialIcon name={tab.name} size={14} />
+                  {/if}
                 {/if}
                 <span class="text-xs truncate flex-1" class:italic={tab.isPreview}>
                   {(() => {
@@ -1744,9 +1837,6 @@
                     <div class="w-2 h-2 rounded-full bg-status-warning shrink-0" title="External changes detected"></div>
                   {:else if tab.status === 'deleted'}
                     <div class="w-2 h-2 rounded-full bg-status-error shrink-0" title="File deleted"></div>
-                  {/if}
-                  {#if tab.content === null && !tab.isModified && !tab.isLargeFile}
-                    <div class="w-2 h-2 rounded-full bg-muted shrink-0 animate-pulse"></div>
                   {/if}
                 {/if}
                 {#if tab.isPinned}
@@ -1789,7 +1879,7 @@
         </div>
 
         {#if !(activeTab && (activeTab.path.startsWith('Untitled') || activeTab.language === 'settings'))}
-          <Breadcrumbs />
+          <!-- Breadcrumbs handled by @fazelstudio/codemirror-breadcrumbs in Editor -->
         {/if}
       {/if}
 
@@ -1810,6 +1900,60 @@
         {:else if activeTab}
           {#if activeTab.language === 'markdown-preview' && MarkdownPreviewComponent}
             <MarkdownPreviewComponent key={activeTab.id} path={activeTab.path} />
+          {:else if activeTab.path.toLowerCase().endsWith('.svg')}
+            {@const viewMode = activeTab.svgViewMode || settingsStore.effectiveSettings.default_svg_view || 'image'}
+            
+            {#if EditorComponent && activeTab.content !== null}
+              {#if viewMode === 'image'}
+                <EditorComponent tabId={activeTab.id} content={activeTab.content} filePath={activeTab.path} hideContent={true}>
+                  {#snippet topRightOverlay()}
+                    <SvgViewToggle {activeTab} />
+                  {/snippet}
+                  {#if ImageViewerComponent}
+                    <ImageViewerComponent key={activeTab.id} filePath={activeTab.path} />
+                  {:else}
+                    <div class="absolute inset-0 flex items-center justify-center">
+                      <div class="flex items-center gap-3">
+                        <svg class="animate-spin h-4 w-4 text-muted" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                        <span class="text-xs text-muted">Loading viewer...</span>
+                      </div>
+                    </div>
+                  {/if}
+                </EditorComponent>
+              {:else if viewMode === 'split'}
+                <div class="flex h-full w-full">
+                  <div class="flex-1 border-r border-subtle overflow-hidden relative">
+                    {#if ImageViewerComponent}
+                      <ImageViewerComponent key={activeTab.id} filePath={activeTab.path} />
+                    {:else}
+                      <div class="absolute inset-0 flex items-center justify-center">
+                        <svg class="animate-spin h-4 w-4 text-muted" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                      </div>
+                    {/if}
+                  </div>
+                  <div class="flex-1 overflow-hidden relative">
+                    <EditorComponent tabId={activeTab.id} content={activeTab.content} filePath={activeTab.path}>
+                      {#snippet topRightOverlay()}
+                        <SvgViewToggle {activeTab} />
+                      {/snippet}
+                    </EditorComponent>
+                  </div>
+                </div>
+              {:else}
+                <EditorComponent tabId={activeTab.id} content={activeTab.content} filePath={activeTab.path}>
+                  {#snippet topRightOverlay()}
+                    <SvgViewToggle {activeTab} />
+                  {/snippet}
+                </EditorComponent>
+              {/if}
+            {:else}
+               <div class="absolute inset-0 flex items-center justify-center">
+                 <div class="flex items-center gap-3">
+                   <svg class="animate-spin h-4 w-4 text-muted" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                   <span class="text-xs text-muted">Loading editor...</span>
+                 </div>
+               </div>
+            {/if}
           {:else if activeTab.language === 'image' && ImageViewerComponent}
             <ImageViewerComponent key={activeTab.id} filePath={activeTab.path} />
           {:else if activeTab.language === 'welcome'}
@@ -1817,19 +1961,19 @@
           {:else if activeTab.language === 'settings' && SettingsPageComponent}
             <SettingsPageComponent />
           {:else if activeTab.isLoading}
-            <div class="absolute inset-0 flex items-center justify-center">
-              <div class="flex items-center gap-3">
-                <svg class="animate-spin h-4 w-4 text-muted" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                <span class="text-xs text-muted">Loading...</span>
-              </div>
-            </div>
+            <!-- Content not ready yet: keep the editor area empty instead of
+                 showing a spinner / partial editor, then everything (content +
+                 minimap) appears together once loaded. -->
+            <div class="absolute inset-0 bg-canvas"></div>
           {:else if activeTab.isUnsupported}
             <div class="absolute inset-0 flex flex-col items-center justify-center gap-3 text-muted bg-canvas select-none">
               <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
               <span class="text-sm">The file is not displayed in the editor because it is either binary or uses an unsupported text encoding.</span>
             </div>
           {:else if activeTab.content === null && !activeTab.isDiff}
-            <div class="absolute inset-0 flex items-center justify-center text-xs text-muted">Suspended — click to reload</div>
+            <!-- Suspended (content not in memory): keep it blank — the tab will
+                 reload on next activation. -->
+            <div class="absolute inset-0 bg-canvas"></div>
           {:else if activeTab.isDiff && DiffEditorComponent}
             <DiffEditorComponent originalContent={activeTab.diffOriginalContent} currentContent={activeTab.content} filePath={activeTab.path} />
           {:else if !activeTab.isDiff && EditorComponent}
@@ -1851,16 +1995,17 @@
 
   <div class="h-6 flex items-center justify-between px-3 text-xs select-none border-t bg-surface-2 text-primary border-subtle">
     <div class="flex items-center gap-4 relative min-w-[200px]">
-      {#if $ui.globalStatus}
-        <span class="animate-in fade-in duration-200" title={$ui.globalStatus}>
-          {$ui.globalStatus.length > 40 ? $ui.globalStatus.slice(0, 40) + '...' : $ui.globalStatus}
-        </span>
-      {:else if $saveStatus}
+      {#if $saveStatus}
         <span class="text-muted animate-in fade-in duration-200">{$saveStatus}</span>
       {:else}
         <span class="animate-in fade-in duration-200">Ready</span>
       {/if}
       {#if activeTab}<span>{activeTab.language}</span>{/if}
+      {#if $ui.globalStatus}
+        <span class="animate-in fade-in duration-200" title={$ui.globalStatus}>
+          {$ui.globalStatus.length > 40 ? $ui.globalStatus.slice(0, 40) + '...' : $ui.globalStatus}
+        </span>
+      {/if}
     </div>
     <div class="flex items-center gap-4">
       <span>{currentCursorPos}</span>

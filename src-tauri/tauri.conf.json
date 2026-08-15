@@ -18,6 +18,7 @@
         "minWidth": 600,
         "minHeight": 400,
         "maximized": false,
+        "center": true,
         "decorations": false,
         "visible": false,
         "backgroundColor": "#1e1e1e"

@@ -3,8 +3,7 @@
   import Select from './Select.svelte';
   import { settingsStore } from '../stores/settings.svelte';
   import { themeStore } from '../stores/theme';
-
-
+  import { THEMES } from '../themes';
   let { isOpen, onClose }: { isOpen: boolean; onClose: () => void } = $props();
 
   let activeSection = $state('appearance');
@@ -156,7 +155,10 @@
               </div>
               <Select id="theme"
                 class="w-44"
-                options={[{value: 'light', label: 'Light'}, {value: 'dark', label: 'Dark'}, {value: 'black', label: 'Black'}, {value: 'system', label: 'System Default'}]}
+                options={[
+                  {value: 'system', label: 'System Default'},
+                  ...Object.entries(THEMES).map(([k, v]) => ({ value: k, label: v.label }))
+                ]}
                 value={settingsStore.effectiveSettings.theme}
                 onchange={(v) => handleSave('theme', v)}
               />
@@ -192,9 +194,22 @@
               </div>
               <Select id="iconTheme"
                 class="w-44"
-                options={[{value: 'off', label: 'Disable'}, {value: 'default', label: 'Enable'}]}
+                options={[{value: 'off', label: 'None'}, {value: 'default', label: 'Default'}, {value: 'material', label: 'Material'}]}
                 value={settingsStore.effectiveSettings.icon_theme || 'default'}
                 onchange={(v) => handleSave('icon_theme', v)}
+              />
+            </div>
+
+            <div id="setting-discordPresence" class="flex items-center justify-between py-2">
+              <div>
+                <label for="discordPresence" class="font-medium text-primary block">Discord Presence</label>
+                <p class="text-xs text-muted mt-0.5">Show your coding activity on your Discord profile.</p>
+              </div>
+              <Select id="discordPresence"
+                class="w-44"
+                options={[{value: 'true', label: 'Enable'}, {value: 'false', label: 'Disable'}]}
+                value={settingsStore.effectiveSettings.discord_presence ? 'true' : 'false'}
+                onchange={(v) => handleSave('discord_presence', v === 'true')}
               />
             </div>
           {/if}
@@ -227,7 +242,7 @@
                 aria-label="Toggle Word Wrap"
                 aria-checked={settingsStore.effectiveSettings.word_wrap}
                 onclick={() => handleSave('word_wrap', !settingsStore.effectiveSettings.word_wrap)}
-                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {settingsStore.effectiveSettings.word_wrap ? 'bg-blue-600' : 'bg-surface-2 border border-subtle'}"
+                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {settingsStore.effectiveSettings.word_wrap ? 'bg-accent' : 'bg-surface-2 border border-subtle'}"
               >
                 <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform {settingsStore.effectiveSettings.word_wrap ? 'translate-x-4' : 'translate-x-0.5'}"></span>
               </button>
@@ -244,7 +259,7 @@
                 aria-label="Toggle Line Numbers"
                 aria-checked={settingsStore.effectiveSettings.line_numbers}
                 onclick={() => handleSave('line_numbers', !settingsStore.effectiveSettings.line_numbers)}
-                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {settingsStore.effectiveSettings.line_numbers ? 'bg-blue-600' : 'bg-surface-2 border border-subtle'}"
+                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {settingsStore.effectiveSettings.line_numbers ? 'bg-accent' : 'bg-surface-2 border border-subtle'}"
               >
                 <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform {settingsStore.effectiveSettings.line_numbers ? 'translate-x-4' : 'translate-x-0.5'}"></span>
               </button>
@@ -268,7 +283,7 @@
                 aria-label="Toggle Auto Save"
                 aria-checked={settingsStore.effectiveSettings.auto_save}
                 onclick={() => handleSave('auto_save', !settingsStore.effectiveSettings.auto_save)}
-                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {settingsStore.effectiveSettings.auto_save ? 'bg-blue-600' : 'bg-surface-2 border border-subtle'}"
+                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {settingsStore.effectiveSettings.auto_save ? 'bg-accent' : 'bg-surface-2 border border-subtle'}"
               >
                 <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform {settingsStore.effectiveSettings.auto_save ? 'translate-x-4' : 'translate-x-0.5'}"></span>
               </button>

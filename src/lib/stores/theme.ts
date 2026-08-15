@@ -11,16 +11,20 @@ function getSystemTheme(): boolean {
 function loadTheme(): string {
   if (typeof window === 'undefined') return 'system';
   try {
-    return localStorage.getItem(THEME_KEY) || 'system';
+    const t = localStorage.getItem(THEME_KEY) || 'system';
+    if (t === 'light') return 'vscode-light';
+    if (t === 'dark') return 'vscode-dark';
+    return t;
   } catch {
     return 'system';
   }
 }
 
 function computeIsDark(theme: string): boolean {
-  if (theme === 'dark' || theme === 'black') return true;
+  if (theme === 'system') return getSystemTheme();
   if (theme === 'light') return false;
-  return getSystemTheme();
+  if (theme === 'dark' || theme === 'hc-dark') return true;
+  return theme.includes('dark') || ['dracula', 'darcula', 'tokyo-night', 'tokyo-night-storm', 'nord', 'bespin', 'okaidia', 'aura', 'sublime', 'atomone', 'androidstudio', 'abcdef'].includes(theme);
 }
 
 let themeState = { theme: loadTheme(), isDark: computeIsDark(loadTheme()) };
@@ -35,8 +39,10 @@ function createThemeStore(): Readable<{ theme: string; isDark: boolean }> & { se
     try {
       if (typeof window !== 'undefined') {
         localStorage.setItem(THEME_KEY, theme);
-        document.documentElement.classList.toggle('dark', isDark);
-        document.documentElement.classList.toggle('black', theme === 'black');
+        const html = document.documentElement;
+        html.classList.toggle('dark', isDark);
+        html.classList.toggle('hc-dark', theme === 'hc-dark');
+        html.classList.toggle('hc-light', theme === 'hc-light');
       }
     } catch {
       // storage unavailable

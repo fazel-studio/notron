@@ -1,14 +1,14 @@
 // ── Module F, §F.6 — Entry Point Resolution Engine ─────────────────────────
 //
 // Implements modules/06-Notron-Module-RunAndDebug_V2.md §F.6. This engine
-// answers "what should Run and Debug launch?" without a hand-written launch.json.
+// answers "what should Run launch?" without a hand-written launch.json.
 //
 //   §F.6.1 — Strict signal hierarchy, never a hardcoded 1-2 favorite filenames:
 //            1. explicit config (launch.json / manual pick)  → handled by caller
 //            2. project manifest (package.json / pyproject.toml)
 //            3. framework-aware override
 //            4. generic filename heuristic (fallback)
-//            5. active file (only for explicit "Run/Debug Current File")
+//            5. active file (only for explicit "Run Current File")
 //    The engine returns candidates WITH a confidence tier so the caller can
 //    (a) pick the unique best entry immediately, or (b) surface a quick-pick
 //    when ≥2 equally-trusted candidates exist (§F.6.1 "never guess silently").
@@ -36,7 +36,7 @@ export type EntryTier = 'manifest' | 'framework' | 'heuristic' | 'active';
 
 export interface ResolvedEntry {
   name: string;
-  type: 'node' | 'python' | 'go' | 'ruby';
+  type: 'node' | 'python' | 'go' | 'ruby' | 'rust' | 'deno';
   program: string;
   cwd: string;
   source: string;
@@ -224,6 +224,18 @@ function detectNodeFramework(pkg: Pkg): ResolvedEntry | null {
   }
   if (deps.vite || deps['@vitejs/plugin-react']) {
     return { name: 'Vite (dev)', type: 'node', program: '', cwd: '', source: 'package.json#vite', tier: 'framework', framework: 'vite', command: 'vite' };
+  }
+  if (deps['@sveltejs/kit']) {
+    return { name: 'SvelteKit (dev)', type: 'node', program: '', cwd: '', source: 'package.json#@sveltejs/kit', tier: 'framework', framework: 'sveltekit', command: 'vite dev' };
+  }
+  if (deps.nuxt || deps['@nuxt/kit']) {
+    return { name: 'Nuxt (dev)', type: 'node', program: '', cwd: '', source: 'package.json#nuxt', tier: 'framework', framework: 'nuxt', command: 'nuxt dev' };
+  }
+  if (deps.gatsby) {
+    return { name: 'Gatsby (develop)', type: 'node', program: '', cwd: '', source: 'package.json#gatsby', tier: 'framework', framework: 'gatsby', command: 'gatsby develop' };
+  }
+  if (deps['react-scripts'] && deps.react) {
+    return { name: 'React (CRA start)', type: 'node', program: '', cwd: '', source: 'package.json#react-scripts', tier: 'framework', framework: 'cra', command: 'npm start' };
   }
   return null;
 }
@@ -550,9 +562,76 @@ async function resolveGoRuby(root: string): Promise<ResolvedEntry[]> {
   return dedupe(out);
 }
 
+// ── Rust (Cargo) & Deno (§F.6 extension) ────────────────────────────────────
+
+/** JSON parse with trailing-comma + comment tolerance (deno.jsonc). */
+function parseJsonLoose(raw: string): any {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // fallthrough
+  }
+  const noComments = raw
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+  try {
+    return JSON.parse(noComments.replace(/,\s*([}\]])/g, '$1'));
+  } catch {
+    return null;
+  }
+}
+
+/** Cargo workspace → `cargo run` (root package). */
+async function resolveRust(root: string): Promise<ResolvedEntry[]> {
+  if (!(await fileExists(joinPath(root, 'Cargo.toml')))) return [];
+  return [{
+    name: 'Cargo (cargo run)',
+    type: 'rust',
+    program: '',
+    cwd: root,
+    source: 'Cargo.toml',
+    tier: 'manifest',
+    command: 'cargo run',
+  }];
+}
+
+/** Deno project → `deno run <entry>` (deno.json / deno.jsonc / deno.lock). */
+async function resolveDeno(root: string): Promise<ResolvedEntry[]> {
+  const hasManifest = (await fileExists(joinPath(root, 'deno.json')))
+    || (await fileExists(joinPath(root, 'deno.jsonc')))
+    || (await fileExists(joinPath(root, 'deno.lock')));
+  if (!hasManifest) return [];
+
+  const raw = (await readText(joinPath(root, 'deno.json')))
+    || (await readText(joinPath(root, 'deno.jsonc')));
+  let main: string | null = null;
+  if (raw) {
+    const parsed = parseJsonLoose(raw);
+    if (parsed && typeof parsed.main === 'string') main = parsed.main;
+  }
+  if (!main) {
+    for (const rel of ['main.ts', 'main.js', 'mod.ts', 'src/main.ts']) {
+      const p = joinPath(root, ...rel.split('/'));
+      if (await fileExists(p)) {
+        main = p;
+        break;
+      }
+    }
+  }
+  if (!main) return [];
+  return [{
+    name: 'Deno (main)',
+    type: 'deno',
+    program: main,
+    cwd: root,
+    source: 'deno.json',
+    tier: 'manifest',
+  }];
+}
+
 async function resolutionSignature(root: string): Promise<string> {
   const parts: string[] = [];
-  for (const f of ['package.json', 'pyproject.toml', 'manage.py', 'requirements.txt', '.env', 'go.mod', 'Gemfile']) {
+  for (const f of ['package.json', 'pyproject.toml', 'manage.py', 'requirements.txt', '.env', 'go.mod', 'Gemfile', 'Cargo.toml', 'deno.json', 'deno.jsonc', 'deno.lock']) {
     const p = joinPath(root, f);
     if (await fileExists(p)) parts.push(`${f}:${await manifestMtime(p)}`);
   }
@@ -577,11 +656,17 @@ export async function resolveEntries(root: string, activeDir?: string): Promise<
   const hasPackage = await fileExists(joinPath(root, 'package.json'));
   const hasPyToml = await fileExists(joinPath(root, 'pyproject.toml'));
   const hasRequirements = await fileExists(joinPath(root, 'requirements.txt'));
+  const hasCargo = await fileExists(joinPath(root, 'Cargo.toml'));
+  const hasDeno = await fileExists(joinPath(root, 'deno.json'))
+    || await fileExists(joinPath(root, 'deno.jsonc'))
+    || await fileExists(joinPath(root, 'deno.lock'));
 
   const results: ResolvedEntry[] = [];
   if (hasPackage) results.push(...await resolveNode(root, activeDir));
   if (hasPyToml || hasRequirements) results.push(...await resolvePython(root));
   results.push(...await resolveGoRuby(root));
+  if (hasCargo) results.push(...await resolveRust(root));
+  if (hasDeno) results.push(...await resolveDeno(root));
 
   const ranked = rankEntries(dedupe(results));
   saveCache(root, sig, ranked);

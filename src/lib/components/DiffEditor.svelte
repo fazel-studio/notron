@@ -5,7 +5,7 @@
   import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
   import { MergeView } from '@codemirror/merge';
   import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from '@codemirror/language';
-  import { oneDark } from '@codemirror/theme-one-dark';
+  import { getThemeExtension } from '../themes';
   import { closeBrackets } from '@codemirror/autocomplete';
 
   const basicExtensions = [
@@ -38,7 +38,9 @@
     ".cm-scroller": { overflow: "auto !important", overscrollBehaviorX: "none !important" },
     ".cm-mergeView": { overflow: "hidden", height: "100%", width: "100%", display: "flex", flexDirection: "column" },
     ".cm-mergeViewEditors": { flex: "1 1 auto", display: "flex", height: "100%", overflow: "hidden" },
-    ".cm-mergeViewEditor": { flex: "1 1 50%", overflow: "hidden", display: "flex", flexDirection: "column" }
+    ".cm-mergeViewEditor": { flex: "1 1 50%", overflow: "hidden", display: "flex", flexDirection: "column" },
+    ".cm-panels": { zIndex: "10 !important" },
+    ".cm-panels-top": { zIndex: "10 !important" }
   });
 
   async function loadLanguage() {
@@ -49,7 +51,7 @@
   onMount(async () => {
     const langExt = await loadLanguage();
     
-    let themeExt = isDark || $themeStore.theme === 'black' ? oneDark : [];
+    let themeExt = getThemeExtension($themeStore.theme, isDark);
     
     const extensions = [
       ...basicExtensions,

@@ -13,8 +13,7 @@ import {
 import { get } from 'svelte/store';
 
 // ── Run service ─────────────────────────────────────────────────────────────
-// Runs a launch configuration in the integrated terminal (PTY). There is no
-// DAP adapter anymore — Notron runs programs, not debuggers.
+// Runs a launch configuration in the integrated terminal (PTY).
 
 function getWorkspaceRoot() {
   return uiStore.getSnapshot().explorerRoot || '';
@@ -127,7 +126,7 @@ function resolveConfiguration(config: RunConfiguration, workspaceFolder: string,
 
 async function openEditorTab(path: string) {
   const name = basename(path);
-  const isImage = /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(name);
+  const isImage = /\.(png|jpe?g|gif|webp|ico)$/i.test(name);
 
   if (isImage) {
     editorStore.addTab({ id: path, path, name, content: '', language: 'image', isPreview: false });
@@ -254,6 +253,26 @@ async function detectConfigurations(workspaceFolder: string, activeFile: string 
       currentFileConfigs.push({
         name: 'Python: Current File',
         type: 'python',
+        request: 'launch',
+        program: activeFile,
+        cwd: dirname(activeFile),
+        source: 'detected',
+        detectedTier: 'active'
+      });
+    } else if (lower.endsWith('.go')) {
+      currentFileConfigs.push({
+        name: 'Go: Current File',
+        type: 'go',
+        request: 'launch',
+        program: activeFile,
+        cwd: dirname(activeFile),
+        source: 'detected',
+        detectedTier: 'active'
+      });
+    } else if (lower.endsWith('.rb')) {
+      currentFileConfigs.push({
+        name: 'Ruby: Current File',
+        type: 'ruby',
         request: 'launch',
         program: activeFile,
         cwd: dirname(activeFile),
@@ -456,6 +475,27 @@ function buildTerminalCommand(config: RunConfiguration) {
       cwd: resolved.cwd || workspaceFolder,
       label: resolved.name,
       command: [executable, resolved.program, ...(resolved.args || [])].map(quoteShellArg).join(' ')
+    };
+  }
+
+  // Rust/Cargo: `cargo run` (root package)
+  if (resolved.type === 'rust') {
+    return {
+      cwd: resolved.cwd || workspaceFolder,
+      label: resolved.name,
+      command: ['cargo', 'run', ...(resolved.args || [])].map(quoteShellArg).join(' ')
+    };
+  }
+
+  // Deno: `deno run <file>`
+  if (resolved.type === 'deno') {
+    if (!resolved.program) {
+      return { unsupported: `Configuration "${resolved.name}" does not define a program.` };
+    }
+    return {
+      cwd: resolved.cwd || workspaceFolder,
+      label: resolved.name,
+      command: ['deno', 'run', resolved.program, ...(resolved.args || [])].map(quoteShellArg).join(' ')
     };
   }
 

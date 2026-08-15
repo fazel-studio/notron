@@ -20,6 +20,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Removed the **Debug** feature (DAP) entirely — Rust module `debug_adapter.rs`, `debug_*` commands, the bundled `resources/js-debug` assets, `debug.ts` store, `debugExtensions.ts` editor extensions, `DebugPanel.svelte`, and the `dapClient.ts` client.
 - Kept only the **Run** feature: `run.ts` store, `runService.ts` service, and `RunPanel.svelte` (runs a configuration in the integrated terminal).
 
+### Added
+- **Rust/Cargo** support in the entry point resolver — a `Cargo.toml` workspace resolves to `cargo run`.
+- **Deno** support — `deno.json` / `deno.jsonc` / `deno.lock` projects resolve to `deno run <entry>`.
+- New Node.js framework detection: SvelteKit (`vite dev`), Nuxt (`nuxt dev`), Gatsby (`gatsby develop`), and Create React App (`npm start`).
+- **Go** and **Ruby** "Run Current File" fallbacks for the active file.
+- `RunPanel` now uses the shared `DropdownMenu` component for the configuration selector (full-width trigger).
+
+### Changed
+- Removed the collapsible "RUN >" section — `RunPanel` now shows a static "RUN" header with the controls always visible.
+- Cleaned up remaining "Run and Debug" wording in `entryPointResolver.ts` and `runService.ts` comments.
+
 ## [0.1.0] — 2026-08-13
 
 ### Changed

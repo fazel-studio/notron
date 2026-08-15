@@ -20,17 +20,19 @@
       out:fade={{ duration: 200 }}
       class="pointer-events-auto rounded-md shadow-lg border border-subtle bg-surface-2 p-3 relative flex flex-col transition-all"
     >
-      <button 
-        class="absolute top-2 right-2 text-icon-default hover:text-icon-active" 
-        onclick={() => uiStore.removeToast(toast.id)}
-        aria-label="Close"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
+      {#if toast.type !== 'process'}
+        <button 
+          class="absolute top-2 right-2 text-icon-default hover:text-icon-active" 
+          onclick={() => uiStore.removeToast(toast.id)}
+          aria-label="Close"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      {/if}
       
       <div class="flex items-start gap-3 mt-0.5">
         {#if toast.type === 'success'}
-          <div class="text-green-500 shrink-0 mt-0.5">
+          <div class="text-success shrink-0 mt-0.5">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
           </div>
           <div class="text-sm text-primary flex-1 break-words leading-relaxed pr-6">
@@ -39,8 +41,27 @@
               <div class="mt-1 opacity-80 text-xs">{toast.message}</div>
             {/if}
           </div>
+        {:else if toast.type === 'process'}
+          <div class="text-accent shrink-0 mt-0.5 animate-spin">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
+          </div>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-sm font-medium text-primary break-words">{toast.title}</span>
+              <button 
+                class="shrink-0 text-icon-default hover:text-icon-active" 
+                onclick={() => uiStore.removeToast(toast.id)}
+                aria-label="Hide"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            {#if toast.message}
+              <div class="mt-1 opacity-80 text-xs text-primary break-words">{toast.message}</div>
+            {/if}
+          </div>
         {:else}
-          <div class="text-red-500 shrink-0 mt-0.5">
+          <div class="text-error shrink-0 mt-0.5">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
           </div>
           <div class="flex-1 min-w-0 pr-6">

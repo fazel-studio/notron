@@ -52,7 +52,7 @@ export default defineConfig(async () => ({
       '@codemirror/lang-sql',
       '@codemirror/lang-xml',
       '@codemirror/lang-php',
-      '@codemirror/theme-one-dark',
+      '@uiw/codemirror-themes-all',
       'marked',
     ],
     // Exclude mermaid dari pre-bundle karena sudah lazy loaded
@@ -72,7 +72,7 @@ export default defineConfig(async () => ({
             '@codemirror/commands',
             '@codemirror/search',
             '@codemirror/autocomplete',
-            '@codemirror/theme-one-dark',
+            '@uiw/codemirror-themes-all',
             '@replit/codemirror-minimap',
           ],
         },

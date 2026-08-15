@@ -167,37 +167,37 @@
     {
       label: 'File', items: [
         { label: 'New Text File', action: handleNewTextFile },
-        { label: 'New File', action: () => { uiStore.openNewFileDialog('menu'); closeAll(); } },
-        { label: 'New Window', action: handleNewWindow, sep: true },
-        { label: 'Open File', action: handleOpenFile },
+        { label: 'New File', action: () => { uiStore.openNewFileDialog('menu'); closeAll(); }, shortcut: 'Ctrl+N' },
+        { label: 'New Window', action: handleNewWindow, sep: true, shortcut: 'Ctrl+Shift+N' },
+        { label: 'Open File', action: handleOpenFile, shortcut: 'Ctrl+O' },
         { label: 'Open Folder', action: handleOpenFolder },
         { label: 'Open Recent...', action: () => { uiStore.openRecentFoldersModal(); closeAll(); }, sep: true },
-        { label: 'Save', action: handleSave, disabled: isDisabled },
-        { label: 'Save As', action: handleSaveAs, disabled: isDisabled, sep: true },
+        { label: 'Save', action: handleSave, disabled: isDisabled, shortcut: 'Ctrl+S' },
+        { label: 'Save As', action: handleSaveAs, disabled: isDisabled, sep: true, shortcut: 'Ctrl+Shift+S' },
         { label: 'Exit', action: handleExit }
       ]
     },
     {
       label: 'Edit', items: [
-        { label: 'Undo', action: () => dispatchEditorAction('undo'), disabled: isDisabled },
-        { label: 'Redo', action: () => dispatchEditorAction('redo'), disabled: isDisabled, sep: true },
-        { label: 'Cut', action: () => document.execCommand('cut') },
-        { label: 'Copy', action: () => document.execCommand('copy') },
-        { label: 'Paste', action: () => document.execCommand('paste'), sep: true },
-        { label: 'Find', action: () => dispatchEditorAction('find'), disabled: isDisabled },
-        { label: 'Replace', action: () => dispatchEditorAction('replace'), disabled: isDisabled, sep: true },
-        { label: 'Reopen Closed Tab', action: () => editorStore.reopenClosedTab(), sep: true },
-        { label: 'Find in Files', action: openSearch },
-        { label: 'Replace in Files', action: openSearch }
+        { label: 'Undo', action: () => dispatchEditorAction('undo'), disabled: isDisabled, shortcut: 'Ctrl+Z' },
+        { label: 'Redo', action: () => dispatchEditorAction('redo'), disabled: isDisabled, sep: true, shortcut: 'Ctrl+Y' },
+        { label: 'Cut', action: () => document.execCommand('cut'), shortcut: 'Ctrl+X' },
+        { label: 'Copy', action: () => document.execCommand('copy'), shortcut: 'Ctrl+C' },
+        { label: 'Paste', action: () => document.execCommand('paste'), sep: true, shortcut: 'Ctrl+V' },
+        { label: 'Find', action: () => dispatchEditorAction('find'), disabled: isDisabled, shortcut: 'Ctrl+F' },
+        { label: 'Replace', action: () => dispatchEditorAction('replace'), disabled: isDisabled, sep: true, shortcut: 'Ctrl+H' },
+        { label: 'Reopen Closed Tab', action: () => editorStore.reopenClosedTab(), sep: true, shortcut: 'Ctrl+Shift+T' },
+        { label: 'Find in Files', action: openSearch, shortcut: 'Ctrl+Shift+F' },
+        { label: 'Replace in Files', action: openSearch, shortcut: 'Ctrl+Shift+H' }
       ]
     },
     {
       label: 'Selection', items: [
-        { label: 'Select All', action: () => dispatchEditorAction('selectAll'), disabled: isDisabled, sep: true },
-        { label: 'Copy Line Up', action: () => dispatchEditorAction('copyLineUp'), disabled: isDisabled },
-        { label: 'Copy Line Down', action: () => dispatchEditorAction('copyLineDown'), disabled: isDisabled },
-        { label: 'Move Line Up', action: () => dispatchEditorAction('moveLineUp'), disabled: isDisabled },
-        { label: 'Move Line Down', action: () => dispatchEditorAction('moveLineDown'), disabled: isDisabled, sep: true },
+        { label: 'Select All', action: () => dispatchEditorAction('selectAll'), disabled: isDisabled, sep: true, shortcut: 'Ctrl+A' },
+        { label: 'Copy Line Up', action: () => dispatchEditorAction('copyLineUp'), disabled: isDisabled, shortcut: 'Shift+Alt+Up' },
+        { label: 'Copy Line Down', action: () => dispatchEditorAction('copyLineDown'), disabled: isDisabled, shortcut: 'Shift+Alt+Down' },
+        { label: 'Move Line Up', action: () => dispatchEditorAction('moveLineUp'), disabled: isDisabled, shortcut: 'Alt+Up' },
+        { label: 'Move Line Down', action: () => dispatchEditorAction('moveLineDown'), disabled: isDisabled, sep: true, shortcut: 'Alt+Down' },
         { label: 'Duplicate Selection', action: () => dispatchEditorAction('copyLineDown'), disabled: isDisabled }
       ]
     },
@@ -206,12 +206,13 @@
         { 
           label: 'Open Terminal', 
           disabled: () => $terminalStore.terminals.length === 0 || $terminalStore.isVisible,
+          shortcut: 'Ctrl+`',
           action: () => { 
             terminalStore.setVisibility(true); 
             closeAll(); 
           } 
         },
-        { label: 'New Terminal', action: () => { 
+        { label: 'New Terminal', shortcut: 'Ctrl+Shift+`', action: () => { 
             const cwd = uiStore.getSnapshot().explorerRoot || '';
             terminalStore.newTerminal('powershell', cwd); 
             closeAll(); 
@@ -221,10 +222,10 @@
     },
     {
       label: 'View', items: [
-        { label: 'Command Palette', action: () => { window.dispatchEvent(new CustomEvent('open-command-palette')); closeAll(); }, sep: true },
-        { label: 'Explorer', action: openExplorer },
-        { label: 'Search', action: openSearch },
-        { label: 'Smart Search', action: () => { window.dispatchEvent(new CustomEvent('open-smart-search')); closeAll(); }, sep: true },
+        { label: 'Command Palette', action: () => { window.dispatchEvent(new CustomEvent('open-command-palette')); closeAll(); }, sep: true, shortcut: 'Ctrl+Shift+P' },
+        { label: 'Explorer', action: openExplorer, shortcut: 'Ctrl+Shift+E' },
+        { label: 'Search', action: openSearch, shortcut: 'Ctrl+Shift+F' },
+        { label: 'Smart Search', action: () => { window.dispatchEvent(new CustomEvent('open-smart-search')); closeAll(); }, sep: true, shortcut: 'Ctrl+P' },
         { label: 'Terminal', action: () => {
             if ($terminalStore.terminals.length === 0) {
               const cwd = uiStore.getSnapshot().explorerRoot || '';
@@ -232,7 +233,7 @@
             }
             terminalStore.setActivePanel('terminal');
             closeAll();
-          }
+          }, shortcut: 'Ctrl+`'
         },
         { label: 'Problems', action: () => {
             terminalStore.setActivePanel('problems');
@@ -274,21 +275,26 @@
         <div
           role="menu"
           tabindex="0"
-          class="absolute top-full left-0 min-w-[200px] rounded border shadow-lg z-[100] py-1 bg-surface-2 border-subtle text-primary"
+          class="absolute top-full left-0 min-w-[240px] rounded border shadow-lg z-[100] py-1 bg-surface-2 border-subtle text-primary"
           onclick={(e) => { e.stopPropagation(); closeAll(); }}
           onkeydown={(e) => { if (e.key === 'Escape') closeAll(); }}
         >
           {#each menu.items as item (item.label)}
               <button
-                class="flex items-center w-full px-3 py-1.5 text-xs outline-none cursor-pointer select-none {!(item as any).disabled?.() ? 'hover:bg-selected focus:bg-selected text-secondary hover:text-primary transition-colors' : 'text-muted'}"
+                class="flex items-center justify-between w-full px-3 py-1.5 text-xs outline-none cursor-pointer select-none {!(item as any).disabled?.() ? 'hover:bg-selected focus:bg-selected text-secondary hover:text-primary transition-colors' : 'text-muted'}"
                 disabled={(item as any).disabled?.()}
                 onclick={() => { if (!((item as any).disabled?.())) { (item as any).action(); } }}
                 onmouseenter={(e) => (e.target as HTMLElement).focus()}
               >
-                <div class="w-4 mr-2 flex justify-center items-center">
-                  {#if (item as any).checked?.()}<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>{/if}
+                <div class="flex items-center">
+                  <div class="w-4 mr-2 flex justify-center items-center">
+                    {#if (item as any).checked?.()}<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>{/if}
+                  </div>
+                  {(item as any).label}
                 </div>
-                {(item as any).label}
+                {#if (item as any).shortcut}
+                  <span class="ml-4 text-[10px] text-muted opacity-80">{(item as any).shortcut}</span>
+                {/if}
               </button>
             {#if (item as any).sep}
               <div class="h-px my-1 bg-subtle"></div>

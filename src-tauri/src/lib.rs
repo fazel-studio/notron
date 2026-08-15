@@ -9,12 +9,30 @@ mod symbol_index;
 mod watcher_service;
 mod workspace_cache;
 mod git_service;
+mod discord;
 
 use serde::Serialize;
 use tauri::{Manager, Emitter};
 
+/// Logical width/height (and minimum bounds) computed from the primary
+/// monitor: new windows start at ~70% of the screen and cannot be resized
+/// below ~60%.
+fn window_geometry(app_handle: &tauri::AppHandle) -> (f64, f64, f64, f64) {
+    if let Ok(Some(monitor)) = app_handle.primary_monitor() {
+        let size = monitor.size();
+        let scale = monitor.scale_factor();
+        let w = size.width as f64 / scale;
+        let h = size.height as f64 / scale;
+        return (w * 0.7, h * 0.7, w * 0.6, h * 0.6);
+    }
+    (1200.0, 800.0, 720.0, 480.0)
+}
+
 #[tauri::command]
 fn show_main_window(window: tauri::Window) -> Result<(), String> {
+    if !window.is_maximized().unwrap_or(false) {
+        let _ = window.center();
+    }
     let _ = window.show();
     let _ = window.set_focus();
     Ok(())
@@ -27,6 +45,7 @@ async fn open_new_window(app_handle: tauri::AppHandle) -> Result<(), String> {
         .unwrap()
         .as_millis();
     let label = format!("notron-{}", timestamp);
+    let (width, height, min_width, min_height) = window_geometry(&app_handle);
     
     tauri::WebviewWindowBuilder::new(
         &app_handle,
@@ -34,9 +53,11 @@ async fn open_new_window(app_handle: tauri::AppHandle) -> Result<(), String> {
         tauri::WebviewUrl::App("/?clean=true".into())
     )
     .title("Notron")
-    .inner_size(1200.0, 800.0)
+    .inner_size(width, height)
+    .min_inner_size(min_width, min_height)
+    .center()
     .decorations(false)
-    .transparent(true)
+    .background_color(tauri::window::Color(0xff, 0x1e, 0x1e, 0x1e))
     .visible(false) // Wait for show_main_window
     .build()
     .map_err(|e| e.to_string())?;
@@ -241,19 +262,13 @@ pub fn run() {
             let critical_cfg = config::read_critical_config(app.handle());
             
             if let Some(window) = app.get_webview_window("main") {
-                if !critical_cfg.window_maximized {
-                    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                        width: critical_cfg.window_width as f64,
-                        height: critical_cfg.window_height as f64,
-                    }));
-                    if let (Some(x), Some(y)) = (critical_cfg.window_x, critical_cfg.window_y) {
-                        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
-                    }
-                }
-                
-                if critical_cfg.window_maximized {
-                    let _ = window.maximize();
-                }
+                // Main window always opens full (maximized) on its monitor.
+                let (_, _, min_width, min_height) = window_geometry(app.handle());
+                let _ = window.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize {
+                    width: min_width,
+                    height: min_height,
+                })));
+                let _ = window.maximize();
             }
 
             app.manage(config::CriticalConfigState(std::sync::Mutex::new(critical_cfg)));
@@ -282,6 +297,7 @@ pub fn run() {
                 active_searches: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             });
             app.manage(git_service::GitState::new(app.handle()));
+            app.manage(discord::DiscordState::new());
 
             // D.1 — Git detected ONCE at startup (background, non-blocking):
             // fix the macOS shell PATH first, then run the tiered detection and
@@ -415,11 +431,15 @@ pub fn run() {
             git_service::git_push,
             git_service::git_pull,
             git_service::git_fetch,
+            git_service::git_clone,
             git_service::git_cancel_op,
             git_service::get_git_file_content,
             git_service::git_file_diff,
             git_service::git_log,
             git_service::get_commit_files,
+            discord::init_discord_presence,
+            discord::set_discord_activity,
+            discord::clear_discord_presence,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

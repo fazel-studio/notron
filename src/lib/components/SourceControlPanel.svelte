@@ -1,3 +1,50 @@
+<script module lang="ts">
+  export function getGitStatusStyle(code: string): string {
+    if (code === 'A' || code === 'U' || code === 'R' || code === 'C') {
+      return 'color: var(--color-success)';
+    }
+    if (code === 'M') {
+      return 'color: var(--color-warning)';
+    }
+    if (code === 'D') {
+      return 'color: var(--color-error)';
+    }
+    if (code === 'Conflict') {
+      return 'color: var(--accent)';
+    }
+    return 'color: var(--text-muted)';
+  }
+
+  export function getGitBadgeStyle(code: string): string {
+    if (code === 'A' || code === 'U' || code === 'R' || code === 'C') {
+      return 'color: var(--color-success)';
+    }
+    if (code === 'M') {
+      return 'color: var(--color-warning)';
+    }
+    if (code === 'D') {
+      return 'color: var(--color-error)';
+    }
+    if (code === 'Conflict') {
+      return 'color: var(--accent)';
+    }
+    return 'color: var(--text-muted)';
+  }
+
+  export function getExpandedFileStatusStyle(code: string): string {
+    if (code === 'M') {
+      return 'color: var(--color-warning)';
+    }
+    if (code === 'A') {
+      return 'color: var(--color-success)';
+    }
+    if (code === 'D') {
+      return 'color: var(--color-error)';
+    }
+    return 'color: var(--text-primary)';
+  }
+</script>
+
 <script lang="ts">
   import { uiStore } from '../stores/ui';
   import { editorStore } from '../stores/editor';
@@ -7,9 +54,10 @@
   import { gitRepoStore } from '../stores/gitRepo';
   import type { GitFileStatus } from '../services/git';
   import { Plus, Minus, RefreshCw, Upload, Download, Loader2, FileText, ChevronDown, ChevronRight, GitBranch, MoreHorizontal, Target, Cloud, Undo2, Settings, X, Check, Copy } from 'lucide-svelte';
-  import Tooltip from './Tooltip.svelte';
-  import { getFileIcon } from './TreeNode.svelte';
-  import { settingsStore } from '../stores/settings.svelte';
+import Tooltip from './Tooltip.svelte';
+import { getFileIcon } from './TreeNode.svelte';
+import MaterialIcon from './MaterialIcon.svelte';
+import { settingsStore } from '../stores/settings.svelte';
 
   const ui = uiStore;
 
@@ -190,7 +238,7 @@
 
     let originalContent = '';
     if (file.status !== 'U' && file.status !== 'A') {
-      originalContent = await getGitFileContent($ui.explorerRoot, file.path, "HEAD");
+      originalContent = (await getGitFileContent($ui.explorerRoot, file.path, "HEAD")) ?? '';
     }
 
     const tabId = fullPath + "-diff";
@@ -215,14 +263,6 @@
       editorStore.setTabLoading(tabId, false);
     });
   }
-
-  const statusCodeColor = (code: string) => {
-    if (code === 'A' || code === 'U' || code === 'R' || code === 'C') return 'text-green-400';
-    if (code === 'M') return 'text-yellow-400';
-    if (code === 'D') return 'text-red-400';
-    if (code === 'Conflict') return 'text-purple-400';
-    return 'text-muted';
-  };
 
   /** Returns the badge character matching VSCode and TreeNode conventions. */
   const statusBadgeChar = (code: string) => {
@@ -250,7 +290,7 @@
     </div>
   {:else if !isGitInstalled}
     <div class="flex flex-col items-center justify-center h-full p-4 gap-3 text-center">
-      <span class="text-sm font-semibold text-red-500">Git Not Found</span>
+      <span class="text-sm font-semibold" style="color: var(--color-error)">Git Not Found</span>
       <span class="text-xs text-muted">Install Git and Notron will detect it, or set the executable path manually.</span>
 
       {#if !showManualPath}
@@ -424,7 +464,7 @@
       {/if}
 
       {#if lastError}
-        <div class="text-[10px] text-red-500 bg-red-500/10 border border-red-500/30 rounded px-2 py-1 break-words max-h-20 overflow-y-auto mt-1">
+        <div class="text-[10px] rounded px-2 py-1 break-words max-h-20 overflow-y-auto mt-1" style="color: var(--color-error); background-color: color-mix(in srgb, var(--color-error) 10%, transparent); border: 1px solid color-mix(in srgb, var(--color-error) 30%, transparent);">
           {lastError}
         </div>
       {/if}
@@ -439,17 +479,20 @@
         <div class="flex-1 overflow-y-auto">
           {#if repo.conflicted.length > 0}
             <div class="flex items-center justify-between px-3 py-1 bg-surface-2 group sticky top-0 z-10 border-b border-subtle shadow-sm">
-              <span class="text-[10px] font-semibold uppercase text-purple-400">Conflicts</span>
+              <span class="text-[10px] font-semibold uppercase" style="color: var(--accent)">Conflicts</span>
             </div>
             <div class="flex flex-col mb-2">
               {#each repo.conflicted as file}
                 {@const Icon = getFileIcon(file.path.split('/').pop() || '')}
+                {@const conflictStyle = getGitStatusStyle('Conflict')}
                 <div role="button" tabindex="0" class="flex items-center justify-between px-3 py-1 hover:bg-hover group cursor-pointer h-8" onclick={() => openFile(file)} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') openFile(file); }}>
                   <div class="flex items-center gap-2 overflow-hidden flex-1">
-                    {#if settingsStore.effectiveSettings.icon_theme !== 'off'}
-                      <Icon size={14} class="text-purple-400 shrink-0" />
+                    {#if settingsStore.effectiveSettings.icon_theme === 'default' || !settingsStore.effectiveSettings.icon_theme}
+                      <Icon size={14} class="shrink-0" style={conflictStyle} />
+                    {:else if settingsStore.effectiveSettings.icon_theme === 'material'}
+                      <MaterialIcon name={file.path.split('/').pop() || ''} size={14} />
                     {/if}
-                    <span class="text-sm truncate text-purple-400">{file.path.split('/').pop()}</span>
+                    <span class="text-sm truncate" style={conflictStyle}>{file.path.split('/').pop()}</span>
                     <span class="text-xs text-muted truncate">{file.path.split('/').slice(0, -1).join('/')}</span>
                   </div>
                   <div class="flex items-center gap-2 shrink-0">
@@ -460,7 +503,7 @@
                         </button>
                       </Tooltip>
                     </div>
-                    <span class="text-[10px] w-4 text-center shrink-0 font-bold text-purple-400">!</span>
+                    <span class="text-[10px] w-4 text-center shrink-0 font-bold" style={conflictStyle}>!</span>
                   </div>
                 </div>
               {/each}
@@ -481,12 +524,15 @@
             <div class="flex flex-col mb-2">
               {#each repo.staged as file}
                 {@const Icon = getFileIcon(file.path.split('/').pop() || '')}
+                {@const statusStyle = getGitStatusStyle(file.status)}
                 <div role="button" tabindex="0" class="flex items-center justify-between px-3 py-1 hover:bg-hover group cursor-pointer h-8" onclick={() => openFile(file)} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') openFile(file); }}>
                   <div class="flex items-center gap-2 overflow-hidden flex-1">
-                    {#if settingsStore.effectiveSettings.icon_theme !== 'off'}
-                      <Icon size={14} class="{statusCodeColor(file.status)} shrink-0" />
+                    {#if settingsStore.effectiveSettings.icon_theme === 'default' || !settingsStore.effectiveSettings.icon_theme}
+                      <Icon size={14} class="shrink-0" style={statusStyle} />
+                    {:else if settingsStore.effectiveSettings.icon_theme === 'material'}
+                      <MaterialIcon name={file.path.split('/').pop() || ''} size={14} />
                     {/if}
-                    <span class="text-sm truncate {statusCodeColor(file.status)}">{file.path.split('/').pop()}</span>
+                    <span class="text-sm truncate" style={statusStyle}>{file.path.split('/').pop()}</span>
                     <span class="text-xs text-muted truncate">{file.path.split('/').slice(0, -1).join('/')}</span>
                   </div>
                   <div class="flex items-center gap-2 shrink-0">
@@ -502,7 +548,7 @@
                         </button>
                       </Tooltip>
                     </div>
-                    <span class="text-[10px] w-4 text-center shrink-0 font-bold {statusCodeColor(file.status)}">{statusBadgeChar(file.status)}</span>
+                    <span class="text-[10px] w-4 text-center shrink-0 font-bold" style={statusStyle}>{statusBadgeChar(file.status)}</span>
                   </div>
                 </div>
               {/each}
@@ -523,12 +569,15 @@
             <div class="flex flex-col">
               {#each repo.unstaged as file}
                 {@const Icon = getFileIcon(file.path.split('/').pop() || '')}
+                {@const statusStyle = getGitStatusStyle(file.status)}
                 <div role="button" tabindex="0" class="flex items-center justify-between px-3 py-1 hover:bg-hover group cursor-pointer h-8" onclick={() => openFile(file)} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') openFile(file); }}>
                   <div class="flex items-center gap-2 overflow-hidden flex-1">
-                    {#if settingsStore.effectiveSettings.icon_theme !== 'off'}
-                      <Icon size={14} class="{statusCodeColor(file.status)} shrink-0" />
+                    {#if settingsStore.effectiveSettings.icon_theme === 'default' || !settingsStore.effectiveSettings.icon_theme}
+                      <Icon size={14} class="shrink-0" style={statusStyle} />
+                    {:else if settingsStore.effectiveSettings.icon_theme === 'material'}
+                      <MaterialIcon name={file.path.split('/').pop() || ''} size={14} />
                     {/if}
-                    <span class="text-sm truncate {statusCodeColor(file.status)}">{file.path.split('/').pop()}</span>
+                    <span class="text-sm truncate" style={statusStyle}>{file.path.split('/').pop()}</span>
                     <span class="text-xs text-muted truncate">{file.path.split('/').slice(0, -1).join('/')}</span>
                   </div>
                   <div class="flex items-center gap-2 shrink-0">
@@ -544,12 +593,12 @@
                         </button>
                       </Tooltip>
                       <Tooltip content="Discard Changes">
-                        <button onclick={(e) => { e.stopPropagation(); handleDiscard(file); }} class="p-1 rounded hover:bg-hover text-icon-default hover:text-red-500">
+                        <button onclick={(e) => { e.stopPropagation(); handleDiscard(file); }} class="p-1 rounded hover:bg-hover text-icon-default hover:text-[var(--color-error)]">
                           <Undo2 class="w-3.5 h-3.5" />
                         </button>
                       </Tooltip>
                     </div>
-                    <span class="text-[10px] w-4 text-center shrink-0 font-bold {statusCodeColor(file.status)}">{statusBadgeChar(file.status)}</span>
+                    <span class="text-[10px] w-4 text-center shrink-0 font-bold" style={statusStyle}>{statusBadgeChar(file.status)}</span>
                   </div>
                 </div>
               {/each}
@@ -558,12 +607,15 @@
                 <div class="px-3 py-1 text-[10px] font-semibold uppercase text-secondary bg-surface-2/50 mt-1">Untracked</div>
                 {#each repo.untracked as file}
                   {@const Icon = getFileIcon(file.path.split('/').pop() || '')}
+                  {@const untrackedStyle = getGitStatusStyle('U')}
                   <div role="button" tabindex="0" class="flex items-center justify-between px-3 py-1 hover:bg-hover group cursor-pointer h-8" onclick={() => openFile(file)} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') openFile(file); }}>
                     <div class="flex items-center gap-2 overflow-hidden flex-1">
-                      {#if settingsStore.effectiveSettings.icon_theme !== 'off'}
-                        <Icon size={14} class="text-green-400 shrink-0" />
+                      {#if settingsStore.effectiveSettings.icon_theme === 'default' || !settingsStore.effectiveSettings.icon_theme}
+                        <Icon size={14} class="shrink-0" style={untrackedStyle} />
+                      {:else if settingsStore.effectiveSettings.icon_theme === 'material'}
+                        <MaterialIcon name={file.path.split('/').pop() || ''} size={14} />
                       {/if}
-                      <span class="text-sm truncate text-green-400">{file.path.split('/').pop()}</span>
+                      <span class="text-sm truncate" style={untrackedStyle}>{file.path.split('/').pop()}</span>
                       <span class="text-xs text-muted truncate">{file.path.split('/').slice(0, -1).join('/')}</span>
                     </div>
                     <div class="flex items-center gap-2 shrink-0">
@@ -574,7 +626,7 @@
                           </button>
                         </Tooltip>
                       </div>
-                      <span class="text-[10px] w-4 text-center shrink-0 font-bold text-green-400">U</span>
+                      <span class="text-[10px] w-4 text-center shrink-0 font-bold" style={untrackedStyle}>U</span>
                     </div>
                   </div>
                 {/each}
@@ -642,7 +694,7 @@
             </Tooltip>
             {#if syncing}
               <Tooltip content="Cancel">
-                <button onclick={handleCancelSync} class="p-1 rounded hover:bg-hover text-red-500">
+                <button onclick={handleCancelSync} class="p-1 rounded hover:bg-hover" style="color: var(--color-error)">
                   <X class="w-3.5 h-3.5" />
                 </button>
               </Tooltip>
@@ -749,11 +801,11 @@
                         <div class="ml-2 flex items-center gap-1 shrink-0">
                           {#each commit.refs.split(', ') as ref}
                             {#if ref.includes('origin/')}
-                              <span class="flex items-center gap-0.5 text-[9px] border border-purple-500/50 text-purple-400 bg-purple-500/10 rounded-full px-1.5 py-0.5 whitespace-nowrap"><Cloud class="w-2.5 h-2.5" /> {ref.replace('origin/', '')}</span>
+                              <span class="flex items-center gap-0.5 text-[9px] rounded-full px-1.5 py-0.5 whitespace-nowrap" style="border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); color: var(--accent); background-color: color-mix(in srgb, var(--accent) 10%, transparent);"><Cloud class="w-2.5 h-2.5" /> {ref.replace('origin/', '')}</span>
                             {:else if ref.includes('HEAD')}
-                              <span class="flex items-center gap-0.5 text-[9px] border border-accent/50 text-accent bg-accent/10 rounded-full px-1.5 py-0.5 whitespace-nowrap"><Target class="w-2.5 h-2.5" /> {ref}</span>
+                              <span class="flex items-center gap-0.5 text-[9px] rounded-full px-1.5 py-0.5 whitespace-nowrap" style="border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); color: var(--accent); background-color: color-mix(in srgb, var(--accent) 10%, transparent);"><Target class="w-2.5 h-2.5" /> {ref}</span>
                             {:else}
-                              <span class="flex items-center gap-0.5 text-[9px] border border-green-500/50 text-green-400 bg-green-500/10 rounded-full px-1.5 py-0.5 whitespace-nowrap"><GitBranch class="w-2.5 h-2.5" /> {ref}</span>
+                              <span class="flex items-center gap-0.5 text-[9px] rounded-full px-1.5 py-0.5 whitespace-nowrap" style="border: 1px solid color-mix(in srgb, var(--color-success) 50%, transparent); color: var(--color-success); background-color: color-mix(in srgb, var(--color-success) 10%, transparent);"><GitBranch class="w-2.5 h-2.5" /> {ref}</span>
                             {/if}
                           {/each}
                         </div>
@@ -800,7 +852,7 @@
                             <span class="text-xs truncate text-primary">{file.path.split('/').pop()}</span>
                             <span class="text-[10px] text-muted truncate">{file.path.split('/').slice(0, -1).join('/')}</span>
                           </div>
-                          <span class="text-[10px] font-mono font-bold shrink-0 ml-2 {file.status === 'M' ? 'text-yellow-500' : file.status === 'A' ? 'text-green-500' : file.status === 'D' ? 'text-red-500' : 'text-primary'}">
+                          <span class="text-[10px] font-mono font-bold shrink-0 ml-2" style={getExpandedFileStatusStyle(file.status)}>
                             {file.status}
                           </span>
                         </div>

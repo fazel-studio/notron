@@ -9,9 +9,56 @@
     toml: Settings, yaml: Settings, yml: Settings,
   };
 
+  import { getMaterialIcon, getMaterialFolderIcon } from '../utils/materialIconMap';
+  export { getMaterialIcon, getMaterialFolderIcon };
+
   export function getFileIcon(name: string) {
     const ext = name.split('.').pop()?.toLowerCase() ?? '';
     return ICON_MAP[ext] ?? File;
+  }
+
+  export function getGitStatusStyle(code: string | undefined): string {
+    if (!code) return '';
+    if (code === 'U' || code === 'A' || code === 'R' || code === 'C') {
+      return 'color: var(--color-success)';
+    }
+    if (code === 'M') {
+      return 'color: var(--color-warning)';
+    }
+    if (code === 'D') {
+      return 'color: var(--color-error)';
+    }
+    if (code === 'Conflict') {
+      return 'color: var(--accent)';
+    }
+    return 'color: var(--text-muted)';
+  }
+
+  export function getGitBadgeStyle(code: string | undefined, isRollup = false): string {
+    if (!code) return '';
+    if (code === 'U' || code === 'A' || code === 'R' || code === 'C') {
+      return isRollup
+        ? 'border-color: var(--color-success); color: var(--color-success)'
+        : 'color: var(--color-success)';
+    }
+    if (code === 'M') {
+      return isRollup
+        ? 'border-color: var(--color-warning); color: var(--color-warning)'
+        : 'color: var(--color-warning)';
+    }
+    if (code === 'D') {
+      return isRollup
+        ? 'border-color: var(--color-error); color: var(--color-error)'
+        : 'color: var(--color-error)';
+    }
+    if (code === 'Conflict') {
+      return isRollup
+        ? 'border-color: var(--accent); color: var(--accent)'
+        : 'color: var(--accent)';
+    }
+    return isRollup
+      ? 'border-color: var(--border-subtle); color: var(--text-muted)'
+      : 'color: var(--text-muted)';
   }
 </script>
 
@@ -20,11 +67,14 @@
   import { Folder, FolderOpen, ChevronRight, ChevronDown, Loader2, Dot } from 'lucide-svelte';
   import { settingsStore } from '../stores/settings.svelte';
   import { gitDecorationStore } from '../stores/gitDecoration';
+  import MaterialIcon from './MaterialIcon.svelte';
 
   let { 
     node, 
     isSelected,
     isActive,
+    activeFolderPath,
+    activeFolderDepth,
     isFaded,
     isDropTarget,
     isDropInvalid,
@@ -39,6 +89,8 @@
     node: FlatTreeNode;
     isSelected: boolean;
     isActive?: boolean;
+    activeFolderPath?: string | null;
+    activeFolderDepth?: number;
     isFaded?: boolean;
     isDropTarget?: boolean;
     isDropInvalid?: boolean;
@@ -77,6 +129,10 @@
    */
   const isGitIgnored = $derived(node.is_ignored === true && !gitDecoration);
 
+  const gitIconStyle = $derived(getGitStatusStyle(gitDecoration?.code));
+  const gitFileNameStyle = $derived(getGitStatusStyle(gitDecoration?.code));
+  const gitBadgeStyle = $derived(getGitBadgeStyle(gitDecoration?.code, gitDecoration?.is_rollup));
+
   function handleClick(e: MouseEvent) {
     e.stopPropagation();
     onFileClick(e, node);
@@ -102,7 +158,7 @@
   tabindex="0"
   aria-selected={isActive}
   data-node-path={node.path}
-  class="flex items-center gap-1.5 cursor-pointer select-none w-full border text-xs transition-colors
+  class="relative flex items-center gap-1.5 cursor-pointer select-none w-full border text-xs transition-colors
     {isActive ? 'bg-selected ring-1 ring-inset ring-accent text-primary' : (isSelected ? 'bg-selected/60 border-transparent text-primary' : 'border-transparent hover:bg-hover hover:text-primary')}
     {isDropTarget ? 'ring-2 ring-inset ring-accent/70 bg-accent/[0.08] drop-valid' : ''}
     {isDropInvalid ? 'drop-invalid' : ''}
@@ -123,6 +179,19 @@
   onpointermove={(e) => onPointerMove?.(e)}
   onpointerup={(e) => onPointerUp?.(e, node)}
 >
+  <!-- Indentation Guides -->
+  {#if node.depth > 0}
+    {@const isDescendant = activeFolderPath ? (node.path === activeFolderPath || node.path.startsWith(activeFolderPath + '\\') || node.path.startsWith(activeFolderPath + '/')) : false}
+    {#each Array(node.depth).fill(0) as _, i}
+      {@const isLineActive = isDescendant && i === activeFolderDepth}
+      <div class="absolute -top-px -bottom-px border-l pointer-events-none transition-all duration-300 {isLineActive ? 'border-strong opacity-100 z-10' : 'border-subtle opacity-0 group-hover/tree:opacity-40'}" style="left: {14.5 + i * 12}px;"></div>
+    {/each}
+  {/if}
+  {#if node.is_dir && node.isExpanded}
+    {@const isLineActive = node.path === activeFolderPath}
+    <div class="absolute -bottom-px border-l pointer-events-none transition-all duration-300 {isLineActive ? 'border-strong opacity-100 z-10' : 'border-subtle opacity-0 group-hover/tree:opacity-40'}" style="top: 13px; left: {14.5 + node.depth * 12}px;"></div>
+  {/if}
+
   <span class="shrink-0 w-3.5 flex items-center justify-center text-muted">
     {#if node.is_dir}
       {#if isLoading}
@@ -145,10 +214,7 @@
       class="shrink-0 flex items-center"
       class:text-accent={!gitDecoration && !isGitIgnored || isActive}
       class:text-muted={isGitIgnored && !gitDecoration && !isActive}
-      class:text-green-400={!isActive && !!gitDecoration && (gitDecoration.code === 'U' || gitDecoration.code === 'A' || gitDecoration.code === 'R' || gitDecoration.code === 'C')}
-      class:text-yellow-400={!isActive && gitDecoration?.code === 'M'}
-      class:text-red-400={!isActive && gitDecoration?.code === 'D'}
-      class:text-purple-400={!isActive && gitDecoration?.code === 'Conflict'}
+      style={gitIconStyle}
     >
       {#if iconTheme === 'default' || !iconTheme}
         {#if node.isExpanded}
@@ -156,6 +222,9 @@
         {:else}
           <Folder size={14} />
         {/if}
+      {:else if iconTheme === 'material'}
+        <!-- We use getMaterialFolderIcon which maps to folder-src, folder-public, etc. fallback is folder-base -->
+        <MaterialIcon name={node.name} isDir size={14} />
       {/if}
     </span>
   {:else}
@@ -165,14 +234,13 @@
       class:text-icon-active={isActive}
       class:text-icon-default={!isActive && !gitDecoration && !isGitIgnored}
       class:text-icon-muted={isGitIgnored && !gitDecoration && !isActive}
-      class:text-green-400={!isActive && !!gitDecoration && (gitDecoration.code === 'U' || gitDecoration.code === 'A' || gitDecoration.code === 'R' || gitDecoration.code === 'C')}
-      class:text-yellow-400={!isActive && gitDecoration?.code === 'M'}
-      class:text-red-400={!isActive && gitDecoration?.code === 'D'}
-      class:text-purple-400={!isActive && gitDecoration?.code === 'Conflict'}
+      style={gitIconStyle}
     >
       {#if iconTheme === 'default' || !iconTheme}
         {@const Icon = getFileIcon(node.name)}
         <Icon size={14} />
+      {:else if iconTheme === 'material'}
+        <MaterialIcon name={node.name} size={14} />
       {/if}
     </span>
   {/if}
@@ -183,10 +251,7 @@
     class:text-primary={isActive}
     class:text-secondary={!isActive && !gitDecoration && !isGitIgnored}
     class:text-muted={isGitIgnored && !gitDecoration && !isActive}
-    class:text-green-400={!isActive && !!gitDecoration && (gitDecoration.code === 'U' || gitDecoration.code === 'A' || gitDecoration.code === 'R' || gitDecoration.code === 'C')}
-    class:text-yellow-400={!isActive && gitDecoration?.code === 'M'}
-    class:text-red-400={!isActive && gitDecoration?.code === 'D'}
-    class:text-purple-400={!isActive && gitDecoration?.code === 'Conflict'}
+    style={gitFileNameStyle}
   >
     {node.name}
   </span>
@@ -195,25 +260,12 @@
   {#if gitDecoration}
     {#if gitDecoration.is_rollup}
       <!-- Folder rollup badge: pill-shaped like VSCode folder decoration -->
-      {@const rollupTone =
-        gitDecoration.code === 'U' || gitDecoration.code === 'A' || gitDecoration.code === 'R' || gitDecoration.code === 'C'
-          ? 'border-green-500/50 text-green-400'
-          : gitDecoration.code === 'M'
-            ? 'border-yellow-500/50 text-yellow-400'
-            : gitDecoration.code === 'D'
-              ? 'border-red-500/50 text-red-400'
-              : gitDecoration.code === 'Conflict'
-                ? 'border-purple-500/50 text-purple-400'
-                : 'border-subtle text-muted'}
-      <span class="shrink-0 text-[10px] font-bold px-1.5 rounded-full border text-center ml-1 {rollupTone}">{gitBadgeChar}</span>
+      <span class="shrink-0 text-[10px] font-bold px-1.5 rounded-full border text-center ml-1" style={gitBadgeStyle}>{gitBadgeChar}</span>
     {:else}
       <!-- File badge: single character flush-right like VSCode -->
       <span
         class="shrink-0 text-[10px] font-bold w-3.5 text-right ml-1"
-        class:text-green-400={gitDecoration.code === 'U' || gitDecoration.code === 'A' || gitDecoration.code === 'R' || gitDecoration.code === 'C'}
-        class:text-yellow-400={gitDecoration.code === 'M'}
-        class:text-red-400={gitDecoration.code === 'D'}
-        class:text-purple-400={gitDecoration.code === 'Conflict'}
+        style={gitBadgeStyle}
       >
         {gitBadgeChar}
       </span>

@@ -41,7 +41,7 @@
       <button
         onclick={handleSubmit}
         disabled={!lineStr.trim()}
-        class="px-4 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded outline-none"
+        class="px-4 py-1.5 text-sm font-medium bg-accent hover:bg-accent-hover text-on-accent disabled:opacity-50 rounded outline-none"
       >Go</button>
     </div>
   {/snippet}

@@ -184,6 +184,29 @@ export async function fetchRepo(cwd: string, opId: string | null, onProgress: (p
   await invoke('git_fetch', { cwd, opId, progress: channel });
 }
 
+/**
+ * Clone a repository from `url` into `dest` with real-time progress and
+ * cancel support, mirroring `runNetworkOp` for push/pull/fetch.
+ */
+export function cloneRepository(
+  url: string,
+  dest: string,
+  opId: string | null,
+  onProgress: (p: GitProgress) => void,
+): ProgressHandle {
+  const channel = new Channel<GitProgress>();
+  channel.onmessage = onProgress;
+
+  const promise = invoke('git_clone', { url, dest, opId, progress: channel }) as Promise<void>;
+  return {
+    promise,
+    opId: opId ?? '',
+    cancel: async () => {
+      if (opId) await invoke('git_cancel_op', { opId });
+    },
+  };
+}
+
 export async function cancelOp(opId: string): Promise<void> {
   await invoke('git_cancel_op', { opId });
 }
@@ -206,13 +229,17 @@ export async function getCommitFiles(cwd: string, hash: string): Promise<GitFile
   }
 }
 
-export async function getGitFileContent(cwd: string, path: string, revision: string = "HEAD"): Promise<string> {
-  if (!cwd || !path) return "";
+export async function getGitFileContent(cwd: string, path: string, revision: string = "HEAD"): Promise<string | null> {
+  if (!cwd || !path) return null;
   try {
     return await invoke<string>('get_git_file_content', { cwd, path, revision });
   } catch (err) {
-    console.error('Failed to get git file content:', err);
-    return "";
+    const msg = String(err);
+    // Don't log error for new files not in HEAD yet
+    if (!msg.includes('exists on disk, but not in') && !msg.includes('not in HEAD') && !msg.includes('pathspec') && !msg.includes('did not match any file(s) known to git')) {
+      console.error('Failed to get git file content:', err);
+    }
+    return null;
   }
 }
 

@@ -213,7 +213,7 @@
           <button 
             aria-label="Delete Active Terminal" 
             onclick={() => $termStore.activeTerminalId && terminalStore.closeTerminal($termStore.activeTerminalId)} 
-            class="p-1 rounded hover:bg-hover hover:text-red-400 transition-colors"
+            class="p-1 rounded hover:bg-hover hover:text-error transition-colors"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
           </button>
@@ -283,7 +283,7 @@
         {#if $termStore.terminals.length === 0}
           <div class="absolute inset-0 flex flex-col items-center justify-center text-muted gap-4">
             <span class="text-sm">No Active Terminals</span>
-            <button class="px-4 py-2 bg-accent text-accent-fg rounded-md hover:brightness-110 transition-all text-xs" onclick={() => createTerminal('powershell')}>New Terminal</button>
+            <button class="px-4 py-2 bg-accent text-on-accent rounded-md hover:brightness-110 transition-all text-xs" onclick={() => createTerminal('powershell')}>New Terminal</button>
           </div>
         {/if}
         {#each $termStore.terminals as term (term.id)}
@@ -316,7 +316,7 @@
               <div 
                 role="button"
                 tabindex="0"
-                class="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-red-500 hover:text-white transition-all text-icon-default"
+                class="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-error hover:text-white transition-all text-icon-default"
                 onclick={(e) => { e.stopPropagation(); terminalStore.closeTerminal(term.id); }}
                 onkeydown={(e) => { if (e.key === 'Enter') terminalStore.closeTerminal(term.id); }}
               >
@@ -349,7 +349,7 @@
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="flex items-center gap-1.5 px-4 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/App.svelte', 1, 1)}>
             <svg class="w-3.5 h-3.5 text-secondary rotate-90" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
-            <span class="text-orange-500 font-bold font-sans">S</span>
+            <span class="text-warning font-bold font-sans">S</span>
             <span class="text-primary">App.svelte</span>
             <span class="text-muted">src</span>
             <span class="text-muted flex items-center justify-center rounded-full border border-subtle w-4 h-4 text-[9px] ml-1">3</span>
@@ -357,19 +357,19 @@
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/App.svelte', 1590, 50)}>
-            <svg class="w-3.5 h-3.5 text-yellow-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+            <svg class="w-3.5 h-3.5 text-warning shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
             <span class="truncate">The class <code class="text-primary font-bold min-w-0">`min-w-[200px]`</code> can be written as <code class="text-primary font-bold min-w-0">`min-w-50`</code> <span class="text-muted">tailwindcss(suggestCanonicalClasses)</span> <span class="text-muted">[Ln 1590, Col 50]</span></span>
           </div>
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/App.svelte', 1649, 18)}>
-            <svg class="w-3.5 h-3.5 text-yellow-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+            <svg class="w-3.5 h-3.5 text-warning shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
             <span class="truncate">The class <code class="text-primary font-bold min-w-0">`min-w-[160px]`</code> can be written as <code class="text-primary font-bold min-w-0">`min-w-40`</code> <span class="text-muted">tailwindcss(suggestCanonicalClasses)</span> <span class="text-muted">[Ln 1649, Col 18]</span></span>
           </div>
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/App.svelte', 1649, 64)}>
-            <svg class="w-3.5 h-3.5 text-yellow-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+            <svg class="w-3.5 h-3.5 text-warning shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
             <span class="truncate">The class <code class="text-primary font-bold min-w-0">`z-[100]`</code> can be written as <code class="text-primary font-bold min-w-0">`z-100`</code> <span class="text-muted">tailwindcss(suggestCanonicalClasses)</span> <span class="text-muted">[Ln 1649, Col 64]</span></span>
           </div>
 
@@ -377,7 +377,7 @@
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="flex items-center gap-1.5 px-4 py-1 hover:bg-hover cursor-pointer mt-1" onclick={() => openProblem('src/lib/components/SearchPanel.svelte', 1, 1)}>
             <svg class="w-3.5 h-3.5 text-secondary rotate-90" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
-            <span class="text-orange-500 font-bold font-sans">S</span>
+            <span class="text-warning font-bold font-sans">S</span>
             <span class="text-primary">SearchPanel.svelte</span>
             <span class="text-muted">src\lib\components</span>
             <span class="text-muted flex items-center justify-center rounded-full border border-subtle w-4 h-4 text-[9px] ml-1">4</span>
@@ -385,25 +385,25 @@
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/lib/components/SearchPanel.svelte', 423, 64)}>
-            <svg class="w-3.5 h-3.5 text-yellow-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+            <svg class="w-3.5 h-3.5 text-warning shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
             <span class="truncate">The class <code class="text-primary font-bold min-w-0">`py-[3px]`</code> can be written as <code class="text-primary font-bold min-w-0">`py-0.75`</code> <span class="text-muted">tailwindcss(suggestCanonicalClasses)</span> <span class="text-muted">[Ln 423, Col 64]</span></span>
           </div>
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/lib/components/SearchPanel.svelte', 425, 93)}>
-            <svg class="w-3.5 h-3.5 text-yellow-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+            <svg class="w-3.5 h-3.5 text-warning shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
             <span class="truncate">The class <code class="text-primary font-bold min-w-0">`mt-[1px]`</code> can be written as <code class="text-primary font-bold min-w-0">`mt-px`</code> <span class="text-muted">tailwindcss(suggestCanonicalClasses)</span> <span class="text-muted">[Ln 425, Col 93]</span></span>
           </div>
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/lib/components/SearchPanel.svelte', 428, 82)}>
-            <svg class="w-3.5 h-3.5 text-yellow-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+            <svg class="w-3.5 h-3.5 text-warning shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
             <span class="truncate">The class <code class="text-primary font-bold min-w-0">`rounded-[2px]`</code> can be written as <code class="text-primary font-bold min-w-0">`rounded-xs`</code> <span class="text-muted">tailwindcss(suggestCanonicalClasses)</span> <span class="text-muted">[Ln 428, Col 82]</span></span>
           </div>
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="flex items-center gap-2 px-8 py-1 hover:bg-hover cursor-pointer" onclick={() => openProblem('src/lib/components/SearchPanel.svelte', 428, 96)}>
-            <svg class="w-3.5 h-3.5 text-yellow-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+            <svg class="w-3.5 h-3.5 text-warning shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
             <span class="truncate">The class <code class="text-primary font-bold min-w-0">`px-[1px]`</code> can be written as <code class="text-primary font-bold min-w-0">`px-px`</code> <span class="text-muted">tailwindcss(suggestCanonicalClasses)</span> <span class="text-muted">[Ln 428, Col 96]</span></span>
           </div>
         </div>

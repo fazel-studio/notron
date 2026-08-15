@@ -42,148 +42,105 @@
   --color-scrollbar-thumb: var(--scrollbar-thumb);
   --color-scrollbar-thumb-hover: var(--scrollbar-thumb-hover);
 
-  /* Status */
-  --color-status-error: var(--color-error);
-  --color-status-warning: var(--color-warning);
-  --color-status-info: var(--color-info);
-  --color-status-success: var(--color-success);
+  /* Status — accessible as text-error, bg-warning, etc. in Tailwind */
+  --color-error: var(--color-status-error);
+  --color-warning: var(--color-status-warning);
+  --color-info: var(--color-status-info);
+  --color-success: var(--color-status-success);
 
   /* Shadow */
   --shadow-elevated: var(--shadow-elevated);
 }
 
+/* ── High Contrast Light (default :root) ───────────────────────────────────────
+   Pure white (#ffffff) bg, black text, blue (#0078d4) accent — VSCode HC Light */
 :root {
-  /* LIGHT THEME */
   --bg-canvas: #ffffff;
-  --bg-surface: #f3f4f6;
-  --bg-surface-2: #e5e7eb;
+  --bg-surface: #ffffff;
+  --bg-surface-2: #ffffff;
   --bg-elevated: #ffffff;
 
-  /* Interactive states - Darker for Light Theme */
-  --bg-hover: #e5e7eb;
-  --bg-active: #d1d5db;
-  --bg-selected: #bfdbfe;
-  --bg-selected-hover: #93c5fd;
+  --bg-hover: #f0f0f0;
+  --bg-active: #e0e0e0;
+  --bg-selected: #0078d4;
+  --bg-selected-hover: #006cc1;
 
-  --border-subtle: #e5e7eb;
-  --border-strong: #d1d5db;
-  --border-focus: #3b82f6;
+  --border-subtle: #0078d4;
+  --border-strong: #0078d4;
+  --border-focus: #0078d4;
 
-  --text-primary: #111827;
-  --text-secondary: #374151;
-  --text-muted: #6b7280;
-  --text-inverse: #f9fafb;
+  --text-primary: #000000;
+  --text-secondary: #000000;
+  --text-muted: #444444;
+  --text-inverse: #ffffff;
   --text-on-accent: #ffffff;
 
-  --icon-default: #4b5563;
-  --icon-muted: #9ca3af;
-  --icon-active: #111827;
-  --icon-active-tab: #111827;
+  --icon-default: #000000;
+  --icon-muted: #444444;
+  --icon-active: #000000;
+  --icon-active-tab: #000000;
 
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
-  --accent-active: #1d4ed8;
-  --indicator-active: #3b82f6;
+  --accent: #0078d4;
+  --accent-hover: #006cc1;
+  --accent-active: #005a9e;
+  --indicator-active: #0078d4;
 
-  --scrollbar-thumb: rgba(107, 114, 128, 0.3);
-  --scrollbar-thumb-hover: rgba(107, 114, 128, 0.5);
+  --scrollbar-thumb: #0078d4;
+  --scrollbar-thumb-hover: #005a9e;
 
-  --color-error: #ef4444;
-  --color-warning: #f59e0b;
-  --color-info: #3b82f6;
-  --color-success: #10b981;
+  --color-status-error: #cc0000;
+  --color-status-warning: #0078d4;
+  --color-status-info: #0078d4;
+  --color-status-success: #0078d4;
 
-  --shadow-elevated: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --shadow-elevated: none;
 }
 
+/* ── High Contrast Dark (.dark) ────────────────────────────────────────────────
+   Pure black (#000000) bg, white text, blue (#6fc3df) accent — VSCode HC Dark */
 .dark {
-  /* DARK THEME */
-  --bg-canvas: #18181b;
-  --bg-surface: #27272a;
-  --bg-surface-2: #1f1f23;
-  --bg-elevated: #27272a;
-
-  /* Interactive states - Lighter for Dark Theme */
-  --bg-hover: #3f3f46;
-  --bg-active: #52525b;
-  --bg-selected: rgba(59, 130, 246, 0.3);
-  --bg-selected-hover: rgba(59, 130, 246, 0.4);
-
-  --border-subtle: #3f3f46;
-  --border-strong: #52525b;
-  --border-focus: #60a5fa;
-
-  --text-primary: #f4f4f5;
-  --text-secondary: #d4d4d8;
-  --text-muted: #a1a1aa;
-  --text-inverse: #18181b;
-  --text-on-accent: #ffffff;
-
-  --icon-default: #a1a1aa;
-  --icon-muted: #71717a;
-  --icon-active: #f4f4f5;
-  --icon-active-tab: #ffffff;
-
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
-  --accent-active: #93c5fd;
-  --indicator-active: #60a5fa;
-
-  --scrollbar-thumb: rgba(161, 161, 170, 0.3);
-  --scrollbar-thumb-hover: rgba(161, 161, 170, 0.5);
-
-  --color-error: #f87171;
-  --color-warning: #fbbf24;
-  --color-info: #60a5fa;
-  --color-success: #34d399;
-
-  --shadow-elevated: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.3);
-}
-
-.black {
-  /* BLACK THEME (darker than Dark) */
   --bg-canvas: #000000;
-  --bg-surface: #0a0a0c;
-  --bg-surface-2: #08080a;
-  --bg-elevated: #0d0d10;
+  --bg-surface: #000000;
+  --bg-surface-2: #000000;
+  --bg-elevated: #000000;
 
-  /* Interactive states - Lighter for Dark Theme */
-  --bg-hover: #1a1a1d;
-  --bg-active: #2a2a2e;
-  --bg-selected: rgba(59, 130, 246, 0.3);
-  --bg-selected-hover: rgba(59, 130, 246, 0.4);
+  --bg-hover: #1a1a1a;
+  --bg-active: #333333;
+  --bg-selected: #0078d4;
+  --bg-selected-hover: #006cc1;
 
-  --border-subtle: #1f1f22;
-  --border-strong: #2a2a2e;
-  --border-focus: #60a5fa;
+  --border-subtle: #6fc3df;
+  --border-strong: #0078d4;
+  --border-focus: #0078d4;
 
-  --text-primary: #f4f4f5;
-  --text-secondary: #d4d4d8;
-  --text-muted: #a1a1aa;
+  --text-primary: #ffffff;
+  --text-secondary: #ffffff;
+  --text-muted: #cccccc;
   --text-inverse: #000000;
   --text-on-accent: #ffffff;
 
-  --icon-default: #a1a1aa;
-  --icon-muted: #71717a;
-  --icon-active: #f4f4f5;
+  --icon-default: #ffffff;
+  --icon-muted: #cccccc;
+  --icon-active: #ffffff;
   --icon-active-tab: #ffffff;
 
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
-  --accent-active: #93c5fd;
-  --indicator-active: #60a5fa;
+  --accent: #6fc3df;
+  --accent-hover: #5ab3d0;
+  --accent-active: #4aa3c1;
+  --indicator-active: #6fc3df;
 
-  --scrollbar-thumb: rgba(161, 161, 170, 0.3);
-  --scrollbar-thumb-hover: rgba(161, 161, 170, 0.5);
+  --scrollbar-thumb: #6fc3df;
+  --scrollbar-thumb-hover: #0078d4;
 
-  --color-error: #f87171;
-  --color-warning: #fbbf24;
-  --color-info: #60a5fa;
-  --color-success: #34d399;
+  --color-status-error: #ff6b6b;
+  --color-status-warning: #6fc3df;
+  --color-status-info: #6fc3df;
+  --color-status-success: #6fc3df;
 
-  --shadow-elevated: 0 10px 15px -3px rgba(0, 0, 0, 0.7), 0 4px 6px -2px rgba(0, 0, 0, 0.5);
+  --shadow-elevated: none;
 }
 
+/* ── CodeMirror overrides ────────────────────────────────────────────────────── */
 .prose code::before { content: none !important; }
 .prose code::after { content: none !important; }
 
@@ -247,9 +204,8 @@ div:not(.cm-content):not(.cm-line):not(.selectable)::selection {
   overflow: hidden;
   pointer-events: auto;
   z-index: 10 !important;
-  background-color: var(--bg-canvas, #18181b) !important;
+  background-color: var(--bg-canvas) !important;
   border-left: 1px solid var(--border-subtle);
-  box-shadow: -2px 0 5px rgba(0,0,0,0.1);
 }
 
 .cm-scroller::-webkit-scrollbar-thumb {
@@ -280,9 +236,7 @@ div:not(.cm-content):not(.cm-line):not(.selectable)::selection {
   display: none !important;
 }
 
-.cm-editor .cm-scroller {
-  /* No extra padding, the scroller itself is now narrowed by the editor padding! */
-}
+.cm-editor .cm-scroller {}
 
 /* ── Drag cursor states ── */
 body.is-dragging * {
@@ -293,4 +247,8 @@ body.is-dragging [data-node-path].drop-valid {
 }
 body.is-dragging [data-node-path]:not(.drop-valid) {
   cursor: no-drop !important;
+}
+
+.editor-container.icon-theme-off .cm-breadcrumbs-segment > svg {
+  display: none;
 }

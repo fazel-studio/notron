@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
@@ -460,6 +460,48 @@ pub async fn goto_definition(root: String, symbol: String, current_file: String)
         let root_path = Path::new(&root);
         if !root_path.exists() {
             return Err("Workspace path does not exist".to_string());
+        }
+
+        if symbol.contains('/') || symbol.contains('.') || symbol.contains('\\') {
+            let target_path = PathBuf::from(&symbol);
+            if !target_path.is_absolute() {
+                if let Some(parent) = Path::new(&current_file).parent() {
+                    let mut to_check = vec![
+                        parent.join(&symbol),
+                        Path::new(&root).join(&symbol)
+                    ];
+                    let exts = vec![".ts", ".js", ".svelte", ".rs", "/index.ts", "/index.js", "/index.svelte"];
+                    
+                    let parent_joined = parent.join(&symbol);
+                    for ext in &exts {
+                        to_check.push(PathBuf::from(format!("{}{}", parent_joined.display(), ext)));
+                    }
+                    
+                    for p in to_check {
+                        if p.exists() && p.is_file() {
+                            results.push(SymbolLocation {
+                                file_path: p.to_string_lossy().to_string(),
+                                line: 1,
+                                column: 1,
+                                name: symbol.clone(),
+                                kind: SymbolKind::Module,
+                                parent: None,
+                            });
+                            return Ok(results);
+                        }
+                    }
+                }
+            } else if target_path.exists() && target_path.is_file() {
+                results.push(SymbolLocation {
+                    file_path: target_path.to_string_lossy().to_string(),
+                    line: 1,
+                    column: 1,
+                    name: symbol.clone(),
+                    kind: SymbolKind::Module,
+                    parent: None,
+                });
+                return Ok(results);
+            }
         }
 
         // Check current file first (faster)

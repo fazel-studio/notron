@@ -1,6 +1,7 @@
 import { writable, derived } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { getHumanReadableError } from '../utils/error';
+import { settingsStore } from './settings.svelte';
 
 export interface ReplaceMatchOptions {
   query: string;
@@ -59,6 +60,7 @@ export interface EditorTab {
   undoHistory?: any;
   isDiff?: boolean;
   diffOriginalContent?: string | null;
+  svgViewMode?: 'image' | 'code' | 'split';
 }
 
 export type TabInput = {
@@ -74,6 +76,7 @@ export type TabInput = {
   undoHistory?: any;
   isDiff?: boolean;
   diffOriginalContent?: string | null;
+  svgViewMode?: 'image' | 'code' | 'split';
 };
 
 // Removed duplicate invoke
@@ -131,6 +134,7 @@ function createEditorStore() {
         undoHistory: input.undoHistory,
         lastAccessed: Date.now(),
         status: input.content !== null ? 'active' : 'loaded',
+        svgViewMode: input.svgViewMode,
       };
 
       let currentTabs = [...state];
@@ -366,7 +370,11 @@ function createEditorStore() {
   }
 
   function scheduleAutoSave(tabId: string) {
+    // Only auto-save when the setting is enabled, using the configured delay
+    // (falling back to the legacy 1500ms debounce).
+    if (!settingsStore.effectiveSettings.auto_save) return;
     if (autoSaveTimers.has(tabId)) clearTimeout(autoSaveTimers.get(tabId)!);
+    const delay = settingsStore.effectiveSettings.auto_save_delay_ms || DEBOUNCE_SAVE_MS;
     
     const timer = setTimeout(async () => {
       autoSaveTimers.delete(tabId);
@@ -385,7 +393,7 @@ function createEditorStore() {
           tabs.update(state => state.map(t => t.id === tabId ? { ...t, autoSavePaused: true } : t));
         }
       }
-    }, DEBOUNCE_SAVE_MS);
+    }, delay);
     
     autoSaveTimers.set(tabId, timer);
   }
@@ -491,7 +499,7 @@ function createEditorStore() {
     
     const fileName = entry.path.split(/[/\\]/).pop() || 'Unknown';
     let content = '';
-    const isImage = /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(fileName);
+    const isImage = /\.(png|jpe?g|gif|webp|ico|bmp)$/i.test(fileName);
     let isLargeFile = false;
     if (!isImage) {
       try {

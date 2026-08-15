@@ -31,9 +31,7 @@ lerna-debug.log*
 Thumbs.db
 
 # ── AI Assistant working files (not for source control) ──
-.cline/
 .kilo/
-plannings/
 
 # ── Project reports & module scratch space ──
 reports/
@@ -45,7 +43,3 @@ modules/
 !.env.example
 *.local
 
-# ── Tauri / Rust ──
-# Large binaries are not tracked on GitHub
-src-tauri/binaries/
-# Target directory is handled by src-tauri/.gitignore

@@ -1,14 +1,204 @@
 <script module>
   import { keymap, highlightSpecialChars, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine } from '@codemirror/view';
   import { EditorState } from '@codemirror/state';
-  import { defaultKeymap, history, historyKeymap, undo, redo, selectAll, copyLineUp, copyLineDown, moveLineUp, moveLineDown, historyField } from '@codemirror/commands';
-  import { highlightSelectionMatches } from '@codemirror/search';
-  import { bracketMatching, foldKeymap, indentOnInput, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
+  import { defaultKeymap, history, historyKeymap, undo, redo, selectAll, copyLineUp, copyLineDown, moveLineUp, moveLineDown, historyField, deleteLine, indentMore, indentLess, selectLine, insertNewline, insertNewlineAndIndent, toggleComment, blockComment } from '@codemirror/commands';
+  import { highlightSelectionMatches, selectNextOccurrence } from '@codemirror/search';
+  import { bracketMatching, foldKeymap, indentOnInput, syntaxHighlighting, defaultHighlightStyle, foldCode, unfoldCode, toggleFold } from '@codemirror/language';
   import { closeBrackets, autocompletion, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete';
-  import { EditorView, scrollPastEnd } from '@codemirror/view';
+  import { EditorView, scrollPastEnd, type ViewUpdate } from '@codemirror/view';
   import { stickyScroll } from '@fazelstudio/codemirror-stickyscroll';
+  import { breadcrumbs } from '@fazelstudio/codemirror-breadcrumbs';
+  import type { Snippet } from 'svelte';
 
   import { indentationMarkers } from '@replit/codemirror-indentation-markers';
+  import { getMaterialIcon } from '../utils/materialIconMap';
+  import { FILE_ICONS, lucideSvg, FILE } from '../utils/breadcrumbPathIcons';
+  import { materialIconSvg, materialIconState } from '../utils/materialIconRenderer.svelte';
+  import { settingsStore } from '../stores/settings.svelte';
+
+
+  /**
+   * Puts the configured icon theme onto the breadcrumb top-bar segments.
+   *
+   * The plugin renders its own built-in (generic) icon on every segment, which
+   * used to flash in until this function replaced it — and because the plugin
+   * rebuilds the bar on EVERY doc/selection change, the old implementation
+   * (re-creating an <img> per rebuild, wrapped in requestAnimationFrame) made
+   * the breadcrumb icons flicker on each keystroke.
+   *
+   * Now this runs synchronously right after a rebuild (MutationObserver — a
+   * microtask, so the intermediate built-in icon is never painted), strips the
+   * plugin icon and inserts the themed icon as inline SVG (synchronous — no
+   * async image load). While a material icon is fetched for the first time an
+   * empty slot is shown; `materialIconVersion` re-triggers this once it loads.
+   */
+  function syncBreadcrumbBarIcons(view: EditorView) {
+    const bar = view.dom.querySelector('.cm-breadcrumbs');
+    if (!bar) return;
+
+    const iconTheme = settingsStore.effectiveSettings.icon_theme;
+    const segments = bar.querySelectorAll('.cm-breadcrumbs-segment');
+    segments.forEach((seg) => {
+      if (seg.classList.contains('cm-breadcrumbs-kind-folder')) return;
+
+      const labelEl = seg.querySelector('.cm-breadcrumbs-segment-label');
+      const label = labelEl?.textContent || '';
+
+      // Strip the plugin's built-in icon whenever it is present (the plugin
+      // re-adds it on every rebuild; removing it mutates the DOM, so this only
+      // happens when it actually exists — keeps the observer loop terminating).
+      seg.querySelectorAll(':scope > svg').forEach((el) => el.remove());
+
+      const existing = seg.querySelector<HTMLElement>('[data-notron-icon]');
+
+      if (iconTheme === 'off') {
+        existing?.remove();
+        return;
+      }
+
+      if (iconTheme === 'material') {
+        const iconName = getMaterialIcon(label);
+        // Idempotent: keep the icon already in place — never remove/re-add it
+        // on every keystroke (that is what made the icons flicker).
+        if (existing?.getAttribute('data-notron-icon') === `material:${iconName}`) return;
+        existing?.remove();
+        const svg = materialIconSvg(iconName, 14);
+        if (!svg) return; // still loading — re-synced when materialIconVersion bumps
+        const iconEl = document.createElement('span');
+        iconEl.className = 'cm-breadcrumbs-icon';
+        iconEl.setAttribute('data-notron-icon', `material:${iconName}`);
+        iconEl.innerHTML = svg;
+        seg.insertBefore(iconEl, labelEl || null);
+      } else if (iconTheme === 'default') {
+        const ext = label.split('.').pop()?.toLowerCase();
+        if (existing?.getAttribute('data-notron-icon') === `default:${ext || ''}`) return;
+        existing?.remove();
+        const iconNode = FILE_ICONS[ext || ''] || FILE;
+        const iconEl = document.createElement('span');
+        iconEl.className = 'cm-breadcrumbs-icon';
+        iconEl.setAttribute('data-notron-icon', `default:${ext || ''}`);
+        iconEl.innerHTML = lucideSvg(iconNode, 14);
+        seg.insertBefore(iconEl, labelEl || null);
+      }
+    });
+  }
+
+  let breadcrumbObserver: MutationObserver | null = null;
+  let breadcrumbObserverTarget: HTMLElement | null = null;
+
+  /**
+   * Watches the breadcrumb bar so icon re-sync happens immediately after any
+   * plugin rebuild (mount, doc change, resize, dropdown) — before the browser
+   * paints, so the plugin's built-in icons never flash in.
+   */
+  function ensureBreadcrumbObserver(view: EditorView) {
+    const bar = view.dom.querySelector<HTMLElement>('.cm-breadcrumbs');
+    if (!bar) return;
+    if (breadcrumbObserver && breadcrumbObserverTarget === bar) return;
+    breadcrumbObserver?.disconnect();
+    breadcrumbObserverTarget = bar;
+    breadcrumbObserver = new MutationObserver(() => syncBreadcrumbBarIcons(view));
+    breadcrumbObserver.observe(bar, { childList: true, subtree: true });
+  }
+
+  const notronBreadcrumbsTheme = EditorView.theme({
+    '.cm-breadcrumbs': {
+      display: 'flex',
+      alignItems: 'center',
+      boxSizing: 'border-box',
+      width: '100%',
+      height: '28px',
+      fontSize: '11px',
+      lineHeight: '1',
+      background: 'transparent',
+      color: 'var(--text-secondary)',
+      // Top line is provided by the tab bar's border-b; only separate from
+      // the editor content below.
+      borderBottom: '1px solid var(--border-subtle)'
+    },
+    '.cm-breadcrumbs-file': {
+      padding: '2px 4px',
+      color: 'var(--text-secondary)'
+    },
+    '.cm-breadcrumbs-segment': {
+      padding: '2px 4px',
+      color: 'var(--text-secondary)'
+    },
+    '.cm-breadcrumbs-segment:hover': {
+      background: 'var(--bg-hover)',
+      color: 'var(--text-primary)'
+    },
+    '.cm-breadcrumbs-separator': {
+      color: 'var(--text-muted)'
+    },
+    '.cm-breadcrumbs-language-sep': {
+      color: 'var(--accent)'
+    },
+    '.cm-breadcrumbs-ellipsis': {
+      color: 'var(--text-secondary)'
+    },
+    '.cm-breadcrumbs-ellipsis:hover': {
+      background: 'var(--bg-hover)'
+    },
+    '.cm-breadcrumbs-dropdown': {
+      background: 'var(--bg-surface-2)',
+      border: '1px solid var(--border-subtle)',
+      boxShadow: 'var(--shadow-elevated)'
+    },
+    '.cm-breadcrumbs-dropdown-title': {
+      color: 'var(--text-muted)'
+    },
+    '.cm-breadcrumbs-dropdown-item': {
+      color: 'var(--text-primary)'
+    },
+    '.cm-breadcrumbs-dropdown-item:hover': {
+      background: 'var(--bg-hover)',
+      color: 'var(--text-primary)'
+    },
+    '.cm-breadcrumbs-dropdown-empty': {
+      color: 'var(--text-muted)'
+    },
+    '.cm-breadcrumbs-path-header': {
+      color: 'var(--text-muted)',
+      borderBottom: '1px solid var(--border-subtle)'
+    },
+    '.cm-breadcrumbs-path-item': {
+      color: 'var(--text-primary)'
+    },
+    '.cm-breadcrumbs-path-item:hover': {
+      background: 'var(--bg-hover)',
+      color: 'var(--text-primary)'
+    },
+    '.cm-breadcrumbs-path-item.is-active': {
+      background: 'var(--bg-selected)',
+      color: 'var(--text-primary)'
+    },
+    '.cm-breadcrumbs-path-up': {
+      color: 'var(--text-muted)'
+    },
+    '.cm-breadcrumbs-path-up:hover': {
+      background: 'var(--bg-hover)',
+      color: 'var(--text-primary)'
+    },
+    '.cm-breadcrumbs-path-empty': {
+      color: 'var(--text-muted)'
+    },
+    '.cm-breadcrumbs-kind-folder': { color: 'var(--accent)' },
+    '.cm-breadcrumbs-kind-file': { color: 'var(--text-muted)' },
+    '.cm-breadcrumbs-kind-namespace': { color: 'var(--text-secondary)' },
+    '.cm-breadcrumbs-kind-class': { color: 'var(--color-warning)' },
+    '.cm-breadcrumbs-kind-interface': { color: 'var(--accent)' },
+    '.cm-breadcrumbs-kind-function': { color: 'var(--accent-active)' },
+    '.cm-breadcrumbs-kind-method': { color: 'var(--accent-active)' },
+    '.cm-breadcrumbs-kind-variable': { color: 'var(--color-info)' },
+    '.cm-breadcrumbs-kind-constant': { color: 'var(--color-info)' },
+    '.cm-breadcrumbs-kind-enum': { color: 'var(--accent-active)' },
+    '.cm-breadcrumbs-kind-property': { color: 'var(--text-secondary)' },
+    '.cm-breadcrumbs-kind-heading': { color: 'var(--text-primary)' },
+    '.cm-breadcrumbs-kind-block': { color: 'var(--text-muted)' },
+    '.cm-breadcrumbs-kind-tag': { color: 'var(--accent)' },
+    '.cm-breadcrumbs-kind-other': { color: 'var(--text-muted)' }
+  });
 
   const COMMON_EXTENSIONS = [
     EditorView.theme({
@@ -19,7 +209,11 @@
       ".cm-scroller": { overflow: "auto !important", overscrollBehaviorX: "none !important" },
       ".cm-gutters:not(:hover) .custom-fold-marker.is-open": { opacity: 0 },
       ".cm-gutters:hover .custom-fold-marker.is-open": { opacity: 1 },
-      ".custom-fold-marker": { transition: "opacity 0.2s" }
+      ".custom-fold-marker": { transition: "opacity 0.2s" },
+      ".cm-panels": { zIndex: "10 !important" },
+      ".cm-panels-top": { zIndex: "50 !important", borderBottom: "none !important" },
+      ".cm-stickyscroll-container": { borderBottom: "1px solid var(--border-subtle) !important" },
+      ".cm-breadcrumbs-segment.cm-breadcrumbs-kind-folder > svg": { display: "none" }
     }),
     indentationMarkers({
       hideFirstIndent: true,
@@ -37,6 +231,14 @@
     EditorState.allowMultipleSelections.of(true),
     indentOnInput(),
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    EditorView.domEventHandlers({
+      contextmenu(e: MouseEvent, view: EditorView) {
+        const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
+        if (pos !== null) {
+          view.dispatch({ selection: { anchor: pos, head: pos } });
+        }
+      }
+    }),
     bracketMatching(),
     closeBrackets(),
     autocompletion(),
@@ -45,14 +247,32 @@
     highlightActiveLine(),
     highlightSelectionMatches(),
     scrollPastEnd(),
-    stickyScroll(),
     keymap.of([
       ...defaultKeymap,
       ...historyKeymap,
       ...foldKeymap,
       ...completionKeymap,
       ...closeBracketsKeymap,
-    ])
+      // Custom Notron keybindings
+      { key: 'Mod-x', run: deleteLine, preventDefault: true },
+      { key: 'Shift-Mod-k', run: deleteLine, preventDefault: true },
+      { key: 'Mod-Enter', run: insertNewlineAndIndent, preventDefault: true },
+      { key: 'Shift-Mod-Enter', run: insertNewline, preventDefault: true },
+      { key: 'Alt-Down', run: moveLineDown, preventDefault: true },
+      { key: 'Alt-Up', run: moveLineUp, preventDefault: true },
+      { key: 'Shift-Alt-Down', run: copyLineDown, preventDefault: true },
+      { key: 'Shift-Alt-Up', run: copyLineUp, preventDefault: true },
+      { key: 'Mod-d', run: selectNextOccurrence, preventDefault: true },
+      { key: 'Mod-l', run: selectLine, preventDefault: true },
+      { key: 'Shift-Mod-l', run: selectAll, preventDefault: true },
+      { key: 'Mod-/', run: toggleComment, preventDefault: true },
+      { key: 'Shift-Mod-a', run: blockComment, preventDefault: true },
+      { key: 'Mod-]', run: indentMore, preventDefault: true },
+      { key: 'Mod-[', run: indentLess, preventDefault: true },
+      { key: 'Shift-Mod-\\', run: toggleFold, preventDefault: true },
+      { key: 'Shift-Mod-]', run: unfoldCode, preventDefault: true },
+      { key: 'Shift-Mod-[', run: foldCode, preventDefault: true },
+    ]),
   ];
 
   const COMMON_EXTENSIONS_LARGE_FILE = COMMON_EXTENSIONS.filter(_e => {
@@ -65,23 +285,25 @@
 <script lang="ts">
   import { onMount, onDestroy, mount, unmount } from 'svelte';
   import { Compartment, type Extension } from '@codemirror/state';
-  import { lineNumbers, highlightActiveLineGutter } from '@codemirror/view';
+  import { lineNumbers, highlightActiveLineGutter, ViewPlugin } from '@codemirror/view';
   import { foldGutter } from '@codemirror/language';
   import { lintGutter } from '@codemirror/lint';
   import HorizontalScrollbar from './HorizontalScrollbar.svelte';
   import EditorSearchWidget from './EditorSearchWidget.svelte';
   import EditorFoldMarker from './EditorFoldMarker.svelte';
-  import { oneDark } from '@codemirror/theme-one-dark';
+  import GitGutterPeekButton from './GitGutterPeekButton.svelte';
+  import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
+  import { getThemeExtension } from '../themes';
   import { showMinimap } from '@replit/codemirror-minimap';
   import { invoke } from '@tauri-apps/api/core';
-  import { settingsStore } from '../stores/settings.svelte';
   import { editorStore, buildReplaceRegex, applyReplacement } from '../stores/editor';
   import { uiStore } from '../stores/ui';
   import { themeStore } from '../stores/theme';
   import { gitGutter, hunksField, baselineContentFacet, gitGutterKeymap } from '@fazelstudio/codemirror-gitgutter';
   import { getGitFileContent, stageFile } from '../services/git';
+  import { renderBreadcrumbPathIcon } from '../utils/breadcrumbPathIcons';
   
-  let { tabId, content, filePath }: { tabId: string; content: string; filePath: string } = $props();
+  let { tabId, content, filePath, children, topRightOverlay, hideContent = false }: { tabId: string; content: string; filePath: string; children?: Snippet; topRightOverlay?: Snippet; hideContent?: boolean } = $props();
 
   let currentTabId: string | null = null;
   const editorStates = new Map<string, EditorState>();
@@ -130,21 +352,67 @@
     }
   });
 
-  const lightTheme = EditorView.theme({
-    "&.cm-editor": { backgroundColor: "transparent !important" },
-    "&.cm-focused .cm-selectionBackground, & .cm-selectionBackground, .cm-content ::selection": {
-      backgroundColor: "var(--bg-selected) !important"
-    },
-    ".cm-content": { caretColor: "var(--text-primary)" },
-    ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--text-primary)" },
-    "&.cm-focused .cm-activeLine": { backgroundColor: "var(--bg-hover)" },
-    ".cm-activeLineGutter": { backgroundColor: "var(--bg-surface-2)" },
-    ".cm-gutters": { backgroundColor: "transparent !important" },
-    ".cm-lineNumbers .cm-gutterElement": { color: "var(--text-muted)" },
-    ".cm-foldPlaceholder": { backgroundColor: "var(--bg-surface)", color: "var(--text-muted)" },
-    ".cm-matchingBracket": { backgroundColor: "var(--bg-selected)", outline: "1px solid var(--border-focus)" },
-    ".cm-nonmatchingBracket": { backgroundColor: "var(--color-error)", outline: "1px solid var(--color-error)" },
-  });
+  /**
+   * The git gutter peek view (from @fazelstudio/codemirror-gitgutter) renders
+   * its toolbar buttons with the native `title` attribute. This plugin replaces
+   * those native tooltips with the app's Tooltip component by wrapping each
+   * button once it appears in the DOM.
+   */
+  const peekTooltipPlugin = ViewPlugin.fromClass(
+    class {
+      private observer: MutationObserver;
+      private mounted = new Map<HTMLButtonElement, ReturnType<typeof mount>>();
+      private view: EditorView;
+
+      constructor(view: EditorView) {
+        this.view = view;
+        this.observer = new MutationObserver(() => this.scan());
+        this.observer.observe(view.dom, { childList: true, subtree: true });
+        this.scan();
+      }
+
+      scan() {
+        const buttons = Array.from(
+          this.view.dom.querySelectorAll<HTMLButtonElement>('button.cm-gitgutter-peek-btn')
+        );
+
+        // CodeMirror virtualizes block widgets: the peek view DOM is detached
+        // when it scrolls out of view and re-attached (same node) when it
+        // scrolls back. So we only tear down a wrapped button once a fresh
+        // toolbar has taken its place (hunk navigation / peek closed + reopened).
+        const hasNewToolbar = buttons.some((btn) => !this.mounted.has(btn));
+        if (hasNewToolbar) {
+          for (const [btn, app] of this.mounted) {
+            if (!btn.isConnected) {
+              unmount(app);
+              this.mounted.delete(btn);
+            }
+          }
+        }
+
+        for (const btn of buttons) {
+          if (this.mounted.has(btn)) continue;
+          const titleText = btn.title;
+          if (!titleText) continue;
+          btn.removeAttribute('title');
+          const app = mount(GitGutterPeekButton, {
+            target: btn.parentElement as HTMLElement,
+            anchor: btn,
+            props: { content: titleText, button: btn }
+          });
+          this.mounted.set(btn, app);
+        }
+      }
+
+      destroy() {
+        this.observer.disconnect();
+        for (const [, app] of this.mounted) unmount(app);
+        this.mounted.clear();
+      }
+    }
+  );
+
+
 
   const langCompartment = new Compartment();
   const themeCompartment = new Compartment();
@@ -154,6 +422,7 @@
   const minimapCompartment = new Compartment();
   const gutterCompartment = new Compartment();
   const gitGutterCompartment = new Compartment();
+  const breadcrumbsCompartment = new Compartment();
 
   /** Builds the mini-map extensions, or an empty array when no mini-map is wanted. */
   function minimapExtension(): Extension[] {
@@ -165,9 +434,9 @@
           const baseline = state.facet(baselineContentFacet);
           const hunks = baseline ? (state.field(hunksField, false) ?? []) : [];
           for (const hunk of hunks) {
-            let color = '#34d399'; // default success green
-            if (hunk.type === 'modified') color = '#60a5fa'; // info blue
-            else if (hunk.type === 'deleted') color = '#f87171'; // error red
+            let color = 'var(--color-success)'; // default success green
+            if (hunk.type === 'modified') color = 'var(--color-info)'; // info blue
+            else if (hunk.type === 'deleted') color = 'var(--color-error)'; // error red
             if (hunk.type === 'deleted') {
               const line = Math.min(hunk.fromB, state.doc.lines);
               if (line >= 1) gitGutterRecord[line] = color;
@@ -194,12 +463,17 @@
               view.scrollDOM.scrollLeft += e.deltaX;
             }, { passive: false });
 
-            // FORCE it out of the scroller to guarantee it sits on top of text
-            setTimeout(() => {
-              if (view.dom) {
+            // FORCE it out of the scroller to guarantee it sits on top of text.
+            // The plugin inserts the container into the scroller synchronously
+            // AFTER this create() returns, so the move must happen after that —
+            // a microtask does it before the next paint, so the minimap is in
+            // its final position immediately (no visible "slide in" on open;
+            // the old 50ms setTimeout showed it sitting in the scroller first).
+            queueMicrotask(() => {
+              if (view.dom && dom.isConnected) {
                 view.dom.appendChild(dom);
               }
-            }, 50);
+            });
             return { dom };
           },
           displayText: 'characters',
@@ -212,6 +486,7 @@
 
   const settings = settingsStore;
   const ui = uiStore;
+  let iconThemeClass = $derived(`icon-theme-${settings.effectiveSettings.icon_theme}`);
 
   async function loadLanguage() {
     if (isLargeFile) {
@@ -226,15 +501,61 @@
     }
   }
 
+  function readBreadcrumbDirectory(dir: string) {
+    return invoke<any>('read_directory_flat', { path: dir, showDotFiles: false }).then(
+      (node) =>
+        (node || []).map((item: any) => ({
+          name: item.name,
+          path: item.path,
+          isDir: item.is_dir,
+          hasChildren: !!item.has_children,
+        })),
+    );
+  }
+
+  /**
+   * The breadcrumb panel (`.cm-panels.cm-panels-top`) is a sticky top panel with
+   * `z-index: 300`, while `@fazelstudio/codemirror-stickyscroll` pins its bar at
+   * `position:absolute; top:0; z-index:10` — so the sticky bar would render
+   * underneath (covered by) the breadcrumbs. Measure the panel and offset the
+   * sticky bar below it. The installed plugin never writes `top` again, so a
+   * one-time sync per mount/geometry/theme change is enough.
+   */
+  function syncStickyScrollOffset() {
+    if (!editorView) return;
+    const sticky = editorView.dom.querySelector<HTMLElement>('.cm-stickyscroll-container');
+    const panels = editorView.dom.querySelector<HTMLElement>('.cm-panels.cm-panels-top');
+    if (!sticky || !panels) return;
+    sticky.style.top = `${panels.offsetHeight}px`;
+  }
+
+  function openFileFromBreadcrumbs(path: string) {
+    const name = path.split(/[\\/]/).pop() || path;
+    const isImage = /\.(png|jpe?g|gif|webp|ico|bmp)$/i.test(name);
+    const lang = isImage
+      ? 'image'
+      : invoke<string>('detect_language', { path }).catch(() => 'plaintext');
+    Promise.resolve(lang).then((language) => {
+      editorStore.addTab({
+        id: path,
+        path,
+        name,
+        content: null,
+        language,
+        isPreview: true,
+      });
+    });
+  }
+
   function setupEditor() {
     if (!editorView) {
         editorView = new EditorView({ parent: editorEl });
-        scrollDOM = editorView.scrollDOM;
+        scrollDOM = editorView!.scrollDOM;
     }
     
     // Save old state
     if (currentTabId && editorStates.has(currentTabId)) {
-        editorStates.set(currentTabId, editorView.state);
+        editorStates.set(currentTabId, editorView!.state);
     }
     currentTabId = tabId;
 
@@ -245,7 +566,7 @@
     let contentExtractTimer: ReturnType<typeof setTimeout> | null = null;
     const CONTENT_DEBOUNCE_MS = 500; // Extract only after user stops typing
 
-    const updateListener = EditorView.updateListener.of((update) => {
+    const updateListener = EditorView.updateListener.of((update: ViewUpdate) => {
       if (update.docChanged) {
         docChangedCount++; // Trigger search match updates
         // Debounced extraction — don't extract on every keystroke
@@ -275,6 +596,7 @@
             const w = (gutters as HTMLElement).offsetWidth;
             if (gutterWidth !== w) gutterWidth = w;
           }
+          syncStickyScrollOffset();
         }
 
         if (cursorScrollTimeout) clearTimeout(cursorScrollTimeout);
@@ -292,6 +614,16 @@
 
     let extBase = [
       ...(isLargeFile ? COMMON_EXTENSIONS_LARGE_FILE : COMMON_EXTENSIONS),
+      ...(filePath.toLowerCase().endsWith('.svg') ? [] : [stickyScroll()]),
+      breadcrumbsCompartment.of(breadcrumbs({
+        filePath,
+        workspaceRoot: $ui.explorerRoot || undefined,
+        readDirectory: readBreadcrumbDirectory,
+        onOpenFile: openFileFromBreadcrumbs,
+        showPathHeader: false,
+        renderPathIcon: renderBreadcrumbPathIcon,
+      })),
+      notronBreadcrumbsTheme,
       keymap.of([{
         key: 'Mod-f',
         run: () => {
@@ -302,23 +634,30 @@
         }
       }]),
       EditorView.domEventHandlers({
-        click: (event) => {
+        click: (event: MouseEvent) => {
           if (event.altKey) {
             handleGoToDefinition();
             event.preventDefault();
           }
         }
       }),
+      peekTooltipPlugin,
       updateListener,
       langCompartment.of([]),
-      themeCompartment.of(isDark ? oneDark : lightTheme),
+      themeCompartment.of(getThemeExtension($themeStore.theme, isDark)),
       gutterCompartment.of([lintGutter()]),
       lineNumbersCompartment.of(settings.effectiveSettings.line_numbers ? [
         lineNumbers(), 
         customFoldGutter, 
         highlightActiveLineGutter()
       ] : []),
-      gitGutterCompartment.of([]),
+      gitGutterCompartment.of([
+        gitGutter({
+          baseline: content || '',
+          onStageHunk: () => {},
+        }),
+        keymap.of(gitGutterKeymap),
+      ]),
       wordWrapCompartment.of(settings.effectiveSettings.word_wrap ? EditorView.lineWrapping : []),
       tabSizeCompartment.of(EditorState.tabSize.of(settings.effectiveSettings.tab_size)),
       minimapCompartment.of(!isLargeFile && $ui.isMinimapEnabled ? minimapExtension() : []),
@@ -344,7 +683,9 @@
         editorStates.set(tabId, state);
     }
     
-    editorView.setState(state);
+    editorView!.setState(state);
+    ensureBreadcrumbObserver(editorView);
+    syncStickyScrollOffset();
 
     const scroll = editorStore.getScroll(tabId);
     if (scroll) {
@@ -358,10 +699,10 @@
     const cursor = editorStore.getCursor(tabId);
     if (cursor && !isLargeFile) {
       try {
-        const line = editorView.state.doc.line(cursor.line);
+        const line = editorView!.state.doc.line(cursor.line);
         const anchor = Math.min(line.from + cursor.column - 1, line.to);
         const head = cursor.endColumn ? Math.min(line.from + cursor.endColumn - 1, line.to) : anchor;
-        editorView.dispatch({
+        editorView!.dispatch({
           selection: { anchor, head },
           scrollIntoView: true
         });
@@ -369,14 +710,24 @@
     }
 
     loadLanguage();
+    requestAnimationFrame(() => {
+      if (editorView) {
+        syncBreadcrumbBarIcons(editorView);
+        setTimeout(() => {
+          if (editorView) syncBreadcrumbBarIcons(editorView);
+        }, 50);
+      }
+    });
   }
 
   $effect(() => {
+    const themeId = $themeStore.theme;
     const dark = isDark;
     if (!editorView) return;
     editorView.dispatch({
-      effects: themeCompartment.reconfigure(dark ? oneDark : lightTheme)
+      effects: themeCompartment.reconfigure(getThemeExtension(themeId, dark))
     });
+    syncStickyScrollOffset();
   });
 
   $effect(() => {
@@ -415,6 +766,40 @@
     });
   });
 
+  $effect(() => {
+    // Reactively reconfigure breadcrumbs when icon_theme or filePath changes.
+    settings.effectiveSettings.icon_theme;
+    const currentFilePath = filePath;
+    const currentRoot = $ui.explorerRoot;
+    if (!editorView) return;
+    editorView.dispatch({
+      effects: breadcrumbsCompartment.reconfigure(breadcrumbs({
+        filePath: currentFilePath,
+        workspaceRoot: currentRoot || undefined,
+        readDirectory: readBreadcrumbDirectory,
+        onOpenFile: openFileFromBreadcrumbs,
+        showPathHeader: false,
+        renderPathIcon: renderBreadcrumbPathIcon,
+      }))
+    });
+    requestAnimationFrame(() => {
+      if (editorView) {
+        syncBreadcrumbBarIcons(editorView);
+        setTimeout(() => {
+          if (editorView) syncBreadcrumbBarIcons(editorView);
+        }, 50);
+      }
+    });
+  });
+
+  $effect(() => {
+    // Lightweight: when a material icon finishes loading, fill it into the bar
+    // without reconfiguring the whole plugin (preload bumps this a lot).
+    materialIconState.version;
+    if (!editorView) return;
+    syncBreadcrumbBarIcons(editorView);
+  });
+
   async function loadGitBaseline() {
     if (isLargeFile || !editorView || !$ui.explorerRoot) return;
     const explorerRoot = $ui.explorerRoot;
@@ -426,19 +811,23 @@
 
     try {
       const baseline = await getGitFileContent(explorerRoot, relativePath, 'HEAD');
+      // Check editorView again after async operation - component may have been destroyed
+      if (!editorView) return;
       editorView.dispatch({
-        effects: gitGutterCompartment.reconfigure(baseline
-          ? [
-              gitGutter({
-                baseline,
-                onStageHunk: (_hunk) => stageFile(explorerRoot, relativePath),
-              }),
-              keymap.of(gitGutterKeymap),
-            ]
-          : [])
+        effects: gitGutterCompartment.reconfigure([
+          gitGutter({
+            baseline: baseline ?? content ?? '',
+            onStageHunk: (_hunk) => stageFile(explorerRoot, relativePath),
+          }),
+          keymap.of(gitGutterKeymap),
+        ])
       });
     } catch (e) {
-      console.warn('Failed to load git baseline', e);
+      // Ignore error for new files not in HEAD yet
+      const msg = String(e);
+      if (!msg.includes('exists on disk, but not in') && !msg.includes('not in HEAD')) {
+        console.warn('Failed to load git baseline', e);
+      }
     }
   }
 
@@ -453,9 +842,41 @@
   async function handleGoToDefinition() {
     if (!editorView || !$ui.explorerRoot) return;
     const pos = editorView.state.selection.main.head;
-    const word = editorView.state.wordAt(pos);
-    if (!word) return;
-    const symbol = editorView.state.sliceDoc(word.from, word.to);
+    
+    let symbol = '';
+    const line = editorView.state.doc.lineAt(pos);
+    const lineText = line.text;
+    const col = pos - line.from;
+
+    let inQuotes = false;
+    let quoteChar = '';
+    let startIdx = -1;
+    let endIdx = -1;
+    for (let i = 0; i < lineText.length; i++) {
+        if (lineText[i] === "'" || lineText[i] === '"' || lineText[i] === '`') {
+            if (!inQuotes) {
+                inQuotes = true;
+                quoteChar = lineText[i];
+                startIdx = i;
+            } else if (lineText[i] === quoteChar) {
+                if (col > startIdx && col <= i) {
+                    endIdx = i;
+                    break;
+                }
+                inQuotes = false;
+            }
+        }
+    }
+
+    if (startIdx !== -1 && endIdx !== -1 && col > startIdx && col <= endIdx) {
+        symbol = lineText.substring(startIdx + 1, endIdx);
+    } else {
+        const word = editorView.state.wordAt(pos);
+        if (word) {
+            symbol = editorView.state.sliceDoc(word.from, word.to);
+        }
+    }
+
     if (!symbol.trim()) return;
     try {
       const { gotoDefinition } = await import('../utils/symbolEngine');
@@ -471,9 +892,41 @@
   async function handleFindReferences() {
     if (!editorView || !$ui.explorerRoot) return;
     const pos = editorView.state.selection.main.head;
-    const word = editorView.state.wordAt(pos);
-    if (!word) return;
-    const symbol = editorView.state.sliceDoc(word.from, word.to);
+    
+    let symbol = '';
+    const line = editorView.state.doc.lineAt(pos);
+    const lineText = line.text;
+    const col = pos - line.from;
+
+    let inQuotes = false;
+    let quoteChar = '';
+    let startIdx = -1;
+    let endIdx = -1;
+    for (let i = 0; i < lineText.length; i++) {
+        if (lineText[i] === "'" || lineText[i] === '"' || lineText[i] === '`') {
+            if (!inQuotes) {
+                inQuotes = true;
+                quoteChar = lineText[i];
+                startIdx = i;
+            } else if (lineText[i] === quoteChar) {
+                if (col > startIdx && col <= i) {
+                    endIdx = i;
+                    break;
+                }
+                inQuotes = false;
+            }
+        }
+    }
+
+    if (startIdx !== -1 && endIdx !== -1 && col > startIdx && col <= endIdx) {
+        symbol = lineText.substring(startIdx + 1, endIdx);
+    } else {
+        const word = editorView.state.wordAt(pos);
+        if (word) {
+            symbol = editorView.state.sliceDoc(word.from, word.to);
+        }
+    }
+
     if (!symbol.trim()) return;
     try {
       const { findReferences } = await import('../utils/symbolEngine');
@@ -570,10 +1023,12 @@
               editorStates.set(tId, tr.state);
           }
       } else {
-          // Store chunk so when we create state we have it
+          // Store chunk so when we create state we have it. The file is still
+          // being loaded (not edited), so use setInitialContent — updateContent
+          // would wrongly mark a freshly-opened file as modified (unsaved dot).
           const tabData = editorStore.getTabsSnapshot().find(t => t.id === tId);
           if (tabData) {
-               editorStore.updateContent(tId, (tabData.content || '') + chunk);
+               editorStore.setInitialContent(tId, (tabData.content || '') + chunk);
           }
       }
   }
@@ -586,6 +1041,9 @@
   });
 
   onDestroy(() => {
+    breadcrumbObserver?.disconnect();
+    breadcrumbObserver = null;
+    breadcrumbObserverTarget = null;
     window.removeEventListener('editor:action', handleAction);
     // Instead of just current tab, save history for all tracked states
     if (editorView) {
@@ -616,24 +1074,94 @@
     }
     foldMarkers.clear();
   });
+
+  let editorContextMenuItems: MenuItem[] = $derived([
+    {
+      id: 'goto-definition',
+      label: 'Go to Definition',
+      shortcut: 'F12',
+      action: () => handleGoToDefinition(),
+      disabled: isLargeFile || currentTab?.language === 'plaintext'
+    },
+    {
+      id: 'goto-type-definition',
+      label: 'Go to Type Definition',
+      action: () => { /* Not yet natively supported by backend symbol engine */ },
+      disabled: true
+    },
+    {
+      id: 'goto-implementations',
+      label: 'Go to Implementations',
+      action: () => { /* Not yet natively supported by backend symbol engine */ },
+      disabled: true
+    },
+    {
+      id: 'find-references',
+      label: 'Find All References',
+      shortcut: 'Shift+F12',
+      action: () => handleFindReferences(),
+      disabled: isLargeFile || currentTab?.language === 'plaintext'
+    },
+    {
+      id: 'find-implementations',
+      label: 'Find All Implementations',
+      action: () => { /* Not yet natively supported by backend symbol engine */ },
+      disabled: true
+    },
+    {
+      id: 'show-call-hierarchy',
+      label: 'Show Call Hierarchy',
+      action: () => { /* Not yet natively supported by backend symbol engine */ },
+      disabled: true
+    },
+    { id: 'sep1', label: '', action: () => {}, separator: true },
+    {
+      id: 'cut',
+      label: 'Cut',
+      shortcut: 'Ctrl+X',
+      action: () => document.execCommand('cut')
+    },
+    {
+      id: 'copy',
+      label: 'Copy',
+      shortcut: 'Ctrl+C',
+      action: () => document.execCommand('copy')
+    },
+    {
+      id: 'paste',
+      label: 'Paste',
+      shortcut: 'Ctrl+V',
+      action: () => document.execCommand('paste')
+    },
+    { id: 'sep2', label: '', action: () => {}, separator: true },
+    {
+      id: 'command-palette',
+      label: 'Command Palette',
+      shortcut: 'Ctrl+Shift+P',
+      action: () => {
+        window.dispatchEvent(new CustomEvent('open-command-palette'));
+      }
+    }
+  ]);
 </script>
 
+<ContextMenu items={editorContextMenuItems}>
 <div class="absolute inset-0 [&_.cm-editor]:h-full editor-wrapper" style={style} role="none" onmouseover={handleEditorMouseOver} onfocus={() => {}}>
 
   {#if isLargeFile}
-    <div class="absolute top-0 left-0 right-0 bg-yellow-900/50 text-yellow-300 text-[10px] px-3 py-1 text-center z-10">
+    <div class="absolute top-0 left-0 right-0 text-[10px] px-3 py-1 text-center z-10" style="background-color: color-mix(in srgb, var(--color-warning) 20%, transparent); color: var(--color-warning);">
       Large file — syntax highlighting and some features disabled for performance
     </div>
   {/if}
   {#if tabStatus === 'deleted'}
-    <div class="absolute top-0 left-0 right-0 bg-red-900/50 text-red-200 text-xs px-3 py-2 text-center z-10 flex justify-center items-center gap-4">
+    <div class="absolute top-0 left-0 right-0 text-xs px-3 py-2 text-center z-10 flex justify-center items-center gap-4" style="background-color: color-mix(in srgb, var(--color-error) 20%, transparent); color: var(--color-error);">
       <span>This file has been deleted from disk.</span>
-      <button class="bg-red-700/80 hover:bg-red-600 px-3 py-1 rounded cursor-pointer" onclick={() => editorStore.closeTab(tabId)}>Close Tab</button>
+      <button class="px-3 py-1 rounded cursor-pointer" style="background-color: color-mix(in srgb, var(--color-error) 50%, transparent);" onclick={() => editorStore.closeTab(tabId)}>Close Tab</button>
     </div>
   {:else if tabStatus === 'conflict'}
-    <div class="absolute top-0 left-0 right-0 bg-orange-900/50 text-orange-200 text-xs px-3 py-2 text-center z-10 flex justify-center items-center gap-4">
+    <div class="absolute top-0 left-0 right-0 text-xs px-3 py-2 text-center z-10 flex justify-center items-center gap-4" style="background-color: color-mix(in srgb, var(--color-warning) 20%, transparent); color: var(--color-warning);">
       <span>This file has been modified by another program. You have unsaved changes.</span>
-      <button class="bg-orange-700/80 hover:bg-orange-600 px-3 py-1 rounded cursor-pointer" onclick={() => editorStore.markSaved(tabId)}>Ignore</button>
+      <button class="px-3 py-1 rounded cursor-pointer" style="background-color: color-mix(in srgb, var(--color-warning) 50%, transparent);" onclick={() => editorStore.markSaved(tabId)}>Ignore</button>
       <button class="bg-surface-3 hover:bg-surface-4 px-3 py-1 rounded cursor-pointer" onclick={() => {
         if (!currentTab) return;
         invoke('read_file_text', { path: currentTab.path }).then((content) => {
@@ -650,8 +1178,22 @@
       }}>Reload from Disk</button>
     </div>
   {/if}
-  <div bind:this={editorEl} class="h-full relative editor-container {tabStatus === 'deleted' || tabStatus === 'conflict' ? 'pt-8' : ''}"></div>
+  <div class="relative w-full" style="height: 0; z-index: 100;">
+    {#if topRightOverlay}
+      <div class="absolute right-2 h-[28px] flex items-center" style="top: {tabStatus === 'deleted' || tabStatus === 'conflict' ? '32px' : '0px'};">
+        {@render topRightOverlay()}
+      </div>
+    {/if}
+  </div>
+  <div bind:this={editorEl} class="{hideContent ? 'flex-none' : 'h-full flex-1'} relative editor-container {tabStatus === 'deleted' || tabStatus === 'conflict' ? 'pt-8' : ''} {iconThemeClass} {hideContent ? 'hide-cm-content' : ''}">
+  </div>
   
+  {#if children}
+    <div class="flex-1 relative overflow-hidden">
+      {@render children()}
+    </div>
+  {/if}
+
   {#if scrollDOM}
     <HorizontalScrollbar target={scrollDOM} leftGap={gutterWidth} rightGap={rightGap} />
   {/if}
@@ -665,3 +1207,14 @@
     />
   {/if}
 </div>
+</ContextMenu>
+
+<style>
+  :global(.hide-cm-content .cm-scroller) {
+    display: none !important;
+  }
+  :global(.hide-cm-content .cm-editor) {
+    height: auto !important;
+  }
+</style>
+
