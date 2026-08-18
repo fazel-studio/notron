@@ -21,9 +21,9 @@
 </script>
 
 {#if isOpen}
-  <div class="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm" role="presentation">
+  <div class="fixed inset-0 z-[200] flex items-center justify-center bg-canvas/50 backdrop-blur-sm" role="presentation">
     <div
-      class="w-full {widthClass} {heightClass} rounded-lg shadow-2xl flex flex-col border bg-surface-2 border-subtle text-primary overflow-hidden"
+      class="w-full {widthClass} {heightClass} rounded-lg shadow-elevated flex flex-col border bg-surface-2 border-subtle text-primary overflow-hidden"
       role="dialog"
       tabindex="0"
       onclick={(e) => e.stopPropagation()}

@@ -478,7 +478,7 @@ import { settingsStore } from '../stores/settings.svelte';
 
         <div class="flex-1 overflow-y-auto">
           {#if repo.conflicted.length > 0}
-            <div class="flex items-center justify-between px-3 py-1 bg-surface-2 group sticky top-0 z-10 border-b border-subtle shadow-sm">
+            <div class="flex items-center justify-between px-3 py-1 bg-surface-2 group sticky top-0 z-10 border-b border-subtle shadow-elevated-sm">
               <span class="text-[10px] font-semibold uppercase" style="color: var(--accent)">Conflicts</span>
             </div>
             <div class="flex flex-col mb-2">
@@ -511,7 +511,7 @@ import { settingsStore } from '../stores/settings.svelte';
           {/if}
 
           {#if repo.staged.length > 0}
-            <div class="flex items-center justify-between px-3 py-1 bg-surface-2 group sticky top-0 z-10 border-b border-subtle shadow-sm">
+            <div class="flex items-center justify-between px-3 py-1 bg-surface-2 group sticky top-0 z-10 border-b border-subtle shadow-elevated-sm">
               <span class="text-[10px] font-semibold uppercase text-secondary">Staged Changes</span>
               <div class="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
                 <Tooltip content="Unstage All Changes">
@@ -556,7 +556,7 @@ import { settingsStore } from '../stores/settings.svelte';
           {/if}
 
           {#if repo.unstaged.length > 0 || repo.untracked.length > 0}
-            <div class="flex items-center justify-between px-3 py-1 bg-surface-2 group sticky top-0 z-10 border-y border-subtle shadow-sm mt-2">
+            <div class="flex items-center justify-between px-3 py-1 bg-surface-2 group sticky top-0 z-10 border-y border-subtle shadow-elevated-sm mt-2">
               <span class="text-[10px] font-semibold uppercase text-secondary">Changes</span>
               <div class="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
                 <Tooltip content="Stage All Changes">
@@ -738,7 +738,7 @@ import { settingsStore } from '../stores/settings.svelte';
                   {#snippet customContent()}
                     <!-- svelte-ignore a11y_click_events_have_key_events -->
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
-                    <div class="w-[360px] bg-surface-2 border border-subtle rounded-md shadow-xl flex flex-col pointer-events-auto cursor-default text-primary relative ml-2" onclick={(e) => e.stopPropagation()}>
+                    <div class="w-[360px] bg-surface-2 border border-subtle rounded-md shadow-elevated flex flex-col pointer-events-auto cursor-default text-primary relative ml-2" onclick={(e) => e.stopPropagation()}>
                       <!-- Arrow (placed behind container to hide its right half) -->
                       <div class="absolute -left-[6px] top-1/2 -translate-y-1/2 w-3 h-3 bg-surface-2 border-l border-b border-subtle rotate-45 -z-10 rounded-sm"></div>
                       

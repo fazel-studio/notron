@@ -8,10 +8,8 @@
   import { getHumanReadableError } from './lib/utils/error';
   import { settingsStore } from './lib/stores/settings.svelte';
   import { themeStore } from './lib/stores/theme';
-  import { getFileIcon } from './lib/components/TreeNode.svelte';
   import FileTree from './lib/components/FileTree.svelte';
   import Tooltip from './lib/components/Tooltip.svelte';
-  import MaterialIcon from './lib/components/MaterialIcon.svelte';
   import { preloadMaterialIcons } from './lib/utils/materialIconRenderer.svelte';
   import TitleMenuBar from './lib/components/TitleMenuBar.svelte';
   import CloseTabDialog from './lib/components/CloseTabDialog.svelte';
@@ -22,12 +20,14 @@
   import TerminalPanel from './lib/components/TerminalPanel.svelte';
   import SmartSearchModal from './lib/components/SmartSearchModal.svelte';
   import ToastContainer from './lib/components/ToastContainer.svelte';
-  import SvgViewToggle from './lib/components/SvgViewToggle.svelte';
+
+  import SplitView from './lib/components/SplitView.svelte';
   import { terminalStore } from './lib/stores/terminal';
   import { paletteStore, type PaletteItem } from './lib/stores/palette';
   import { navigationStore } from './lib/stores/navigation';
   import { gitDecorationStore } from './lib/stores/gitDecoration';
   import { gitRepoStore } from './lib/stores/gitRepo';
+  import { splitStore } from './lib/stores/split';
   import { onMount } from 'svelte';
 
   const tabs = editorStore.tabs;
@@ -69,15 +69,6 @@
   let showSmartSearchModal = $state(false);
   let activeTab = $derived($tabs.find((t: any) => t.id === $activeTabId) || null);
   let isDark = $derived($themeStore.isDark);
-
-  // Precomputed name→count map so the tab bar avoids an O(n²) filter per render.
-  const tabNameCounts = $derived(
-    $tabs.reduce((m, t: any) => {
-      if (t.path?.startsWith('Untitled')) return m;
-      m.set(t.name, (m.get(t.name) ?? 0) + 1);
-      return m;
-    }, new Map<string, number>())
-  );
 
   $effect(() => {
     const workspacePath = $ui.explorerRoot;
@@ -202,19 +193,6 @@
     }
   });
 
-  let tabCtxMenu = $state({
-    isOpen: false,
-    x: 0,
-    y: 0,
-    targetTabId: null as string | null,
-    items: [] as any[]
-  });
-
-  function closeAllContextMenus(e?: Event) {
-    if (e && (e.target as Element)?.closest?.('[data-notron-context-menu]')) return;
-    tabCtxMenu.isOpen = false;
-  }
-
   onMount(() => {
     const switchHandler = async (e: Event) => {
       const path = (e as CustomEvent).detail?.path;
@@ -224,11 +202,43 @@
       }
     };
     window.addEventListener('request-workspace-switch', switchHandler);
-    window.addEventListener('click', closeAllContextMenus, { capture: true });
-    window.addEventListener('contextmenu', closeAllContextMenus, { capture: true });
-    window.addEventListener('editor:action', closeAllContextMenus);
-    window.addEventListener('close-context-menus', closeAllContextMenus);
     
+    // Split pane / file operations
+    window.addEventListener('request-open-file', async (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const path = detail?.path;
+      const line = detail?.line;
+      if (path) {
+        await openFileInActivePane(path);
+        if (line) {
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('editor:action', { detail: { action: 'goto', line } }));
+          }, 50);
+        }
+      }
+    });
+    window.addEventListener('request-open-file-split', async (e: Event) => {
+      const path = (e as CustomEvent).detail?.path;
+      if (path) {
+        // Split right and then open
+        const snap = splitStore.getSnapshot();
+        const activeId = snap.activePaneId;
+        if (activeId) splitStore.splitPane(activeId, 'right');
+        await openFileInActivePane(path);
+      }
+    });
+    window.addEventListener('split:request-close-tab', (e: Event) => {
+      const { tabId, paneId } = (e as CustomEvent).detail;
+      const tab = editorStore.getTabsSnapshot().find((t: any) => t.id === tabId);
+      if (!tab) return;
+      if (tab.isModified || (tab.path.startsWith('Untitled') && tab.content && tab.content.trim() !== '')) {
+        closingTabId = tabId;
+      } else {
+        splitStore.closeTabInPane(paneId, tabId);
+        editorStore.closeTab(tabId);
+      }
+    });
+
     const openSmartSearchHandler = () => showSmartSearchModal = true;
     window.addEventListener('open-smart-search', openSmartSearchHandler);
 
@@ -254,144 +264,12 @@
 
     return () => {
       window.removeEventListener('request-workspace-switch', switchHandler);
-      window.removeEventListener('click', closeAllContextMenus, { capture: true });
-      window.removeEventListener('contextmenu', closeAllContextMenus, { capture: true });
-      window.removeEventListener('editor:action', closeAllContextMenus);
-      window.removeEventListener('close-context-menus', closeAllContextMenus);
       window.removeEventListener('open-smart-search', openSmartSearchHandler);
       window.removeEventListener('focus', focusHandler);
     };
   });
-
-  function handleTabContextMenu(e: MouseEvent, tabId: string) {
-    e.preventDefault();
-    e.stopPropagation();
-    window.dispatchEvent(new CustomEvent('close-context-menus'));
-    
-    const tabs = editorStore.getTabsSnapshot();
-    const tabIndex = tabs.findIndex((t: any) => t.id === tabId);
-    const tab = tabs[tabIndex];
-    if (!tab) return;
-    
-    tabCtxMenu.targetTabId = tabId;
-    tabCtxMenu.items = [
-      {
-        id: 'close',
-        label: 'Close Tab',
-        shortcut: 'Ctrl+W',
-        action: () => { handleTabClose(tabId); }
-      },
-      {
-        id: 'close_other',
-        label: 'Close Other',
-        disabled: tabs.length <= 1,
-        action: () => {
-          tabs.forEach((t: any) => {
-            if (t.id !== tabId) handleTabClose(t.id);
-          });
-        }
-      },
-      {
-        id: 'close_right',
-        label: 'Close to the Right',
-        disabled: tabIndex === -1 || tabIndex === tabs.length - 1,
-        action: () => {
-          for (let i = tabIndex + 1; i < tabs.length; i++) {
-            handleTabClose(tabs[i].id);
-          }
-        }
-      },
-      { separator: true },
-      {
-        id: 'copy_path',
-        label: 'Copy Path',
-        action: () => {
-          navigator.clipboard.writeText(tab.path).catch(console.error);
-        }
-      },
-      {
-        id: 'pin',
-        label: tab.isPinned ? 'Unpin' : 'Pin',
-        action: () => {
-          editorStore.togglePin(tabId);
-        }
-      }
-    ];
-    
-    tabCtxMenu.x = e.clientX;
-    tabCtxMenu.y = e.clientY;
-    tabCtxMenu.isOpen = true;
-  }
-
-  async function handleOpenFileCtx() {
-    try {
-      const selected = await open({ multiple: false });
-      if (selected && typeof selected === 'string') {
-        const fileName = selected.split(/[/\\]/).pop() || 'Unknown';
-        let content = '';
-        const isImage = /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(fileName);
-        let isLargeFile = false;
-        let isPreview = false;
-        if (!isImage) {
-          try {
-            content = await invoke<string>('read_file_text', { path: selected });
-          } catch (e) {
-            if (String(e) === '__BINARY__') content = '';
-            else if (String(e) === '__LARGE_FILE__') {
-              const chunked = await invoke<any>('read_file_chunked', { path: selected });
-              content = chunked.content;
-              isLargeFile = true;
-              isPreview = true;
-            } else throw e;
-          }
-        }
-        editorStore.addTab({
-          id: `tab-${Date.now()}`, path: selected, name: fileName, content,
-          language: isImage ? 'image' : await invoke<string>('detect_language', { path: selected }),
-          isPreview,
-          isLargeFile
-        });
-      }
-    } catch (err) { console.error(err); }
-  }
-
-  function handleEmptyTabAreaContextMenu(e: MouseEvent) {
-    e.preventDefault();
-    window.dispatchEvent(new CustomEvent('close-context-menus'));
-    
-    const tabs = editorStore.getTabsSnapshot();
-    tabCtxMenu.targetTabId = null;
-    tabCtxMenu.items = [
-      {
-        id: 'new_text_file',
-        label: 'New Text File',
-        shortcut: 'Ctrl+N',
-        action: handleNewTextFile
-      },
-      {
-        id: 'open_file',
-        label: 'Open File',
-        shortcut: 'Ctrl+O',
-        action: handleOpenFileCtx
-      },
-      { separator: true },
-      {
-        id: 'close_all',
-        label: 'Close All Tabs',
-        disabled: tabs.length === 0,
-        action: () => {
-          tabs.forEach((t: any) => handleTabClose(t.id));
-        }
-      }
-    ];
-    
-    tabCtxMenu.x = e.clientX;
-    tabCtxMenu.y = e.clientY;
-    tabCtxMenu.isOpen = true;
-  }
-
   $effect(() => {
-    if (activeTab?.language === 'markdown-preview' && !MarkdownPreviewComponent) {
+    if (activeTab && (activeTab.language === 'markdown-preview' || activeTab.language === 'markdown' || activeTab.path.toLowerCase().endsWith('.md')) && !MarkdownPreviewComponent) {
       import('./lib/components/MarkdownPreview.svelte').then(m => MarkdownPreviewComponent = m.default);
     }
   });
@@ -437,6 +315,23 @@
         activeTabId = validTabs.length > 0 ? validTabs[0].id : null;
       }
 
+      const rawSplitState = splitStore.getSnapshot();
+      const sanitizedSplitState = {
+        ...rawSplitState,
+        panes: Object.fromEntries(Object.entries(rawSplitState.panes).map(([k, v]) => [
+          k,
+          {
+            ...v,
+            tabs: v.tabs.map((t: any) => ({
+              id: t.id, path: t.path, name: t.name, language: t.language,
+              isPreview: t.isPreview, isPinned: t.isPinned,
+              isModified: t.isModified,
+              content: t.isModified ? t.content : undefined,
+            }))
+          }
+        ]))
+      };
+
       const session = {
         sidebarWidth: uiVal.sidebarWidth,
         isSidebarOpen: uiVal.isSidebarOpen,
@@ -457,8 +352,11 @@
           cursor: editorStore.getCursor(t.id), scroll: editorStore.getScroll(t.id),
           isModified: t.isModified,
           content: t.isModified ? t.content : undefined,
+          svgViewMode: t.svgViewMode,
+          mdViewMode: t.mdViewMode,
         })),
         activeTabId,
+        splitState: sanitizedSplitState,
       };
 
       // Section 1.1: Save to both legacy table AND tiered tables in parallel
@@ -628,8 +526,9 @@
             if (parsed.terminalVisible !== undefined) terminalStore.setVisibility(parsed.terminalVisible);
 
             // Phase 3: Lazy Tab Initialization
+            let lazyTabs: any[] = [];
             if (parsed.tabs && parsed.tabs.length > 0) {
-              const lazyTabs = parsed.tabs.map((t: any) => ({
+              lazyTabs = parsed.tabs.map((t: any) => ({
                 ...t,
                 content: t.isModified && t.content !== undefined ? t.content : null,
                 originalContent: null,
@@ -639,6 +538,34 @@
               editorStore.setTabs(lazyTabs, parsed.activeTabId || null);
             } else {
               editorStore.setTabs([], null);
+            }
+
+            if (parsed.splitState) {
+              const loadedSplit = parsed.splitState;
+              const newPanes = Object.fromEntries(
+                Object.entries(loadedSplit.panes).map(([paneId, p]: [string, any]) => {
+                  return [paneId, {
+                    ...p,
+                    tabs: p.tabs.map((t: any) => lazyTabs.find(lt => lt.id === t.id) || t)
+                  }];
+                })
+              );
+              splitStore.setState({ ...loadedSplit, panes: newPanes });
+            } else if (lazyTabs.length > 0) {
+              // Migration from older flat session
+              const snap = splitStore.getSnapshot();
+              const paneId = snap.activePaneId;
+              const pane = snap.panes[paneId];
+              splitStore.setState({
+                ...snap,
+                panes: {
+                  [paneId]: {
+                    ...pane,
+                    tabs: lazyTabs,
+                    activeTabId: parsed.activeTabId || null
+                  }
+                }
+              });
             }
           } catch (e) {
             console.error('Failed to parse session state', e);
@@ -957,9 +884,85 @@
     while (tabsSnapshot.some((t: any) => t.path === `Untitled-${count}`)) count++;
     const name = `Untitled-${count}`;
     const id = `tab-${Date.now()}`;
-    editorStore.addTab({ id, path: name, name, content: '', language: 'plaintext', isPreview: false });
+    const tab = { id, path: name, name, content: '', language: 'plaintext', isPreview: false };
+    // Add to editorStore (global)
+    editorStore.addTab(tab);
     editorStore.setActiveTab(id);
+    // Also add to active split pane
+    const splitSnap = splitStore.getSnapshot();
+    const activePaneId = splitSnap.activePaneId;
+    if (activePaneId) {
+      splitStore.addTabToPane(activePaneId, { ...tab, originalContent: '', isModified: false, lastAccessed: Date.now(), status: 'active' });
+    }
   }
+
+  /** Open a file and add it to the active split pane */
+  async function openFileInActivePane(filePath: string) {
+    const splitSnap = splitStore.getSnapshot();
+    const activePaneId = splitSnap.activePaneId;
+    const pane = activePaneId ? splitSnap.panes[activePaneId] : null;
+
+    if (pane) {
+      const existing = pane.tabs.find((t: any) => t.path === filePath);
+      if (existing) {
+        splitStore.setActivePaneTab(activePaneId, existing.id);
+        editorStore.setActiveTab(existing.id);
+        return;
+      }
+    }
+
+    const fileName = filePath.split(/[/\\]/).pop() || 'Unknown';
+    let content: string | null = null;
+    const isImage = /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(fileName);
+    let isLargeFile = false;
+    let isPreview = false;
+    if (!isImage) {
+      try {
+        content = await invoke<string>('read_file_text', { path: filePath });
+      } catch (e) {
+        if (String(e) === '__BINARY__') content = '';
+        else if (String(e) === '__LARGE_FILE__') {
+          const chunked = await invoke<any>('read_file_chunked', { path: filePath });
+          content = chunked.content;
+          isLargeFile = true;
+          isPreview = true;
+        } else throw e;
+      }
+    }
+    const language = isImage ? 'image' : await invoke<string>('detect_language', { path: filePath }).catch(() => 'plaintext');
+    const id = `tab-${Date.now()}`;
+    const tab = { id, path: filePath, name: fileName, content, language, isPreview, isLargeFile };
+    
+    let tabToReplaceId = null;
+    const currentSplitSnap = splitStore.getSnapshot();
+    const currentActivePaneId = currentSplitSnap.activePaneId || activePaneId;
+    const currentPane = currentActivePaneId ? currentSplitSnap.panes[currentActivePaneId] : null;
+
+    if (currentPane && currentPane.activeTabId) {
+      const activeTab = currentPane.tabs.find((t: any) => t.id === currentPane.activeTabId);
+      // Replace if not modified. For 'Untitled', also ensure it doesn't have content.
+      if (activeTab && !activeTab.isModified) {
+        const isUntitledWithContent = activeTab.path.startsWith('Untitled') && activeTab.content && activeTab.content.trim() !== '';
+        if (!isUntitledWithContent) {
+          tabToReplaceId = activeTab.id;
+        }
+      }
+    }
+
+    if (tabToReplaceId && currentActivePaneId) {
+      editorStore.closeTab(tabToReplaceId);
+      editorStore.addTab(tab);
+      editorStore.setActiveTab(id);
+      splitStore.replaceTabInPane(activePaneId, tabToReplaceId, { ...tab, originalContent: content, isModified: false, lastAccessed: Date.now(), status: content !== null ? 'active' : 'loaded' });
+    } else {
+      editorStore.addTab(tab);
+      editorStore.setActiveTab(id);
+      if (currentActivePaneId) {
+        splitStore.addTabToPane(currentActivePaneId, { ...tab, originalContent: content, isModified: false, lastAccessed: Date.now(), status: content !== null ? 'active' : 'loaded' });
+      }
+    }
+  }
+
 
   function openSettings() {
     isSettingsOpen = true;
@@ -1021,12 +1024,18 @@
     try {
       const selected = await open({ multiple: false });
       if (selected && typeof selected === 'string') {
-        const name = selected.split(/[/\\]/).pop() || 'Unknown';
-        const id = `tab-${Date.now()}`;
-        editorStore.addTab({ id, path: selected, name, content: null, language: 'plaintext', isPreview: false });
-        editorStore.setActiveTab(id);
+        await openFileInActivePane(selected);
       }
-    } catch (err) { console.error("Failed to open file:", err); }
+    } catch (err) { console.error('Failed to open file:', err); }
+  }
+
+  function handleOpenTerminal() {
+    const snap = terminalStore.getSnapshot();
+    if (snap.terminals.length === 0) {
+      terminalStore.newTerminal('powershell', uiStore.getSnapshot().explorerRoot || '');
+    } else {
+      terminalStore.setVisibility(true);
+    }
   }
 
   function handleTabClose(tabId: string) {
@@ -1035,6 +1044,11 @@
     if (tab.isModified || (tab.path.startsWith('Untitled') && tab.content && tab.content.trim() !== '')) {
       closingTabId = tabId;
     } else {
+      // Remove from all split panes
+      const snap = splitStore.getSnapshot();
+      for (const paneId of Object.keys(snap.panes)) {
+        splitStore.closeTabInPane(paneId, tabId);
+      }
       editorStore.closeTab(tabId);
       debouncedSaveFullSession();
     }
@@ -1133,8 +1147,23 @@
       e.preventDefault();
       e.stopPropagation();
       if ((cmdOrCtrl && key === 'w') || key === 'w') {
-        const tabs = editorStore.getTabsSnapshot();
-        tabs.forEach((t: any) => handleTabClose(t.id));
+        // Ctrl+K+W: close all tabs in the active pane, then close the pane
+        const splitSnap = splitStore.getSnapshot();
+        const activePaneId = splitSnap.activePaneId;
+        if (activePaneId) {
+          const pane = splitSnap.panes[activePaneId];
+          if (pane) {
+            pane.tabs.forEach((t: any) => {
+              editorStore.closeTab(t.id);
+            });
+            splitStore.closeAllTabsInPane(activePaneId);
+            // Close pane if more than one exists
+            const allPaneIds = splitStore.collectPaneIds();
+            if (allPaneIds.length > 1) {
+              splitStore.closePane(activePaneId);
+            }
+          }
+        }
       } else if ((cmdOrCtrl && key === 'o') || key === 'o') {
         import('@tauri-apps/plugin-dialog').then(({ open }) => {
           open({ directory: true }).then((selected) => {
@@ -1159,12 +1188,26 @@
       return;
     }
 
-    // Close Tab (Ctrl+W / Ctrl+F4)
+    // Close Tab (Ctrl+W / Ctrl+F4) — split-pane-aware
     if ((cmdOrCtrl && key === 'w') || e.key === 'F4') {
       if (cmdOrCtrl && !e.shiftKey) {
         e.preventDefault();
-        const activeTabId = editorStore.getActiveTabIdSnapshot();
-        if (activeTabId) editorStore.closeTab(activeTabId);
+        const splitSnap = splitStore.getSnapshot();
+        const activePaneId = splitSnap.activePaneId;
+        const activePaneObj = splitSnap.panes[activePaneId];
+        if (activePaneObj && activePaneObj.activeTabId) {
+          const tabId = activePaneObj.activeTabId;
+          handleTabClose(tabId);
+          // After close, if pane has no tabs and > 1 pane exists → close pane
+          const snapAfter = splitStore.getSnapshot();
+          const paneAfter = snapAfter.panes[activePaneId];
+          if (paneAfter && paneAfter.tabs.length === 0 && splitStore.collectPaneIds().length > 1) {
+            splitStore.closePane(activePaneId);
+          }
+        } else if (activePaneId && splitStore.collectPaneIds().length > 1) {
+          // No tabs in pane → close the pane
+          splitStore.closePane(activePaneId);
+        }
       }
     }
 
@@ -1340,7 +1383,9 @@
           } else {
             if (change.path) changedPaths.add(change.path);
             if (change.type === 'deleted') {
-              editorStore.markTabDeleted(change.path);
+              editorStore.getTabsSnapshot()
+                .filter((t: any) => t.path === change.path)
+                .forEach((t: any) => editorStore.closeTab(t.id));
               removedDecoPaths.push(change.path);
             }
           }
@@ -1367,9 +1412,9 @@
         const existing = new Set<string>(metadata.map((m: any) => m.path));
         const sizeByPath = new Map<string, number>(metadata.map((m: any) => [m.path, m.size]));
 
-        // Mark deleted tabs
+        // Close deleted tabs
         for (const tab of affectedTabs) {
-          if (!existing.has(tab.path)) editorStore.markTabDeleted(tab.id);
+          if (!existing.has(tab.path)) editorStore.closeTab(tab.id);
         }
 
         // Reload small files in one batch (large files via chunked reads)
@@ -1533,7 +1578,7 @@
         </button>
 
         <button 
-          class="flex items-center justify-center w-72 h-6 px-3 mx-2 rounded-md border border-subtle bg-surface hover:bg-hover transition-colors text-xs text-secondary hover:text-primary cursor-pointer shadow-sm"
+          class="flex items-center justify-center w-72 h-6 px-3 mx-2 rounded-md border border-subtle bg-surface hover:bg-hover transition-colors text-xs text-secondary hover:text-primary cursor-pointer shadow-elevated-sm"
           onclick={() => openCommandPalette('')}
           title="Search files (Ctrl+P)"
         >
@@ -1635,11 +1680,11 @@
             <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M6 9v6"/><path d="M18 9v2a2 2 0 0 1-2 2h-4a2 2 0 0 0-2 2v6"/></svg>
             
             {#if gitLoading}
-              <div class="absolute bottom-0 -right-1 bg-accent text-on-accent rounded-full h-4 min-w-4 flex items-center justify-center border-2 border-surface-2 shadow-sm pointer-events-none" title="Git is analyzing...">
+              <div class="absolute bottom-0 -right-1 bg-accent text-on-accent rounded-full h-4 min-w-4 flex items-center justify-center border-2 border-surface-2 shadow-elevated-sm pointer-events-none" title="Git is analyzing...">
                 <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="animate-spin"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
               </div>
             {:else if gitChangesCount > 0}
-              <div class="absolute bottom-0 -right-1 bg-accent text-on-accent text-[9px] font-bold rounded-full h-4 min-w-4 px-1 flex items-center justify-center border-2 border-surface-2 shadow-sm pointer-events-none">
+              <div class="absolute bottom-0 -right-1 bg-accent text-on-accent text-[9px] font-bold rounded-full h-4 min-w-4 px-1 flex items-center justify-center border-2 border-surface-2 shadow-elevated-sm pointer-events-none">
                 {gitChangesCount > 99 ? '99+' : gitChangesCount}
               </div>
             {/if}
@@ -1776,222 +1821,28 @@
       </div>
     {/if}
 
+    <!-- Split Editor Layout + Terminal -->
     <div class="flex flex-1 flex-col overflow-hidden bg-canvas">
-      {#if $tabs.length > 0}
-        <div class="flex h-9 shrink-0 bg-surface-2 border-b border-subtle relative z-20">
-          <div role="region" aria-label="Tabs" class="flex-1 flex overflow-x-auto scrollbar-hide" oncontextmenu={handleEmptyTabAreaContextMenu}>
-            {#each $tabs as tab (tab.id)}
-              <div
-                role="tab"
-                tabindex="0"
-                class="flex shrink-0 items-center gap-2 px-3 min-w-32 max-w-48 cursor-pointer border-t border-l border-r border-subtle -ml-px first:ml-0"
-                class:bg-canvas={$activeTabId === tab.id}
-                class:text-primary={$activeTabId === tab.id}
-                class:border-t-2={$activeTabId === tab.id}
-                class:border-t-indicator-active={$activeTabId === tab.id}
-                class:bg-surface-2={$activeTabId !== tab.id}
-                class:text-secondary={$activeTabId !== tab.id}
-                class:hover:bg-hover={$activeTabId !== tab.id}
-                class:hover:text-primary={$activeTabId !== tab.id}
-                onclick={() => editorStore.setActiveTab(tab.id)}
-                ondblclick={() => editorStore.pinTab(tab.id)}
-                onkeydown={(e) => { if (e.key === 'Enter') editorStore.setActiveTab(tab.id); }}
-                oncontextmenu={(e) => handleTabContextMenu(e, tab.id)}
-              >
-                {#if tab.language === 'welcome'}
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1536 1024" fill="currentColor" class="w-3.5 h-auto opacity-80 pointer-events-none text-primary shrink-0" aria-hidden="true">
-                    <path fill-rule="evenodd" d="M 472 343 L 473 347 L 473 355 L 472 356 L 473 357 L 472 358 L 472 372 L 473 373 L 472 374 L 472 385 L 473 386 L 472 387 L 473 388 L 472 389 L 473 394 L 472 395 L 473 396 L 472 397 L 473 398 L 472 399 L 473 401 L 472 403 L 473 404 L 473 423 L 472 424 L 473 426 L 473 431 L 472 432 L 473 433 L 473 439 L 472 440 L 473 441 L 473 454 L 472 455 L 473 456 L 473 463 L 472 464 L 473 466 L 473 754 L 476 762 L 484 770 L 494 774 L 503 774 L 523 767 L 597 735 L 613 726 L 620 716 L 622 710 L 622 482 L 506 381 L 492 370 L 479 356 L 473 343 Z "/>
-                    <path fill-rule="evenodd" d="M 480 260 L 475 267 L 473 273 L 473 333 L 475 340 L 481 351 L 495 365 L 508 375 L 517 384 L 522 387 L 538 402 L 678 522 L 696 536 L 729 565 L 963 761 L 972 765 L 986 765 L 998 760 L 1046 735 L 1052 731 L 1059 724 L 1063 715 L 1063 645 L 1058 629 L 1052 620 L 1041 609 L 1006 581 L 861 458 L 721 336 L 592 221 L 582 215 L 577 214 L 568 214 L 562 216 L 498 249 Z "/>
-                    <path fill-rule="evenodd" d="M 1029 196 L 999 208 L 994 209 L 961 223 L 956 224 L 943 230 L 938 231 L 928 236 L 918 239 L 911 243 L 905 249 L 902 254 L 900 261 L 900 484 L 1041 601 L 1056 617 L 1061 627 L 1063 635 L 1063 217 L 1058 207 L 1051 200 L 1042 196 Z "/>
-                  </svg>
-                {:else if tab.language === 'image'}
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-icon-default"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
-                {:else if tab.language === 'settings'}
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-icon-default"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
-                {:else if tab.language === 'markdown-preview'}
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-icon-default"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
-                {:else}
-                  {@const iconTheme = settingsStore.effectiveSettings.icon_theme}
-                  {#if iconTheme === 'default' || !iconTheme}
-                    {@const Icon = getFileIcon(tab.name)}
-                    <Icon size={14} class="shrink-0 text-icon-default" />
-                  {:else if iconTheme === 'material'}
-                    <MaterialIcon name={tab.name} size={14} />
-                  {/if}
-                {/if}
-                <span class="text-xs truncate flex-1" class:italic={tab.isPreview}>
-                  {(() => {
-                    if ((tabNameCounts.get(tab.name) ?? 0) > 1 && !tab.path.startsWith('Untitled')) {
-                      const parts = tab.path.split(/[/\\]/);
-                      if (parts.length >= 2) {
-                        return `${tab.name} \u00A0...${parts[parts.length - 2]}`;
-                      }
-                    }
-                    return tab.name;
-                  })()}
-                </span>
-                {#if tab.language !== 'welcome'}
-                  {#if tab.isModified}
-                    <div class="w-2 h-2 rounded-full bg-accent shrink-0"></div>
-                  {:else if tab.status === 'conflict'}
-                    <div class="w-2 h-2 rounded-full bg-status-warning shrink-0" title="External changes detected"></div>
-                  {:else if tab.status === 'deleted'}
-                    <div class="w-2 h-2 rounded-full bg-status-error shrink-0" title="File deleted"></div>
-                  {/if}
-                {/if}
-                {#if tab.isPinned}
-                  <button aria-label="Unpin tab" class="p-0.5 rounded transition-colors hover:bg-active"
-                    onclick={(e) => { e.stopPropagation(); editorStore.togglePin(tab.id); }}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-80 rotate-45"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>
-                  </button>
-                {:else}
-                  <button aria-label="Close tab" class="p-0.5 rounded transition-colors hover:bg-active text-icon-default hover:text-icon-active"
-                    onclick={(e) => { e.stopPropagation(); handleTabClose(tab.id); }}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                  </button>
-                {/if}
-              </div>
-            {/each}
-          </div>
-
-          {#if activeTab && activeTab.path.toLowerCase().endsWith('.md')}
-            <div class="flex items-center shrink-0 px-2 border-l border-subtle bg-surface-2">
-              <Tooltip content="Open Preview">
-                <button
-                  aria-label="Open Preview"
-                  onclick={() => {
-                    editorStore.addTab({
-                      id: `${activeTab.id}-preview`,
-                      path: activeTab.path,
-                      name: `${activeTab.name} (Preview)`,
-                      content: activeTab.content,
-                      language: 'markdown-preview',
-                      isPreview: false
-                    });
-                  }}
-                  class="p-1.5 rounded-md transition-colors text-icon-default hover:text-icon-active hover:bg-hover"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-                </button>
-              </Tooltip>
-            </div>
-          {/if}
-        </div>
-
-        {#if !(activeTab && (activeTab.path.startsWith('Untitled') || activeTab.language === 'settings'))}
-          <!-- Breadcrumbs handled by @fazelstudio/codemirror-breadcrumbs in Editor -->
-        {/if}
-      {/if}
-
-      <div class="flex-1 relative overflow-hidden" class:hidden={$terminalStore.isMaximized}>
-        {#if $tabs.length === 0}
-<div class="absolute inset-0 flex flex-col items-center justify-center gap-6 text-muted">
-             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1536 1024" fill="currentColor" class="w-[min(50vw,400px)] h-auto pointer-events-none text-primary/60" role="img" aria-label="Notron">
-               <path fill-rule="evenodd" d="M 472 343 L 473 347 L 473 355 L 472 356 L 473 357 L 472 358 L 472 372 L 473 373 L 472 374 L 472 385 L 473 386 L 472 387 L 473 388 L 472 389 L 473 394 L 472 395 L 473 396 L 472 397 L 473 398 L 472 399 L 473 401 L 472 403 L 473 404 L 473 423 L 472 424 L 473 426 L 473 431 L 472 432 L 473 433 L 473 439 L 472 440 L 473 441 L 473 454 L 472 455 L 473 456 L 473 463 L 472 464 L 473 466 L 473 754 L 476 762 L 484 770 L 494 774 L 503 774 L 523 767 L 597 735 L 613 726 L 620 716 L 622 710 L 622 482 L 506 381 L 492 370 L 479 356 L 473 343 Z "/>
-               <path fill-rule="evenodd" d="M 480 260 L 475 267 L 473 273 L 473 333 L 475 340 L 481 351 L 495 365 L 508 375 L 517 384 L 522 387 L 538 402 L 678 522 L 696 536 L 729 565 L 963 761 L 972 765 L 986 765 L 998 760 L 1046 735 L 1052 731 L 1059 724 L 1063 715 L 1063 645 L 1058 629 L 1052 620 L 1041 609 L 1006 581 L 861 458 L 721 336 L 592 221 L 582 215 L 577 214 L 568 214 L 562 216 L 498 249 Z "/>
-               <path fill-rule="evenodd" d="M 1029 196 L 999 208 L 994 209 L 961 223 L 956 224 L 943 230 L 938 231 L 928 236 L 918 239 L 911 243 L 905 249 L 902 254 L 900 261 L 900 484 L 1041 601 L 1056 617 L 1061 627 L 1063 635 L 1063 217 L 1058 207 L 1051 200 L 1042 196 Z "/>
-             </svg>
-             <div class="flex flex-col gap-2">
-               <div class="flex items-center gap-4"><span class="w-24 text-right">New File</span><kbd class="px-2 py-0.5 rounded text-xs bg-surface-2 border border-subtle">Ctrl+N</kbd></div>
-               <div class="flex items-center gap-4"><span class="w-24 text-right">Open File</span><kbd class="px-2 py-0.5 rounded text-xs bg-surface-2 border border-subtle">Ctrl+O</kbd></div>
-               <div class="flex items-center gap-4"><span class="w-24 text-right">Commands</span><kbd class="px-2 py-0.5 rounded text-xs bg-surface-2 border border-subtle">Ctrl+Shift+P</kbd></div>
-             </div>
-           </div>
-        {:else if activeTab}
-          {#if activeTab.language === 'markdown-preview' && MarkdownPreviewComponent}
-            <MarkdownPreviewComponent key={activeTab.id} path={activeTab.path} />
-          {:else if activeTab.path.toLowerCase().endsWith('.svg')}
-            {@const viewMode = activeTab.svgViewMode || settingsStore.effectiveSettings.default_svg_view || 'image'}
-            
-            {#if EditorComponent && activeTab.content !== null}
-              {#if viewMode === 'image'}
-                <EditorComponent tabId={activeTab.id} content={activeTab.content} filePath={activeTab.path} hideContent={true}>
-                  {#snippet topRightOverlay()}
-                    <SvgViewToggle {activeTab} />
-                  {/snippet}
-                  {#if ImageViewerComponent}
-                    <ImageViewerComponent key={activeTab.id} filePath={activeTab.path} />
-                  {:else}
-                    <div class="absolute inset-0 flex items-center justify-center">
-                      <div class="flex items-center gap-3">
-                        <svg class="animate-spin h-4 w-4 text-muted" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                        <span class="text-xs text-muted">Loading viewer...</span>
-                      </div>
-                    </div>
-                  {/if}
-                </EditorComponent>
-              {:else if viewMode === 'split'}
-                <div class="flex h-full w-full">
-                  <div class="flex-1 border-r border-subtle overflow-hidden relative">
-                    {#if ImageViewerComponent}
-                      <ImageViewerComponent key={activeTab.id} filePath={activeTab.path} />
-                    {:else}
-                      <div class="absolute inset-0 flex items-center justify-center">
-                        <svg class="animate-spin h-4 w-4 text-muted" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                      </div>
-                    {/if}
-                  </div>
-                  <div class="flex-1 overflow-hidden relative">
-                    <EditorComponent tabId={activeTab.id} content={activeTab.content} filePath={activeTab.path}>
-                      {#snippet topRightOverlay()}
-                        <SvgViewToggle {activeTab} />
-                      {/snippet}
-                    </EditorComponent>
-                  </div>
-                </div>
-              {:else}
-                <EditorComponent tabId={activeTab.id} content={activeTab.content} filePath={activeTab.path}>
-                  {#snippet topRightOverlay()}
-                    <SvgViewToggle {activeTab} />
-                  {/snippet}
-                </EditorComponent>
-              {/if}
-            {:else}
-               <div class="absolute inset-0 flex items-center justify-center">
-                 <div class="flex items-center gap-3">
-                   <svg class="animate-spin h-4 w-4 text-muted" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                   <span class="text-xs text-muted">Loading editor...</span>
-                 </div>
-               </div>
-            {/if}
-          {:else if activeTab.language === 'image' && ImageViewerComponent}
-            <ImageViewerComponent key={activeTab.id} filePath={activeTab.path} />
-          {:else if activeTab.language === 'welcome'}
-            <WelcomeTab />
-          {:else if activeTab.language === 'settings' && SettingsPageComponent}
-            <SettingsPageComponent />
-          {:else if activeTab.isLoading}
-            <!-- Content not ready yet: keep the editor area empty instead of
-                 showing a spinner / partial editor, then everything (content +
-                 minimap) appears together once loaded. -->
-            <div class="absolute inset-0 bg-canvas"></div>
-          {:else if activeTab.isUnsupported}
-            <div class="absolute inset-0 flex flex-col items-center justify-center gap-3 text-muted bg-canvas select-none">
-              <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
-              <span class="text-sm">The file is not displayed in the editor because it is either binary or uses an unsupported text encoding.</span>
-            </div>
-          {:else if activeTab.content === null && !activeTab.isDiff}
-            <!-- Suspended (content not in memory): keep it blank — the tab will
-                 reload on next activation. -->
-            <div class="absolute inset-0 bg-canvas"></div>
-          {:else if activeTab.isDiff && DiffEditorComponent}
-            <DiffEditorComponent originalContent={activeTab.diffOriginalContent} currentContent={activeTab.content} filePath={activeTab.path} />
-          {:else if !activeTab.isDiff && EditorComponent}
-            <EditorComponent tabId={activeTab.id} content={activeTab.content} filePath={activeTab.path} />
-          {:else}
-            <div class="absolute inset-0 flex items-center justify-center">
-              <div class="flex items-center gap-3">
-                <svg class="animate-spin h-4 w-4 text-muted" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                <span class="text-xs text-muted">Loading editor...</span>
-              </div>
-            </div>
-          {/if}
-        {/if}
+      <!-- SplitView hides when terminal is maximized -->
+      <div class="flex flex-1 overflow-hidden" class:hidden={$terminalStore.isMaximized}>
+        <SplitView
+          node={$splitStore.rootNode}
+          {EditorComponent}
+          {DiffEditorComponent}
+          {MarkdownPreviewComponent}
+          {ImageViewerComponent}
+          {SettingsPageComponent}
+          WelcomeTabComponent={WelcomeTab}
+          onNewTextFile={handleNewTextFile}
+          onOpenFile={handleOpenFile}
+          onOpenTerminal={handleOpenTerminal}
+        />
       </div>
       <TerminalPanel />
     </div>
   </div>
   {/if}
+
 
   <div class="h-6 flex items-center justify-between px-3 text-xs select-none border-t bg-surface-2 text-primary border-subtle">
     <div class="flex items-center gap-4 relative min-w-[200px]">
@@ -2051,41 +1902,10 @@
 <TrustModal />
 <RecentFoldersModal />
 
-{#if tabCtxMenu.isOpen}
-  <div
-    data-notron-context-menu="true"
-    class="fixed min-w-[160px] rounded-md border p-1 shadow-md z-[100] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary"
-    style="left: {tabCtxMenu.x}px; top: {tabCtxMenu.y}px;"
-    role="presentation"
-    onclick={(e) => e.stopPropagation()}
-    oncontextmenu={(e) => e.stopPropagation()}
-  >
-    {#each tabCtxMenu.items as item, i (item.id || i)}
-      {#if item.separator}
-        <div class="h-px my-1 bg-subtle"></div>
-      {:else}
-        <button
-          class="flex items-center justify-between w-full px-2 py-1.5 text-xs rounded-sm cursor-pointer select-none outline-none transition-colors {!item.disabled ? 'hover:bg-selected focus:bg-selected hover:text-primary focus:text-primary text-secondary' : 'text-muted opacity-50 cursor-not-allowed'}"
-          disabled={item.disabled}
-          onclick={(e) => { 
-            e.stopPropagation(); 
-            if (item.action) item.action();
-            tabCtxMenu.isOpen = false;
-          }}
-        >
-          <span>{item.label}</span>
-          {#if item.shortcut}
-            <span class="ml-auto text-[10px] text-muted opacity-80">{item.shortcut}</span>
-          {/if}
-        </button>
-      {/if}
-    {/each}
-  </div>
-{/if}
 <ToastContainer />
 <SmartSearchModal isOpen={showSmartSearchModal} onClose={() => showSmartSearchModal = false} />
 
 <style>
-  .scrollbar-hide::-webkit-scrollbar { display: none; }
-  .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+  :global(.scrollbar-hide::-webkit-scrollbar) { display: none; }
+  :global(.scrollbar-hide) { -ms-overflow-style: none; scrollbar-width: none; }
 </style>

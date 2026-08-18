@@ -80,7 +80,7 @@
     ></div>
     
     <div
-      class="absolute top-full mt-1 min-w-[160px] rounded-md border p-1 shadow-md z-[100] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary {align === 'right' ? 'right-0' : 'left-0'} {matchWidth ? 'w-full' : ''}"
+      class="absolute top-full mt-1 min-w-[160px] rounded-md border p-1 shadow-elevated z-[100] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary {align === 'right' ? 'right-0' : 'left-0'} {matchWidth ? 'w-full' : ''}"
     >
       {#each items as item (item.id || item.label)}
         {#if item.separator}
@@ -104,7 +104,7 @@
             
             {#if item.items && openSubmenuId === (item.id || item.label)}
               <div
-                class="absolute top-0 mt-0 min-w-[160px] rounded-md border p-1 shadow-md z-[101] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary {align === 'right' ? 'right-full mr-1' : 'left-full ml-1'}"
+                class="absolute top-0 mt-0 min-w-[160px] rounded-md border p-1 shadow-elevated z-[101] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary {align === 'right' ? 'right-full mr-1' : 'left-full ml-1'}"
               >
                 {#each item.items as subItem (subItem.id || subItem.label)}
                   {#if subItem.separator}

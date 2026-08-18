@@ -191,7 +191,7 @@
               onkeydown={(e) => { if (e.key === 'Escape') isDropdownOpen = false; }}
             ></div>
             <div 
-              class="absolute top-full right-0 mt-1 min-w-[160px] rounded-md border p-1 shadow-md z-[100] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary flex flex-col"
+              class="absolute top-full right-0 mt-1 min-w-[160px] rounded-md border p-1 shadow-elevated z-[100] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary flex flex-col"
             >
               <button 
                 class="flex items-center justify-between w-full px-2 py-1.5 text-xs rounded-sm cursor-pointer select-none outline-none transition-colors hover:bg-selected focus:bg-selected hover:text-primary focus:text-primary text-secondary" 
@@ -316,7 +316,7 @@
               <div 
                 role="button"
                 tabindex="0"
-                class="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-error hover:text-white transition-all text-icon-default"
+                class="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-error hover:text-on-accent transition-all text-icon-default"
                 onclick={(e) => { e.stopPropagation(); terminalStore.closeTerminal(term.id); }}
                 onkeydown={(e) => { if (e.key === 'Enter') terminalStore.closeTerminal(term.id); }}
               >

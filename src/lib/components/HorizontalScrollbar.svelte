@@ -109,7 +109,7 @@
   .thumb {
     position: absolute;
     height: 100%;
-    background-color: var(--scrollbar-thumb, rgba(120, 120, 120, 0.4));
+    background-color: var(--scrollbar-thumb);
     border-radius: 0;
     cursor: pointer;
     transition: background-color 0.2s;
@@ -117,6 +117,6 @@
 
   .custom-horizontal-scrollbar:hover .thumb,
   .custom-horizontal-scrollbar.dragging .thumb {
-    background-color: var(--scrollbar-thumb-hover, rgba(120, 120, 120, 0.7));
+    background-color: var(--scrollbar-thumb-hover);
   }
 </style>

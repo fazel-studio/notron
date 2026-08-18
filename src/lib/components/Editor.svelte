@@ -125,8 +125,12 @@
       color: 'var(--text-secondary)'
     },
     '.cm-breadcrumbs-segment:hover': {
-      background: 'var(--bg-hover)',
-      color: 'var(--text-primary)'
+      background: 'var(--bg-hover) !important',
+      color: 'var(--text-primary) !important'
+    },
+    '.cm-breadcrumbs-segment:focus-visible': {
+      outline: '1px solid var(--border-focus)',
+      outlineOffset: '-1px'
     },
     '.cm-breadcrumbs-separator': {
       color: 'var(--text-muted)'
@@ -141,9 +145,9 @@
       background: 'var(--bg-hover)'
     },
     '.cm-breadcrumbs-dropdown': {
-      background: 'var(--bg-surface-2)',
-      border: '1px solid var(--border-subtle)',
-      boxShadow: 'var(--shadow-elevated)'
+      background: 'var(--bg-surface-2) !important',
+      border: '1px solid var(--border-subtle) !important',
+      boxShadow: 'var(--shadow-elevated) !important'
     },
     '.cm-breadcrumbs-dropdown-title': {
       color: 'var(--text-muted)'
@@ -152,8 +156,12 @@
       color: 'var(--text-primary)'
     },
     '.cm-breadcrumbs-dropdown-item:hover': {
-      background: 'var(--bg-hover)',
-      color: 'var(--text-primary)'
+      background: 'var(--bg-hover) !important',
+      color: 'var(--text-primary) !important'
+    },
+    '.cm-breadcrumbs-dropdown-item.is-active': {
+      background: 'var(--bg-selected) !important',
+      color: 'var(--text-on-accent) !important'
     },
     '.cm-breadcrumbs-dropdown-empty': {
       color: 'var(--text-muted)'
@@ -166,19 +174,19 @@
       color: 'var(--text-primary)'
     },
     '.cm-breadcrumbs-path-item:hover': {
-      background: 'var(--bg-hover)',
-      color: 'var(--text-primary)'
+      background: 'var(--bg-hover) !important',
+      color: 'var(--text-primary) !important'
     },
     '.cm-breadcrumbs-path-item.is-active': {
-      background: 'var(--bg-selected)',
-      color: 'var(--text-primary)'
+      background: 'var(--bg-selected) !important',
+      color: 'var(--text-on-accent) !important'
     },
     '.cm-breadcrumbs-path-up': {
       color: 'var(--text-muted)'
     },
     '.cm-breadcrumbs-path-up:hover': {
-      background: 'var(--bg-hover)',
-      color: 'var(--text-primary)'
+      background: 'var(--bg-hover) !important',
+      color: 'var(--text-primary) !important'
     },
     '.cm-breadcrumbs-path-empty': {
       color: 'var(--text-muted)'
@@ -303,7 +311,7 @@
   import { getGitFileContent, stageFile } from '../services/git';
   import { renderBreadcrumbPathIcon } from '../utils/breadcrumbPathIcons';
   
-  let { tabId, content, filePath, children, topRightOverlay, hideContent = false }: { tabId: string; content: string; filePath: string; children?: Snippet; topRightOverlay?: Snippet; hideContent?: boolean } = $props();
+  let { tabId, content, filePath, children, topRightOverlay, hideContent = false, isHeaderOnly = false }: { tabId: string; content: string; filePath: string; children?: Snippet; topRightOverlay?: Snippet; hideContent?: boolean; isHeaderOnly?: boolean } = $props();
 
   let currentTabId: string | null = null;
   const editorStates = new Map<string, EditorState>();
@@ -530,21 +538,7 @@
   }
 
   function openFileFromBreadcrumbs(path: string) {
-    const name = path.split(/[\\/]/).pop() || path;
-    const isImage = /\.(png|jpe?g|gif|webp|ico|bmp)$/i.test(name);
-    const lang = isImage
-      ? 'image'
-      : invoke<string>('detect_language', { path }).catch(() => 'plaintext');
-    Promise.resolve(lang).then((language) => {
-      editorStore.addTab({
-        id: path,
-        path,
-        name,
-        content: null,
-        language,
-        isPreview: true,
-      });
-    });
+    window.dispatchEvent(new CustomEvent('request-open-file', { detail: { path } }));
   }
 
   function setupEditor() {
@@ -572,7 +566,7 @@
         // Debounced extraction — don't extract on every keystroke
         if (contentExtractTimer) clearTimeout(contentExtractTimer);
         contentExtractTimer = setTimeout(() => {
-          if (!editorView) return;
+          if (!editorView || isHeaderOnly) return;
           // Mark as modified immediately (cheap — just set isDirty flag)
           const content = editorView.state.doc.toString();
           editorStore.updateContent(tabId, content);
@@ -601,7 +595,7 @@
 
         if (cursorScrollTimeout) clearTimeout(cursorScrollTimeout);
         cursorScrollTimeout = setTimeout(() => {
-          if (!editorView) return;
+          if (!editorView || isHeaderOnly) return;
           const pos = editorView.state.selection.main.head;
           const line = editorView.state.doc.lineAt(pos);
           editorStore.updateCursor(tabId, line.number, pos - line.from + 1);
@@ -1047,22 +1041,26 @@
     window.removeEventListener('editor:action', handleAction);
     // Instead of just current tab, save history for all tracked states
     if (editorView) {
-      for (const [id, state] of editorStates.entries()) {
+      if (!isHeaderOnly) {
+        for (const [id, state] of editorStates.entries()) {
           const t = editorStore.getTabsSnapshot().find(tb => tb.id === id);
           const isL = t?.isLargeFile || (state.doc.length > 250000);
           if (!isL) {
              try {
                 const serializedHistory = state.toJSON({ history: historyField }).history;
-                editorStore.updateUndoHistory(id, serializedHistory);
+                if (serializedHistory) {
+                  editorStore.updateUndoHistory(id, serializedHistory);
+                }
              } catch(e) {}
           }
           editorStore.updateContent(id, state.doc.toString());
-      }
-      if (currentTabId) {
-          const pos = editorView.state.selection.main.head;
-          const line = editorView.state.doc.lineAt(pos);
-          editorStore.updateCursor(currentTabId, line.number, pos - line.from + 1);
-          editorStore.updateScroll(currentTabId, editorView.scrollDOM.scrollTop, editorView.scrollDOM.scrollLeft);
+        }
+        if (currentTabId) {
+            const pos = editorView.state.selection.main.head;
+            const line = editorView.state.doc.lineAt(pos);
+            editorStore.updateCursor(currentTabId, line.number, pos - line.from + 1);
+            editorStore.updateScroll(currentTabId, editorView.scrollDOM.scrollTop, editorView.scrollDOM.scrollLeft);
+        }
       }
       editorView.destroy();
       editorView = null;
@@ -1146,7 +1144,7 @@
 </script>
 
 <ContextMenu items={editorContextMenuItems}>
-<div class="absolute inset-0 [&_.cm-editor]:h-full editor-wrapper" style={style} role="none" onmouseover={handleEditorMouseOver} onfocus={() => {}}>
+<div class="absolute inset-0 [&_.cm-editor]:h-full editor-wrapper flex flex-col" style={style} role="none" onmouseover={handleEditorMouseOver} onfocus={() => {}}>
 
   {#if isLargeFile}
     <div class="absolute top-0 left-0 right-0 text-[10px] px-3 py-1 text-center z-10" style="background-color: color-mix(in srgb, var(--color-warning) 20%, transparent); color: var(--color-warning);">
@@ -1178,14 +1176,14 @@
       }}>Reload from Disk</button>
     </div>
   {/if}
-  <div class="relative w-full" style="height: 0; z-index: 100;">
+  <div class="relative w-full pointer-events-none" style="height: 0; z-index: 100;">
     {#if topRightOverlay}
-      <div class="absolute right-2 h-[28px] flex items-center" style="top: {tabStatus === 'deleted' || tabStatus === 'conflict' ? '32px' : '0px'};">
+      <div class="absolute right-2 h-[28px] flex items-center pointer-events-auto" style="top: {tabStatus === 'deleted' || tabStatus === 'conflict' ? '32px' : '0px'};">
         {@render topRightOverlay()}
       </div>
     {/if}
   </div>
-  <div bind:this={editorEl} class="{hideContent ? 'flex-none' : 'h-full flex-1'} relative editor-container {tabStatus === 'deleted' || tabStatus === 'conflict' ? 'pt-8' : ''} {iconThemeClass} {hideContent ? 'hide-cm-content' : ''}">
+  <div bind:this={editorEl} class="{hideContent ? 'flex-none' : 'h-full flex-1'} relative editor-container {tabStatus === 'deleted' || tabStatus === 'conflict' ? 'pt-8' : ''} {iconThemeClass} {hideContent ? 'hide-cm-content' : ''} {isHeaderOnly ? 'z-20' : 'z-10'}">
   </div>
   
   {#if children}
@@ -1194,7 +1192,7 @@
     </div>
   {/if}
 
-  {#if scrollDOM}
+  {#if scrollDOM && !isHeaderOnly}
     <HorizontalScrollbar target={scrollDOM} leftGap={gutterWidth} rightGap={rightGap} />
   {/if}
     
@@ -1211,10 +1209,16 @@
 
 <style>
   :global(.hide-cm-content .cm-scroller) {
-    display: none !important;
+    position: absolute !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    height: 1px !important;
+    width: 1px !important;
+    overflow: hidden !important;
   }
   :global(.hide-cm-content .cm-editor) {
     height: auto !important;
+    overflow: visible !important;
   }
 </style>
 

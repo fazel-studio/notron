@@ -183,7 +183,7 @@
   {/if}
   <div bind:this={scrollEl} class="flex-1 overflow-y-auto hover-scrollbar" onscroll={handleScroll}>
     {#if renderError}
-      <div class="h-full flex items-center justify-center text-sm text-status-error">Failed to render preview</div>
+      <div class="h-full flex items-center justify-center text-sm text-error">Failed to render preview</div>
     {:else if !isRendering && html}
       <div class="prose max-w-none px-[10%] py-8" class:prose-invert={isDark}>
         {@html html}

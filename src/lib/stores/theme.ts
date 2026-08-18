@@ -1,5 +1,6 @@
 import { writable, get } from 'svelte/store';
 import type { Readable } from 'svelte/store';
+import { applyThemeVariables } from '../themes';
 
 const THEME_KEY = 'notron_theme';
 
@@ -24,10 +25,14 @@ function computeIsDark(theme: string): boolean {
   if (theme === 'system') return getSystemTheme();
   if (theme === 'light') return false;
   if (theme === 'dark' || theme === 'hc-dark') return true;
-  return theme.includes('dark') || ['dracula', 'darcula', 'tokyo-night', 'tokyo-night-storm', 'nord', 'bespin', 'okaidia', 'aura', 'sublime', 'atomone', 'androidstudio', 'abcdef'].includes(theme);
+  const darkThemesList = ['dracula', 'darcula', 'tokyo-night', 'tokyo-night-storm', 'nord', 'bespin', 'okaidia', 'aura', 'sublime', 'atomone', 'androidstudio', 'abcdef', 'red', 'abyss', 'andromeda', 'copilot', 'kimbie', 'material', 'monokai', 'monokai-dimmed', 'tomorrow-night-blue'];
+  return theme.includes('dark') || darkThemesList.includes(theme);
 }
 
 let themeState = { theme: loadTheme(), isDark: computeIsDark(loadTheme()) };
+if (typeof window !== 'undefined') {
+  applyThemeVariables(themeState.theme);
+}
 
 function createThemeStore(): Readable<{ theme: string; isDark: boolean }> & { setTheme: (theme: string) => void } {
   const store = writable(themeState);
@@ -43,6 +48,7 @@ function createThemeStore(): Readable<{ theme: string; isDark: boolean }> & { se
         html.classList.toggle('dark', isDark);
         html.classList.toggle('hc-dark', theme === 'hc-dark');
         html.classList.toggle('hc-light', theme === 'hc-light');
+        applyThemeVariables(theme);
       }
     } catch {
       // storage unavailable

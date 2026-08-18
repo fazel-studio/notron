@@ -6,7 +6,8 @@ import './app.css';
   try {
     const stored = localStorage.getItem('notron_theme');
     const theme = stored || 'system';
-    const isDark = theme === 'dark' || theme === 'hc-dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    const darkThemesList = ['dracula', 'darcula', 'tokyo-night', 'tokyo-night-storm', 'nord', 'bespin', 'okaidia', 'aura', 'sublime', 'atomone', 'androidstudio', 'abcdef', 'red', 'abyss', 'andromeda', 'copilot', 'kimbie', 'material', 'monokai', 'monokai-dimmed', 'tomorrow-night-blue'];
+    const isDark = theme === 'dark' || theme === 'hc-dark' || theme.includes('dark') || darkThemesList.includes(theme) || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
     const html = document.documentElement;
     html.classList.toggle('dark', isDark);
     html.classList.toggle('hc-dark', theme === 'hc-dark');

@@ -58,7 +58,7 @@
   </button>
 
   {#if isOpen}
-    <div class="absolute z-50 top-[100%] right-0 min-w-full flex flex-col border border-subtle rounded mt-1 bg-surface-2 overflow-y-auto shadow-xl max-h-60">
+    <div class="absolute z-50 top-[100%] right-0 min-w-full flex flex-col border border-subtle rounded mt-1 bg-surface-2 overflow-y-auto shadow-elevated max-h-60">
       {#each normalizedOptions as opt}
         <button
           type="button"

@@ -69,7 +69,7 @@
   
   <!-- Dropdown -->
   {#if query.trim().length > 0 && isFocused}
-    <div class="absolute z-50 top-[100%] left-0 w-full flex flex-col border border-subtle rounded mt-1 bg-surface-2 overflow-y-auto shadow-xl" style="max-height: {5 * 32}px;">
+    <div class="absolute z-50 top-[100%] left-0 w-full flex flex-col border border-subtle rounded mt-1 bg-surface-2 overflow-y-auto shadow-elevated" style="max-height: {5 * 32}px;">
       {#if options.length > 0}
         {#each options as opt}
           <button onclick={() => handleAdd(opt)} class="flex items-center gap-2 px-3 h-[32px] text-xs text-left hover:bg-hover transition-colors shrink-0">

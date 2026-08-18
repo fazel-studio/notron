@@ -3,12 +3,9 @@
   import { Terminal } from 'xterm';
   import { FitAddon } from '@xterm/addon-fit';
   import { spawn } from "tauri-pty";
-  import { themeStore } from '../stores/theme';
   import 'xterm/css/xterm.css';
 
   let { tabId, type, cwd, initialCommand } = $props<{ tabId: string, type: 'powershell' | 'cmd', cwd: string, initialCommand?: string }>();
-
-  let isDark = $derived($themeStore.isDark);
 
   let terminalContainer = $state<HTMLElement | null>(null);
   let term: Terminal;
@@ -65,24 +62,25 @@
   }
 
   $effect(() => {
-    // This effect runs whenever `isDark` changes
-    const currentDark = isDark;
+    // This effect runs whenever the theme changes; always reads the current
+    // values from the global theme CSS variables so xterm stays in sync.
     if (term && typeof window !== 'undefined') {
       // Use setTimeout to ensure DOM has updated the .dark class on document element
       setTimeout(() => {
-        const style = getComputedStyle(document.body);
-        const foreground = style.getPropertyValue('--text-primary').trim() || (currentDark ? '#f3f4f6' : '#1f2937');
-        const cursor = style.getPropertyValue('--text-primary').trim() || (currentDark ? '#f3f4f6' : '#1f2937');
-        const selection = style.getPropertyValue('--bg-selected').trim() || (currentDark ? '#374151' : '#e5e7eb');
-        const red = style.getPropertyValue('--color-error').trim() || '#ef4444';
-        const green = style.getPropertyValue('--color-success').trim() || '#10b981';
-        const yellow = style.getPropertyValue('--color-warning').trim() || '#f59e0b';
-        const blue = style.getPropertyValue('--color-info').trim() || '#3b82f6';
+        const cs = getComputedStyle(document.body);
+        const read = (name: string) => cs.getPropertyValue(name).trim();
+
+        const foreground = read('--text-primary');
+        const selection = read('--bg-selected');
+        const red = read('--color-status-error');
+        const green = read('--color-status-success');
+        const yellow = read('--color-status-warning');
+        const blue = read('--color-status-info');
 
         term.options.theme = {
           background: 'transparent',
           foreground,
-          cursor,
+          cursor: foreground,
           selectionBackground: selection,
           red, brightRed: red,
           green, brightGreen: green,

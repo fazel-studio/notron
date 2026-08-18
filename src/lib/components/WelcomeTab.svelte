@@ -108,7 +108,7 @@
                   <button onclick={() => handleOpenRecent(path)} class="text-xs opacity-50 truncate w-full text-left">{path}</button>
                 </div>
                 <button onclick={(e) => handleRemoveRecent(e, path)} title="Remove from recent"
-                  class="shrink-0 p-1 rounded text-icon-muted hover:text-status-error hover:bg-hover opacity-0 group-hover:opacity-100 transition-opacity">
+                  class="shrink-0 p-1 rounded text-icon-muted hover:text-error hover:bg-hover opacity-0 group-hover:opacity-100 transition-opacity">
                   <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                 </button>
               </div>

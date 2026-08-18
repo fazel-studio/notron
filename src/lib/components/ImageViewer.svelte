@@ -74,9 +74,9 @@
   role="presentation"
 >
   {#if loading}
-    <span class="text-muted select-none">Loading image...</span>
+    <!-- Loading (blank) -->
   {:else if src}
-    <img src={src} alt="viewer" style="transform: scale({zoom}); transform-origin: center center; transition: transform 0.15s ease-out; background-color: #e5e5e5; background-image: conic-gradient(#fff 90deg, transparent 90deg 180deg, #fff 180deg 270deg, transparent 270deg); background-size: 20px 20px;" class="max-w-none pointer-events-none select-none" />
+    <img src={src} alt="viewer" style="transform: scale({zoom}); transform-origin: center center; transition: transform 0.15s ease-out; background-color: var(--bg-active); background-image: conic-gradient(var(--bg-surface-2) 90deg, transparent 90deg 180deg, var(--bg-surface-2) 180deg 270deg, transparent 270deg); background-size: 20px 20px;" class="max-w-none pointer-events-none select-none" />
   {:else}
     <span class="text-muted select-none">Failed to load image.</span>
   {/if}

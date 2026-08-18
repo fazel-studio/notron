@@ -375,6 +375,64 @@
     return node ? node.depth : -1;
   });
 
+  // ─── Sticky Scroll ───────────────────────────────────────────────
+  let listScrollTop = $state(0);
+  const ITEM_HEIGHT = 26;
+  
+  let stickyContext = $derived.by(() => {
+    if (flatList.length === 0 || listScrollTop <= 0) return { nodes: [], height: 0 };
+    
+    const firstIndex = Math.floor(listScrollTop / ITEM_HEIGHT);
+    if (firstIndex < 0 || firstIndex >= flatList.length) return { nodes: [], height: 0 };
+    
+    const topNode = flatList[firstIndex];
+    let stickyNodes: { node: import('../utils/treeFlattener').FlatTreeNode, top: number, zIndex: number }[] = [];
+    
+    let currentDepth = topNode.is_dir ? topNode.depth + 1 : topNode.depth;
+    
+    const collected = [];
+    for (let i = firstIndex; i >= 0; i--) {
+      const node = flatList[i];
+      if (node.is_dir && node.depth < currentDepth && !node.is_creating) {
+        collected.unshift(node);
+        currentDepth = node.depth;
+      }
+    }
+    
+    let containerHeight = 0;
+    for (let k = 0; k < collected.length; k++) {
+      const sNode = collected[k];
+      const naturalTop = k * ITEM_HEIGHT;
+      const naturalBottom = naturalTop + ITEM_HEIGHT;
+      
+      let pushOffset = 0;
+      for (let i = firstIndex + 1; i < flatList.length; i++) {
+        const fNode = flatList[i];
+        if (fNode.is_dir && !fNode.is_creating && fNode.depth <= sNode.depth) {
+          const fViewportY = (i * ITEM_HEIGHT) - listScrollTop;
+          if (fViewportY < naturalBottom) {
+            pushOffset = naturalBottom - fViewportY;
+          }
+          break; 
+        }
+      }
+      
+      const top = naturalTop - pushOffset;
+      stickyNodes.push({
+        node: sNode,
+        top,
+        zIndex: 50 - k // Parent nodes have higher z-index so children slide under them
+      });
+      
+      if (top + ITEM_HEIGHT > containerHeight) {
+        containerHeight = top + ITEM_HEIGHT;
+      }
+    }
+    
+    return { nodes: stickyNodes, height: containerHeight };
+  });
+
+
 
   $effect(() => {
     $showDotFilesStore;
@@ -1685,56 +1743,11 @@
   // ════════════════════════════════════════════════════════════════
 
   function openFileInTab(path: string) {
-    const name = getFileName(path);
-    const isImg = /\.(png|jpe?g|gif|webp|ico)$/i.test(name);
-    if (isImg) {
-      editorStore.addTab({ id: path, path, name, content: '', language: 'image', isPreview: true });
-      return;
-    }
-
-    // Deduplicate rapid clicks: if already loading, just activate the tab
-    const existing = editorStore.getTabsSnapshot().find(t => t.id === path);
-    if (existing && existing.isLoading) {
-      editorStore.addTab(existing);
-      return;
-    }
-
-    editorStore.addTab({ id: path, path, name, content: null, language: 'plaintext', isPreview: true, isLoading: true });
-    
-    invoke<string>('detect_language', { path }).then((language) => {
-      editorStore.updateTab(path, { language });
-    }).catch(() => {});
-
-    invoke<string>('read_file_text', { path }).then((content) => {
-      editorStore.setInitialContent(path, content);
-    }).catch((err) => {
-      const errStr = String(err);
-      if (errStr === '__BINARY__') {
-        editorStore.setTabUnsupported(path, true);
-        editorStore.setInitialContent(path, '');
-      } else if (errStr === '__LARGE_FILE__') {
-        editorStore.closeTab(path);
-        if (confirm(`"${name}" is large (>1MB). Open anyway? Syntax highlighting will be disabled.`)) {
-          editorStore.addTab({
-            id: path, path, name, content: '', language: 'plaintext', isPreview: true, isLargeFile: true, isLoading: true
-          });
-          invoke<any>('read_file_chunked', { path }).then(chunked => {
-            editorStore.setInitialContent(path, chunked.content);
-            editorStore.setTabLoading(path, false);
-          }).catch(e => {
-            console.error('Failed to load chunked file:', e);
-            editorStore.setTabLoading(path, false);
-          });
-        }
-      } else {
-        console.error('Failed to open file:', path, err);
-        editorStore.setTabLoading(path, false);
-      }
-    });
+    window.dispatchEvent(new CustomEvent('request-open-file', { detail: { path } }));
   }
 
   function openFileInTabSplit(path: string) {
-    openFileInTab(path);
+    window.dispatchEvent(new CustomEvent('request-open-file-split', { detail: { path } }));
   }
 
   function copyPathToClipboard(path: string) {
@@ -1845,7 +1858,7 @@
 {:else}
   <Tooltip content={hoveredPath} disabled={!hoveredPath} followCursor={true} hoverDelay={400} wrapperClass="flex-1 flex flex-col min-h-0 min-w-0">
     <div
-      class="group/tree flex-1 h-full outline-none flex flex-col p-2 transition-all {activePath === rootPath ? 'bg-surface-2 ring-1 ring-inset ring-focus' : ''}"
+      class="group/tree relative flex-1 h-full outline-none flex flex-col p-2 transition-all {activePath === rootPath ? 'bg-surface-2 ring-1 ring-inset ring-focus' : ''}"
       role="tree"
       tabindex="0"
       data-node-path={rootPath}
@@ -1856,7 +1869,34 @@
       onpointermove={handleTreePointerMove}
       onpointerleave={handleTreePointerLeave}
     >
-      <VirtualList items={flatList} itemHeight={26} overscan={3} class="flex-1">
+      <!-- STICKY SCROLL OVERLAY -->
+      {#if stickyContext.nodes.length > 0}
+        <div class="absolute top-2 left-2 right-2 z-10 flex flex-col pointer-events-none overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.15)]" style="height: {stickyContext.height}px;">
+          {#each stickyContext.nodes as sticky}
+            <div class="absolute left-0 right-0 pointer-events-auto bg-canvas" style="top: {sticky.top}px; height: 26px; z-index: {sticky.zIndex};">
+              <TreeNode 
+                node={sticky.node}
+                isSelected={selectedPaths.has(sticky.node.path)}
+                isActive={activePath === sticky.node.path}
+                activeFolderPath={activeFolderPath}
+                activeFolderDepth={activeFolderDepth}
+                isFaded={isNodeFaded(sticky.node.path) || extraFadedPaths.has(sticky.node.path)}
+                isDropTarget={drag.dropTargetPath === sticky.node.path && drag.dropTargetValid}
+                isDropInvalid={drag.dropTargetPath === sticky.node.path && !drag.dropTargetValid}
+                isCreatingChild={creatingIn === sticky.node.path}
+                isLoading={loadingPaths.has(sticky.node.path)}
+                onFileClick={handleNodeClick}
+                onContextMenu={(e) => showContextMenu(e, sticky.node)}
+                onPointerDown={handleNodePointerDown}
+                onPointerMove={handleNodePointerMove}
+                onPointerUp={(e) => handleNodePointerUp(e, sticky.node)}
+              />
+            </div>
+          {/each}
+        </div>
+      {/if}
+
+      <VirtualList items={flatList} itemHeight={26} overscan={3} class="flex-1" bind:scrollTop={listScrollTop}>
       {#snippet item({ item: node }: { item: FlatTreeNode; index: number })}
         {#if node.is_creating && node.creating_type}
           <div
@@ -1887,7 +1927,7 @@
               onblur={cancelCreate}
             />
             {#if creatingError}
-              <div class="text-xs text-status-error ml-1">{creatingError}</div>
+              <div class="text-xs text-error ml-1">{creatingError}</div>
             {/if}
           </div>
         {:else if renamingPath === node.path}
@@ -1913,7 +1953,7 @@
               spellcheck="false"
             />
             {#if renameError}
-              <div class="text-xs text-status-error ml-1">{renameError}</div>
+              <div class="text-xs text-error ml-1">{renameError}</div>
             {/if}
           </div>
         {:else}
@@ -1996,7 +2036,7 @@
 {#if ctxMenu.isOpen}
   <div
     data-notron-context-menu="true"
-    class="fixed min-w-[180px] rounded-md border p-1 shadow-md z-[100] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary"
+    class="fixed min-w-[180px] rounded-md border p-1 shadow-elevated z-[100] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary"
     style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;"
     role="presentation"
     onclick={(e) => e.stopPropagation()}
@@ -2007,7 +2047,7 @@
         <div class="h-px my-1 bg-subtle"></div>
       {:else}
         <button
-          class="flex items-center justify-between w-full px-2 py-1.5 text-xs rounded-sm cursor-pointer select-none outline-none transition-colors {!item.disabled ? 'hover:bg-selected focus:bg-selected hover:text-primary focus:text-primary text-secondary' : 'text-muted cursor-not-allowed'} {item.danger ? 'text-status-error hover:bg-status-error/10 hover:text-status-error' : ''}"
+          class="flex items-center justify-between w-full px-2 py-1.5 text-xs rounded-sm cursor-pointer select-none outline-none transition-colors {!item.disabled ? 'hover:bg-selected focus:bg-selected hover:text-primary focus:text-primary text-secondary' : 'text-muted cursor-not-allowed'} {item.danger ? 'text-error hover:bg-error/10 hover:text-error' : ''}"
           disabled={item.disabled}
           onclick={(e) => { e.stopPropagation(); handleCtxItemAction(item); }}
         >
@@ -2035,7 +2075,7 @@
         </span>?
       </p>
       {#if deleteConfirmState.requireTyping}
-        <p class="text-xs text-status-error mb-2">Type "{deleteConfirmState.requireTyping}" to confirm:</p>
+        <p class="text-xs text-error mb-2">Type "{deleteConfirmState.requireTyping}" to confirm:</p>
       {/if}
     </div>
     {#snippet footer()}
@@ -2043,7 +2083,7 @@
         <button onclick={cancelDeleteConfirm} class="px-4 py-2 text-sm rounded bg-surface-2 hover:bg-hover transition-colors text-primary border border-subtle">
           Cancel
         </button>
-        <button onclick={() => confirmDelete()} class="px-4 py-2 text-sm rounded bg-status-error hover:bg-status-error/80 transition-colors text-white border border-transparent">
+        <button onclick={() => confirmDelete()} class="px-4 py-2 text-sm rounded bg-error hover:bg-error/80 transition-colors text-on-accent border border-transparent">
           Yes, Delete it
         </button>
       </div>
@@ -2072,19 +2112,19 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    background: var(--color-bg-elevated, #2a2a2a);
-    color: var(--color-text, #fff);
-    border: 1px solid var(--color-border, #444);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle);
     border-radius: 6px;
     padding: 4px 10px;
     font-size: 12px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    box-shadow: var(--shadow-elevated);
     white-space: nowrap;
     opacity: 0.95;
   }
   .ghost-count {
-    background: var(--color-accent);
-    color: white;
+    background: var(--accent);
+    color: var(--text-on-accent);
     border-radius: 10px;
     padding: 1px 7px;
     font-weight: 600;

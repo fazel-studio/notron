@@ -145,7 +145,7 @@
 
 <div 
   transition:fly={{ y: -20, duration: 250, easing: cubicOut }}
-  class="absolute top-3 z-50 bg-surface border border-subtle rounded shadow-lg flex flex-col w-[480px] text-sm text-primary overflow-hidden"
+  class="absolute top-3 z-50 bg-surface border border-subtle rounded shadow-elevated flex flex-col w-[480px] text-sm text-primary overflow-hidden"
   style="right: {Math.max(32, rightGap + 32)}px;"
 >
   <div class="flex items-center p-1.5 gap-1.5">
@@ -176,7 +176,7 @@
         </button>
       </Tooltip>
       <Tooltip content="Close (Esc)">
-        <button class="p-1 hover:bg-error hover:text-white rounded text-icon-default ml-1 transition-colors focus:outline-none" onclick={close}>
+        <button class="p-1 hover:bg-error hover:text-on-accent rounded text-icon-default ml-1 transition-colors focus:outline-none" onclick={close}>
           <X size={14} />
         </button>
       </Tooltip>

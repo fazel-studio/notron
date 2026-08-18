@@ -6,6 +6,8 @@
   --color-canvas: var(--bg-canvas);
   --color-surface: var(--bg-surface);
   --color-surface-2: var(--bg-surface-2);
+  --color-surface-3: var(--bg-surface-3);
+  --color-surface-4: var(--bg-surface-4);
   --color-elevated: var(--bg-elevated);
 
   /* Interactive states */
@@ -49,7 +51,8 @@
   --color-success: var(--color-status-success);
 
   /* Shadow */
-  --shadow-elevated: var(--shadow-elevated);
+  --shadow-elevated-sm: var(--elevated-shadow-sm);
+  --shadow-elevated: var(--elevated-shadow);
 }
 
 /* ── High Contrast Light (default :root) ───────────────────────────────────────
@@ -58,6 +61,8 @@
   --bg-canvas: #ffffff;
   --bg-surface: #ffffff;
   --bg-surface-2: #ffffff;
+  --bg-surface-3: #f7f7f7;
+  --bg-surface-4: #efefef;
   --bg-elevated: #ffffff;
 
   --bg-hover: #f0f0f0;
@@ -89,11 +94,80 @@
   --scrollbar-thumb-hover: #005a9e;
 
   --color-status-error: #cc0000;
-  --color-status-warning: #0078d4;
+  --color-status-warning: #9a6700;
   --color-status-info: #0078d4;
-  --color-status-success: #0078d4;
+  --color-status-success: #1a7f37;
 
-  --shadow-elevated: none;
+  --elevated-shadow-sm:
+    0 1px 2px var(--bg-active);
+  --elevated-shadow:
+    0 4px 12px var(--bg-active),
+    0 1px 3px var(--bg-active);
+}
+
+/* ── Breadcrumb plugin (@fazelstudio/codemirror-breadcrumbs) ───────────────────
+   The plugin reads its colors from --cm-breadcrumbs-* variables and falls back
+   to hardcoded dark values when they are missing. Mapping them onto the global
+   theme variables keeps the bar, dropdowns and symbol-kind tints in sync with
+   the active theme (any theme, any icon theme). */
+:root {
+  --cm-breadcrumbs-bg: var(--bg-canvas);
+  --cm-breadcrumbs-fg: var(--text-secondary);
+  --cm-breadcrumbs-border: var(--border-subtle);
+  --cm-breadcrumbs-file-fg: var(--text-secondary);
+  --cm-breadcrumbs-hover-bg: var(--bg-hover);
+  --cm-breadcrumbs-focus: var(--border-focus);
+  --cm-breadcrumbs-separator-fg: var(--text-muted);
+  --cm-breadcrumbs-language-fg: var(--accent);
+  --cm-breadcrumbs-dropdown-bg: var(--bg-elevated);
+  --cm-breadcrumbs-dropdown-border: var(--border-subtle);
+  --cm-breadcrumbs-dropdown-title-fg: var(--text-muted);
+  --cm-breadcrumbs-dropdown-hover-bg: var(--bg-selected);
+  --cm-breadcrumbs-kind-file: var(--text-muted);
+  --cm-breadcrumbs-kind-folder: var(--accent);
+  --cm-breadcrumbs-kind-namespace: var(--text-secondary);
+  --cm-breadcrumbs-kind-class: var(--color-status-warning);
+  --cm-breadcrumbs-kind-interface: var(--accent);
+  --cm-breadcrumbs-kind-function: var(--accent-active);
+  --cm-breadcrumbs-kind-method: var(--accent-active);
+  --cm-breadcrumbs-kind-variable: var(--color-status-info);
+  --cm-breadcrumbs-kind-constant: var(--color-status-info);
+  --cm-breadcrumbs-kind-enum: var(--accent-active);
+  --cm-breadcrumbs-kind-property: var(--text-secondary);
+  --cm-breadcrumbs-kind-heading: var(--text-primary);
+  --cm-breadcrumbs-kind-block: var(--text-muted);
+  --cm-breadcrumbs-kind-tag: var(--accent);
+  --cm-breadcrumbs-kind-other: var(--text-muted);
+}
+
+/* ── Git gutter plugin (@fazelstudio/codemirror-gitgutter) ─────────────────────
+   Same pattern as the breadcrumbs: the plugin falls back to hardcoded VSCode
+   colors when these variables are missing. Map them to the semantic status
+   tokens so added/modified/deleted follow the active theme. */
+:root {
+  --cm-gitgutter-added-color: var(--color-status-success);
+  --cm-gitgutter-modified-color: var(--color-status-warning);
+  --cm-gitgutter-deleted-color: var(--color-status-error);
+  --cm-gitgutter-line-added-bg: color-mix(in srgb, var(--color-status-success) 12%, transparent);
+  --cm-gitgutter-line-modified-bg: color-mix(in srgb, var(--color-status-warning) 12%, transparent);
+  --cm-gitgutter-diff-added-bg: color-mix(in srgb, var(--color-status-success) 22%, transparent);
+  --cm-gitgutter-diff-removed-bg: color-mix(in srgb, var(--color-status-error) 22%, transparent);
+  --cm-gitgutter-peek-border: var(--border-subtle);
+  --cm-gitgutter-peek-label-color: var(--text-secondary);
+  --cm-gitgutter-peek-btn-color: var(--text-secondary);
+  --cm-gitgutter-peek-content-color: var(--text-secondary);
+}
+
+/* ── Sticky scroll plugin (@fazelstudio/codemirror-stickyscroll) ──────────────
+   Same pattern: the sticky header bar falls back to hardcoded grays when these
+   variables are missing. Map them onto the theme tokens. */
+:root {
+  --cm-stickyscroll-bg: var(--bg-surface-2);
+  --cm-stickyscroll-hoverBg: var(--bg-hover);
+  --cm-stickyscroll-currentBg: var(--bg-hover);
+  --cm-stickyscroll-accent: var(--accent);
+  --cm-stickyscroll-border: var(--border-subtle);
+  --cm-stickyscroll-gutterBorder: var(--border-subtle);
 }
 
 /* ── High Contrast Dark (.dark) ────────────────────────────────────────────────
@@ -102,6 +176,8 @@
   --bg-canvas: #000000;
   --bg-surface: #000000;
   --bg-surface-2: #000000;
+  --bg-surface-3: #111111;
+  --bg-surface-4: #1a1a1a;
   --bg-elevated: #000000;
 
   --bg-hover: #1a1a1a;
@@ -133,11 +209,68 @@
   --scrollbar-thumb-hover: #0078d4;
 
   --color-status-error: #ff6b6b;
-  --color-status-warning: #6fc3df;
-  --color-status-info: #6fc3df;
-  --color-status-success: #6fc3df;
+  --color-status-warning: #d29922;
+  --color-status-info: #3794ff;
+  --color-status-success: #3fb950;
 
-  --shadow-elevated: none;
+  --elevated-shadow-sm:
+    0 1px 2px var(--bg-active);
+  --elevated-shadow:
+    0 4px 12px var(--bg-active),
+    0 1px 3px var(--bg-active);
+}
+
+.dark {
+  --cm-breadcrumbs-bg: var(--bg-canvas);
+  --cm-breadcrumbs-fg: var(--text-secondary);
+  --cm-breadcrumbs-border: var(--border-subtle);
+  --cm-breadcrumbs-file-fg: var(--text-secondary);
+  --cm-breadcrumbs-hover-bg: var(--bg-hover);
+  --cm-breadcrumbs-focus: var(--border-focus);
+  --cm-breadcrumbs-separator-fg: var(--text-muted);
+  --cm-breadcrumbs-language-fg: var(--accent);
+  --cm-breadcrumbs-dropdown-bg: var(--bg-elevated);
+  --cm-breadcrumbs-dropdown-border: var(--border-subtle);
+  --cm-breadcrumbs-dropdown-title-fg: var(--text-muted);
+  --cm-breadcrumbs-dropdown-hover-bg: var(--bg-selected);
+  --cm-breadcrumbs-kind-file: var(--text-muted);
+  --cm-breadcrumbs-kind-folder: var(--accent);
+  --cm-breadcrumbs-kind-namespace: var(--text-secondary);
+  --cm-breadcrumbs-kind-class: var(--color-status-warning);
+  --cm-breadcrumbs-kind-interface: var(--accent);
+  --cm-breadcrumbs-kind-function: var(--accent-active);
+  --cm-breadcrumbs-kind-method: var(--accent-active);
+  --cm-breadcrumbs-kind-variable: var(--color-status-info);
+  --cm-breadcrumbs-kind-constant: var(--color-status-info);
+  --cm-breadcrumbs-kind-enum: var(--accent-active);
+  --cm-breadcrumbs-kind-property: var(--text-secondary);
+  --cm-breadcrumbs-kind-heading: var(--text-primary);
+  --cm-breadcrumbs-kind-block: var(--text-muted);
+  --cm-breadcrumbs-kind-tag: var(--accent);
+  --cm-breadcrumbs-kind-other: var(--text-muted);
+}
+
+.dark {
+  --cm-gitgutter-added-color: var(--color-status-success);
+  --cm-gitgutter-modified-color: var(--color-status-warning);
+  --cm-gitgutter-deleted-color: var(--color-status-error);
+  --cm-gitgutter-line-added-bg: color-mix(in srgb, var(--color-status-success) 12%, transparent);
+  --cm-gitgutter-line-modified-bg: color-mix(in srgb, var(--color-status-warning) 12%, transparent);
+  --cm-gitgutter-diff-added-bg: color-mix(in srgb, var(--color-status-success) 22%, transparent);
+  --cm-gitgutter-diff-removed-bg: color-mix(in srgb, var(--color-status-error) 22%, transparent);
+  --cm-gitgutter-peek-border: var(--border-subtle);
+  --cm-gitgutter-peek-label-color: var(--text-secondary);
+  --cm-gitgutter-peek-btn-color: var(--text-secondary);
+  --cm-gitgutter-peek-content-color: var(--text-secondary);
+}
+
+.dark {
+  --cm-stickyscroll-bg: var(--bg-surface-2);
+  --cm-stickyscroll-hoverBg: var(--bg-hover);
+  --cm-stickyscroll-currentBg: var(--bg-hover);
+  --cm-stickyscroll-accent: var(--accent);
+  --cm-stickyscroll-border: var(--border-subtle);
+  --cm-stickyscroll-gutterBorder: var(--border-subtle);
 }
 
 /* ── CodeMirror overrides ────────────────────────────────────────────────────── */
@@ -187,10 +320,10 @@ div:not(.cm-content):not(.cm-line):not(.selectable)::selection {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb, rgba(120, 120, 120, 0.4));
+  background: var(--scrollbar-thumb);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--scrollbar-thumb-hover, rgba(120, 120, 120, 0.7));
+  background: var(--scrollbar-thumb-hover);
 }
 
 .cm-minimap-container {
@@ -212,20 +345,20 @@ div:not(.cm-content):not(.cm-line):not(.selectable)::selection {
   background: transparent;
 }
 .cm-editor:hover .cm-scroller::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb, rgba(120, 120, 120, 0.4));
+  background: var(--scrollbar-thumb);
 }
 .cm-editor:hover .cm-scroller::-webkit-scrollbar-thumb:hover {
-  background: var(--scrollbar-thumb-hover, rgba(120, 120, 120, 0.7));
+  background: var(--scrollbar-thumb-hover);
 }
 
 .hover-scrollbar::-webkit-scrollbar-thumb {
   background: transparent;
 }
 .hover-scrollbar:hover::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb, rgba(120, 120, 120, 0.4));
+  background: var(--scrollbar-thumb);
 }
 .hover-scrollbar:hover::-webkit-scrollbar-thumb:hover {
-  background: var(--scrollbar-thumb-hover, rgba(120, 120, 120, 0.7));
+  background: var(--scrollbar-thumb-hover);
 }
 
 .cm-editor:has(.cm-minimap-container:not([style*="display: none"])) .cm-content {

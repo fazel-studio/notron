@@ -50,7 +50,7 @@
     onkeydown={(e) => { if (e.key === 'Escape') handleClickOutside(); }}
   ></div>
   <div
-    class="fixed min-w-[220px] rounded-md border p-1 shadow-md z-[100] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary"
+    class="fixed min-w-[220px] rounded-md border p-1 shadow-elevated z-[100] animate-in fade-in duration-100 bg-surface-2 border-subtle text-primary"
     style="left: {pos.x}px; top: {pos.y}px;"
   >
     {#each items as item (item.id)}

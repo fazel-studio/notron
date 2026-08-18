@@ -275,7 +275,7 @@
         <div
           role="menu"
           tabindex="0"
-          class="absolute top-full left-0 min-w-[240px] rounded border shadow-lg z-[100] py-1 bg-surface-2 border-subtle text-primary"
+          class="absolute top-full left-0 min-w-[240px] rounded border shadow-elevated z-[100] py-1 bg-surface-2 border-subtle text-primary"
           onclick={(e) => { e.stopPropagation(); closeAll(); }}
           onkeydown={(e) => { if (e.key === 'Escape') closeAll(); }}
         >

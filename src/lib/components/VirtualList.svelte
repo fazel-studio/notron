@@ -21,6 +21,7 @@
     itemHeight?: number;
     overscan?: number;
     class?: string;
+    scrollTop?: number;
     /** Optional key function for #each. Defaults to item.path (or index). */
     getKey?: (item: T, index: number) => any;
     item: Snippet<[{ item: T; index: number }]>;
@@ -31,12 +32,12 @@
     itemHeight = 22,
     overscan = 5,
     class: className = '',
+    scrollTop = $bindable(0),
     getKey = (item: any, i: number) => item?.path ?? i,
     item: itemSnippet,
   }: Props<any> = $props();
 
   let containerEl: HTMLDivElement;
-  let scrollTop = $state(0);
   let containerHeight = $state(0);
 
   // Derived virtual window calculations

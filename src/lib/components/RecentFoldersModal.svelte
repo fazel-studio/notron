@@ -35,7 +35,7 @@
     {/each}
   </div>
   {#snippet footer()}
-    <button onclick={() => { uiStore.clearRecentWorkspaces(); uiStore.closeRecentFoldersModal(); }} class="flex flex-col items-start w-full text-left opacity-80 hover:opacity-100 transition-opacity p-1 rounded hover:bg-status-error/10 text-status-error h-[3.5rem] justify-center">
+    <button onclick={() => { uiStore.clearRecentWorkspaces(); uiStore.closeRecentFoldersModal(); }} class="flex flex-col items-start w-full text-left opacity-80 hover:opacity-100 transition-opacity p-1 rounded hover:bg-error/10 text-error h-[3.5rem] justify-center">
       <span class="font-medium truncate w-full text-center">Clear all recent...</span>
     </button>
   {/snippet}

@@ -58,9 +58,13 @@ export interface EditorTab {
   autoSavePaused?: boolean;
   status?: 'active' | 'loaded' | 'suspended' | 'modified' | 'deleted' | 'conflict';
   undoHistory?: any;
+  redoHistory?: any;
+  cursorHistory?: any[];
+  currentHistoryIndex?: number;
   isDiff?: boolean;
   diffOriginalContent?: string | null;
   svgViewMode?: 'image' | 'code' | 'split';
+  mdViewMode?: 'preview' | 'code' | 'split';
 }
 
 export type TabInput = {

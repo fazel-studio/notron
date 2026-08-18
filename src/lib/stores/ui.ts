@@ -40,158 +40,165 @@ interface UiState {
 const expandedPathsStore = writable<Set<string>>(new Set());
 const selectedPathsStore = writable<Set<string>>(new Set());
 
-function createUiStore() {
-  const state = writable<UiState>({
-    isSidebarOpen: typeof window !== 'undefined' ? localStorage.getItem('isSidebarOpen') !== 'false' : true,
-    sidebarWidth: typeof window !== 'undefined' ? parseInt(localStorage.getItem('sidebarWidth') || '240', 10) : 240,
-    activeSidebarPanel: 'explorer',
-    explorerRoot: typeof window !== 'undefined' 
-      ? (window.location.search.includes('clean=true') ? null : (localStorage.getItem('last_workspace') || null)) 
-      : null,
-    selectedExplorerPath: null,
-    creatingItem: null,
-    clipboard: null,
-    renamingItem: null,
-    isNewFileDialogOpen: false,
-    newFileDialogSource: null,
-    explorerRefreshCounter: 0,
-    explorerCollapseCounter: 0,
-    isMinimapEnabled: true,
-    recentWorkspaces: typeof window !== 'undefined' ? JSON.parse(localStorage.getItem('recent_workspaces') || '[]') : [],
-    showDotFiles: typeof window !== 'undefined' ? localStorage.getItem('showDotFiles') === 'true' : false,
-    globalStatus: null,
-    pendingTrustPath: null,
-    isRecentFoldersModalOpen: false,
-    searchQuery: '',
-    replaceQuery: '',
-    isFileSearchOpen: false,
-    fileSearchQuery: '',
-    fileReplaceQuery: '',
-    searchRefreshCounter: 0,
-    searchCollapseCounter: 0,
-    searchResultCount: 0,
-    toasts: [],
-    isCloneRepositoryModalOpen: false,
-    cloneStatus: null,
-  });
-
-  let globalStatusTimeout: ReturnType<typeof setTimeout> | null = null;
-  let operationCounter = 0;
-
-  function update(fn: (s: UiState) => Partial<UiState>) {
-    state.update(s => ({ ...s, ...fn(s) }));
-  }
-
-  function setStatus(msg: string | null, timeoutMs: number = 3000) {
-    if (globalStatusTimeout) clearTimeout(globalStatusTimeout);
-    state.update(s => ({ ...s, globalStatus: msg }));
-    
-    if (msg && timeoutMs > 0) {
-      globalStatusTimeout = setTimeout(() => {
-        state.update(s => ({ ...s, globalStatus: null }));
-      }, timeoutMs);
-    }
-  }
-
-  function addToast(title: string, type: 'success' | 'alert' | 'process' = 'success', message?: string): string {
-    const id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
-    state.update(s => {
-      const newToasts = [...s.toasts, { id, type, title, message }];
-      if (newToasts.length > 5) {
-        newToasts.shift(); // Remove the oldest toast
-      }
-      return { ...s, toasts: newToasts };
+  function createUiStore() {
+    const state = writable<UiState>({
+      isSidebarOpen: typeof window !== 'undefined' ? localStorage.getItem('isSidebarOpen') !== 'false' : true,
+      sidebarWidth: typeof window !== 'undefined' ? parseInt(localStorage.getItem('sidebarWidth') || '240', 10) : 240,
+      activeSidebarPanel: typeof window !== 'undefined' ? (localStorage.getItem('activeSidebarPanel') as any || 'explorer') : 'explorer',
+      explorerRoot: typeof window !== 'undefined' 
+        ? (window.location.search.includes('clean=true') ? null : (localStorage.getItem('last_workspace') || null)) 
+        : null,
+      selectedExplorerPath: null,
+      creatingItem: null,
+      clipboard: null,
+      renamingItem: null,
+      isNewFileDialogOpen: false,
+      newFileDialogSource: null,
+      explorerRefreshCounter: 0,
+      explorerCollapseCounter: 0,
+      isMinimapEnabled: typeof window !== 'undefined' ? localStorage.getItem('isMinimapEnabled') !== 'false' : true,
+      recentWorkspaces: typeof window !== 'undefined' ? JSON.parse(localStorage.getItem('recent_workspaces') || '[]') : [],
+      showDotFiles: typeof window !== 'undefined' ? localStorage.getItem('showDotFiles') === 'true' : false,
+      globalStatus: null,
+      pendingTrustPath: null,
+      isRecentFoldersModalOpen: false,
+      searchQuery: '',
+      replaceQuery: '',
+      isFileSearchOpen: false,
+      fileSearchQuery: '',
+      fileReplaceQuery: '',
+      searchRefreshCounter: 0,
+      searchCollapseCounter: 0,
+      searchResultCount: 0,
+      toasts: [],
+      isCloneRepositoryModalOpen: false,
+      cloneStatus: null,
     });
-    
-    if (type === 'success') {
-      setTimeout(() => {
-        removeToast(id);
-      }, 5000);
+  
+    let globalStatusTimeout: ReturnType<typeof setTimeout> | null = null;
+    let operationCounter = 0;
+  
+    function update(fn: (s: UiState) => Partial<UiState>) {
+      state.update(s => ({ ...s, ...fn(s) }));
     }
-    return id;
-  }
-
-  /** Show the single persistent process toast. Any existing process toast is replaced. */
-  function addProcessToast(title: string, message?: string): string {
-    let id = '';
-    state.update(s => {
-      const cleaned = s.toasts.filter(t => t.type !== 'process');
-      id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
-      const newToasts = [...cleaned, { id, type: 'process' as const, title, message }];
-      if (newToasts.length > 5) {
-        newToasts.shift();
-      }
-      return { ...s, toasts: newToasts };
-    });
-    return id;
-  }
-
-  function removeProcessToast() {
-    state.update(s => ({ ...s, toasts: s.toasts.filter(t => t.type !== 'process') }));
-  }
-
-  function removeToast(id: string) {
-    state.update(s => ({ ...s, toasts: s.toasts.filter(t => t.id !== id) }));
-  }
-
-  async function withStatus<T>(msg: string, promiseOrFn: Promise<T> | (() => Promise<T>), delayMs: number = 500): Promise<T> {
-    const opId = ++operationCounter;
-    
-    // Set a timer to show the message ONLY if the operation takes longer than delayMs
-    const timer = setTimeout(() => {
-      if (operationCounter === opId) {
-        state.update(s => ({ ...s, globalStatus: msg }));
-      }
-    }, delayMs);
-
-    try {
-      const isFunc = typeof promiseOrFn === 'function';
-      return await (isFunc ? (promiseOrFn as Function)() : promiseOrFn);
-    } finally {
-      clearTimeout(timer);
-      if (operationCounter === opId) {
-        state.update(s => ({ ...s, globalStatus: null }));
+  
+    function setStatus(msg: string | null, timeoutMs: number = 3000) {
+      if (globalStatusTimeout) clearTimeout(globalStatusTimeout);
+      state.update(s => ({ ...s, globalStatus: msg }));
+      
+      if (msg && timeoutMs > 0) {
+        globalStatusTimeout = setTimeout(() => {
+          state.update(s => ({ ...s, globalStatus: null }));
+        }, timeoutMs);
       }
     }
-  }
-
-  return {
-    subscribe: state.subscribe,
-    // Expose expandedPaths as separate store for fine-grained reactivity
-    expandedPaths: { subscribe: expandedPathsStore.subscribe },
-
-    initFromStorage: () => {
-      // New windows opened via "New Window" (clean=true) must always start
-      // with no active workspace, regardless of what is stored in localStorage.
-      const isCleanWindow = typeof window !== 'undefined' && window.location.search.includes('clean=true');
-      const savedWorkspace = isCleanWindow ? null : localStorage.getItem('last_workspace');
-      const savedRecent = JSON.parse(localStorage.getItem('recent_workspaces') || '[]');
-      const savedSidebarWidth = parseInt(localStorage.getItem('sidebarWidth') || '240', 10);
-      const savedSidebarOpen = localStorage.getItem('isSidebarOpen') !== 'false';
-      const savedShowDotFiles = localStorage.getItem('showDotFiles') === 'true';
-
-      update(() => ({
-        explorerRoot: savedWorkspace || null,
-        recentWorkspaces: savedRecent,
-        sidebarWidth: savedSidebarWidth,
-        isSidebarOpen: savedSidebarOpen,
-        showDotFiles: savedShowDotFiles,
-      }));
-    },
-    toggleSidebar: () => update(s => {
-      const newVal = !s.isSidebarOpen;
-      localStorage.setItem('isSidebarOpen', String(newVal));
-      return { isSidebarOpen: newVal };
-    }),
-    setSidebarOpen: (isOpen: boolean) => update(() => {
-      localStorage.setItem('isSidebarOpen', String(isOpen));
-      return { isSidebarOpen: isOpen };
-    }),
-    setActiveSidebarPanel: (panel: UiState['activeSidebarPanel']) => update(() => ({ activeSidebarPanel: panel })),
-    setSidebarWidth: (width: number) => update(() => {
-      localStorage.setItem('sidebarWidth', String(width));
-      return { sidebarWidth: width };
-    }),
+  
+    function addToast(title: string, type: 'success' | 'alert' | 'process' = 'success', message?: string): string {
+      const id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+      state.update(s => {
+        const newToasts = [...s.toasts, { id, type, title, message }];
+        if (newToasts.length > 5) {
+          newToasts.shift(); // Remove the oldest toast
+        }
+        return { ...s, toasts: newToasts };
+      });
+      
+      if (type === 'success') {
+        setTimeout(() => {
+          removeToast(id);
+        }, 5000);
+      }
+      return id;
+    }
+  
+    /** Show the single persistent process toast. Any existing process toast is replaced. */
+    function addProcessToast(title: string, message?: string): string {
+      let id = '';
+      state.update(s => {
+        const cleaned = s.toasts.filter(t => t.type !== 'process');
+        id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+        const newToasts = [...cleaned, { id, type: 'process' as const, title, message }];
+        if (newToasts.length > 5) {
+          newToasts.shift();
+        }
+        return { ...s, toasts: newToasts };
+      });
+      return id;
+    }
+  
+    function removeProcessToast() {
+      state.update(s => ({ ...s, toasts: s.toasts.filter(t => t.type !== 'process') }));
+    }
+  
+    function removeToast(id: string) {
+      state.update(s => ({ ...s, toasts: s.toasts.filter(t => t.id !== id) }));
+    }
+  
+    async function withStatus<T>(msg: string, promiseOrFn: Promise<T> | (() => Promise<T>), delayMs: number = 500): Promise<T> {
+      const opId = ++operationCounter;
+      
+      // Set a timer to show the message ONLY if the operation takes longer than delayMs
+      const timer = setTimeout(() => {
+        if (operationCounter === opId) {
+          state.update(s => ({ ...s, globalStatus: msg }));
+        }
+      }, delayMs);
+  
+      try {
+        const isFunc = typeof promiseOrFn === 'function';
+        return await (isFunc ? (promiseOrFn as Function)() : promiseOrFn);
+      } finally {
+        clearTimeout(timer);
+        if (operationCounter === opId) {
+          state.update(s => ({ ...s, globalStatus: null }));
+        }
+      }
+    }
+  
+    return {
+      subscribe: state.subscribe,
+      // Expose expandedPaths as separate store for fine-grained reactivity
+      expandedPaths: { subscribe: expandedPathsStore.subscribe },
+  
+      initFromStorage: () => {
+        // New windows opened via "New Window" (clean=true) must always start
+        // with no active workspace, regardless of what is stored in localStorage.
+        const isCleanWindow = typeof window !== 'undefined' && window.location.search.includes('clean=true');
+        const savedWorkspace = isCleanWindow ? null : localStorage.getItem('last_workspace');
+        const savedRecent = JSON.parse(localStorage.getItem('recent_workspaces') || '[]');
+        const savedSidebarWidth = parseInt(localStorage.getItem('sidebarWidth') || '240', 10);
+        const savedSidebarOpen = localStorage.getItem('isSidebarOpen') !== 'false';
+        const savedShowDotFiles = localStorage.getItem('showDotFiles') === 'true';
+        const savedActiveSidebarPanel = localStorage.getItem('activeSidebarPanel') as any || 'explorer';
+        const savedMinimapEnabled = localStorage.getItem('isMinimapEnabled') !== 'false';
+  
+        update(() => ({
+          explorerRoot: savedWorkspace || null,
+          recentWorkspaces: savedRecent,
+          sidebarWidth: savedSidebarWidth,
+          isSidebarOpen: savedSidebarOpen,
+          showDotFiles: savedShowDotFiles,
+          activeSidebarPanel: savedActiveSidebarPanel,
+          isMinimapEnabled: savedMinimapEnabled,
+        }));
+      },
+      toggleSidebar: () => update(s => {
+        const newVal = !s.isSidebarOpen;
+        localStorage.setItem('isSidebarOpen', String(newVal));
+        return { isSidebarOpen: newVal };
+      }),
+      setSidebarOpen: (isOpen: boolean) => update(() => {
+        localStorage.setItem('isSidebarOpen', String(isOpen));
+        return { isSidebarOpen: isOpen };
+      }),
+      setActiveSidebarPanel: (panel: UiState['activeSidebarPanel']) => update(() => {
+        localStorage.setItem('activeSidebarPanel', panel);
+        return { activeSidebarPanel: panel };
+      }),
+      setSidebarWidth: (width: number) => update(() => {
+        localStorage.setItem('sidebarWidth', String(width));
+        return { sidebarWidth: width };
+      }),
     setSelectedExplorerPath: (path: string | null) => update(() => ({ selectedExplorerPath: path })),
     setCreatingItem: (item: UiState['creatingItem']) => update(() => ({ creatingItem: item })),
     setRenamingItem: (path: string | null) => update(() => ({ renamingItem: path })),
@@ -222,8 +229,15 @@ function createUiStore() {
     removeToast,
     addProcessToast,
     removeProcessToast,
-    toggleMinimap: () => update(s => ({ isMinimapEnabled: !s.isMinimapEnabled })),
-    setMinimapEnabled: (enabled: boolean) => update(() => ({ isMinimapEnabled: enabled })),
+    toggleMinimap: () => update(s => {
+      const newVal = !s.isMinimapEnabled;
+      localStorage.setItem('isMinimapEnabled', String(newVal));
+      return { isMinimapEnabled: newVal };
+    }),
+    setMinimapEnabled: (enabled: boolean) => update(() => {
+      localStorage.setItem('isMinimapEnabled', String(enabled));
+      return { isMinimapEnabled: enabled };
+    }),
     saveTierUiState: () => {
       // Delegates to the Tauri command; called by App.svelte effects
     },

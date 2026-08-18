@@ -14,6 +14,7 @@ export interface AppSettings {
   search_exclude: string[];
   search_include: string[];
   default_svg_view: 'image' | 'code' | 'split';
+  default_md_view: 'preview' | 'code' | 'split';
   discord_presence: boolean;
 }
 
@@ -31,6 +32,7 @@ export const HARDCODED_DEFAULTS: AppSettings = {
   search_exclude: [],
   search_include: [],
   default_svg_view: 'image',
+  default_md_view: 'preview',
   discord_presence: true,
 };
 

@@ -1,6 +1,7 @@
 <script lang="ts">
   import DropdownMenu, { type DropdownMenuItem } from './DropdownMenu.svelte';
   import { editorStore } from '../stores/editor';
+  import { splitStore } from '../stores/split';
   import { settingsStore } from '../stores/settings.svelte';
   import { ChevronDown } from 'lucide-svelte';
 
@@ -18,6 +19,7 @@
   function setSvgViewMode(mode: 'image' | 'code' | 'split') {
     if (activeTab) {
       editorStore.updateTab(activeTab.id, { svgViewMode: mode });
+      splitStore.updateTabInAllPanes({ id: activeTab.id, svgViewMode: mode });
     }
   }
 
@@ -25,6 +27,7 @@
     settingsStore.updateSetting('default_svg_view', mode, 'global');
     if (activeTab) {
       editorStore.updateTab(activeTab.id, { svgViewMode: mode });
+      splitStore.updateTabInAllPanes({ id: activeTab.id, svgViewMode: mode });
     }
   }
 

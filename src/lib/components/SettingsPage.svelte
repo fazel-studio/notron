@@ -120,7 +120,7 @@
           </div>
           <!-- Search results dropdown -->
           {#if filteredSections && filteredSections.length > 0}
-            <div class="mt-1 rounded border border-subtle bg-surface-2 shadow-lg overflow-hidden absolute z-50 w-72">
+            <div class="mt-1 rounded border border-subtle bg-surface-2 shadow-elevated overflow-hidden absolute z-50 w-72">
               {#each filteredSections as result}
                 <button
                   onclick={() => scrollToSetting(result.id)}
@@ -133,7 +133,7 @@
               {/each}
             </div>
           {:else if searchQuery.trim() && filteredSections?.length === 0}
-            <div class="mt-1 rounded border border-subtle bg-surface-2 shadow-lg overflow-hidden absolute z-50 w-72">
+            <div class="mt-1 rounded border border-subtle bg-surface-2 shadow-elevated overflow-hidden absolute z-50 w-72">
               <div class="px-3 py-2 text-sm text-muted">No settings found for "{searchQuery}"</div>
             </div>
           {/if}
@@ -244,7 +244,7 @@
                 onclick={() => handleSave('word_wrap', !settingsStore.effectiveSettings.word_wrap)}
                 class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {settingsStore.effectiveSettings.word_wrap ? 'bg-accent' : 'bg-surface-2 border border-subtle'}"
               >
-                <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform {settingsStore.effectiveSettings.word_wrap ? 'translate-x-4' : 'translate-x-0.5'}"></span>
+                <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-canvas shadow transition-transform {settingsStore.effectiveSettings.word_wrap ? 'translate-x-4' : 'translate-x-0.5'}"></span>
               </button>
             </div>
 
@@ -261,7 +261,7 @@
                 onclick={() => handleSave('line_numbers', !settingsStore.effectiveSettings.line_numbers)}
                 class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {settingsStore.effectiveSettings.line_numbers ? 'bg-accent' : 'bg-surface-2 border border-subtle'}"
               >
-                <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform {settingsStore.effectiveSettings.line_numbers ? 'translate-x-4' : 'translate-x-0.5'}"></span>
+                <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-canvas shadow transition-transform {settingsStore.effectiveSettings.line_numbers ? 'translate-x-4' : 'translate-x-0.5'}"></span>
               </button>
             </div>
           {/if}
@@ -285,7 +285,7 @@
                 onclick={() => handleSave('auto_save', !settingsStore.effectiveSettings.auto_save)}
                 class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {settingsStore.effectiveSettings.auto_save ? 'bg-accent' : 'bg-surface-2 border border-subtle'}"
               >
-                <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform {settingsStore.effectiveSettings.auto_save ? 'translate-x-4' : 'translate-x-0.5'}"></span>
+                <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-canvas shadow transition-transform {settingsStore.effectiveSettings.auto_save ? 'translate-x-4' : 'translate-x-0.5'}"></span>
               </button>
             </div>
 
