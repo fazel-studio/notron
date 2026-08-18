@@ -65,6 +65,7 @@ import {
 import { EditorView } from '@codemirror/view';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
+import { DEFAULT_THEME } from './constants';
 
 // ── High Contrast Dark ────────────────────────────────────────────────────────
 // Pure black (#000000) bg, white text, blue (#6fc3df) accent borders — VSCode HC
@@ -200,9 +201,7 @@ export const THEMES: Record<string, { extension: any, isDark: boolean, label: st
   'xcode-dark': { extension: xcodeDark, isDark: true, label: 'Xcode Dark', settings: defaultSettingsXcodeDark },
 };
 
-export const DEFAULT_THEME = 'vscode-dark';
-
-function adjustColorOpacity(hex: string, alpha: number): string {
+export function adjustColorOpacity(hex: string, alpha: number): string {
   // basic hex to rgba converter, assumes #RRGGBB or #RGB or #RRGGBBAA
   if (!hex || !hex.startsWith('#')) return hex;
   let r = 0, g = 0, b = 0;
@@ -302,7 +301,7 @@ export function applyThemeVariables(themeName: string) {
   let effectiveTheme = themeName;
   if (themeName === 'system') {
     const isDarkOS = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    effectiveTheme = isDarkOS ? 'vscode-dark' : 'vscode-light';
+    effectiveTheme = isDarkOS ? DEFAULT_THEME : 'vscode-light';
   }
 
   const themeObj = THEMES[effectiveTheme];
@@ -372,7 +371,7 @@ export function applyThemeVariables(themeName: string) {
 
 export function getThemeExtension(themeId: string, isDark: boolean) {
   if (themeId === 'system') {
-    return isDark ? THEMES['vscode-dark'].extension : THEMES['vscode-light'].extension;
+    return isDark ? THEMES[DEFAULT_THEME].extension : THEMES['vscode-light'].extension;
   }
-  return THEMES[themeId as keyof typeof THEMES]?.extension || THEMES['vscode-dark'].extension;
+  return THEMES[themeId as keyof typeof THEMES]?.extension || THEMES[DEFAULT_THEME].extension;
 }

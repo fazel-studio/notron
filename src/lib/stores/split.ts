@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import type { EditorTab } from './editor';
+import { generateId } from '../constants';
 
 export type SplitDirection = 'horizontal' | 'vertical';
 
@@ -26,12 +27,8 @@ interface SplitState {
   activePaneId: string;
 }
 
-function generateId() {
-  return `pane-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
 function createInitialPane(): EditorPane {
-  const id = generateId();
+  const id = generateId('pane');
   return { id, tabs: [], activeTabId: null };
 }
 
@@ -39,7 +36,7 @@ function createInitialState(): SplitState {
   const pane = createInitialPane();
   return {
     panes: { [pane.id]: pane },
-    rootNode: { id: `node-${Date.now()}`, type: 'pane', paneId: pane.id },
+    rootNode: { id: generateId('node'), type: 'pane', paneId: pane.id },
     activePaneId: pane.id,
   };
 }
@@ -97,11 +94,11 @@ function createSplitStore() {
   const store = writable<SplitState>(createInitialState());
 
   function splitPane(targetPaneId: string, direction: 'up' | 'down' | 'left' | 'right') {
-    store.update(state => {
+    store.update((state) => {
       const targetPane = state.panes[targetPaneId];
       if (!targetPane) return state;
 
-      const newPane: EditorPane = { id: generateId(), tabs: [], activeTabId: null };
+      const newPane: EditorPane = { id: generateId('pane'), tabs: [], activeTabId: null };
 
       const splitDir: SplitDirection =
         direction === 'left' || direction === 'right' ? 'vertical' : 'horizontal';
@@ -109,23 +106,21 @@ function createSplitStore() {
       const isNewFirst = direction === 'left' || direction === 'up';
 
       const existingLeaf: SplitNode = {
-        id: `node-${Date.now()}-existing`,
+        id: generateId('node'),
         type: 'pane',
         paneId: targetPaneId,
       };
       const newLeaf: SplitNode = {
-        id: `node-${Date.now() + 1}-new`,
+        id: generateId('node'),
         type: 'pane',
         paneId: newPane.id,
       };
 
       const splitNode: SplitNode = {
-        id: `node-${Date.now() + 2}-split`,
+        id: generateId('node'),
         type: 'split',
         direction: splitDir,
-        children: isNewFirst
-          ? [newLeaf, existingLeaf]
-          : [existingLeaf, newLeaf],
+        children: isNewFirst ? [newLeaf, existingLeaf] : [existingLeaf, newLeaf],
         splitRatio: 0.5,
       };
 
@@ -144,7 +139,7 @@ function createSplitStore() {
   }
 
   function closePaneById(paneId: string) {
-    store.update(state => {
+    store.update((state) => {
       const allPaneIds = collectPaneIds(state.rootNode);
       if (allPaneIds.length <= 1) {
         // Just clear tabs on the only remaining pane
@@ -163,9 +158,8 @@ function createSplitStore() {
       delete newPanes[paneId];
 
       const remainingIds = collectPaneIds(newRoot);
-      const newActiveId = state.activePaneId === paneId
-        ? (remainingIds[0] ?? null)
-        : state.activePaneId;
+      const newActiveId =
+        state.activePaneId === paneId ? (remainingIds[0] ?? null) : state.activePaneId;
 
       return {
         ...state,
@@ -177,14 +171,14 @@ function createSplitStore() {
   }
 
   function setActivePane(paneId: string) {
-    store.update(state => ({ ...state, activePaneId: paneId }));
+    store.update((state) => ({ ...state, activePaneId: paneId }));
   }
 
   function addTabToPane(paneId: string, tab: EditorTab) {
-    store.update(state => {
+    store.update((state) => {
       const pane = state.panes[paneId];
       if (!pane) return state;
-      const exists = pane.tabs.find(t => t.id === tab.id || (t.path === tab.path && t.language === tab.language));
+      const exists = pane.tabs.find((t) => t.id === tab.id || (t.path === tab.path && t.language === tab.language));
       if (exists) {
         return {
           ...state,
@@ -202,10 +196,10 @@ function createSplitStore() {
   }
 
   function replaceTabInPane(paneId: string, oldTabId: string, newTab: EditorTab) {
-    store.update(state => {
+    store.update((state) => {
       const pane = state.panes[paneId];
       if (!pane) return state;
-      const index = pane.tabs.findIndex(t => t.id === oldTabId);
+      const index = pane.tabs.findIndex((t) => t.id === oldTabId);
       if (index === -1) {
         return {
           ...state,
@@ -228,10 +222,10 @@ function createSplitStore() {
   }
 
   function closeTabInPane(paneId: string, tabId: string) {
-    store.update(state => {
+    store.update((state) => {
       const pane = state.panes[paneId];
       if (!pane) return state;
-      const newTabs = pane.tabs.filter(t => t.id !== tabId);
+      const newTabs = pane.tabs.filter((t) => t.id !== tabId);
       let newActiveId = pane.activeTabId;
       if (newActiveId === tabId) {
         newActiveId = newTabs.length > 0 ? newTabs[newTabs.length - 1].id : null;
@@ -244,7 +238,7 @@ function createSplitStore() {
   }
 
   function setActivePaneTab(paneId: string, tabId: string) {
-    store.update(state => {
+    store.update((state) => {
       const pane = state.panes[paneId];
       if (!pane) return state;
       return {
@@ -255,7 +249,7 @@ function createSplitStore() {
   }
 
   function closeAllTabsInPane(paneId: string) {
-    store.update(state => {
+    store.update((state) => {
       const pane = state.panes[paneId];
       if (!pane) return state;
       return {
@@ -266,10 +260,10 @@ function createSplitStore() {
   }
 
   function updateTabInAllPanes(updatedTab: Partial<EditorTab> & { id: string }) {
-    store.update(state => {
+    store.update((state) => {
       const newPanes = { ...state.panes };
       for (const [paneId, pane] of Object.entries(newPanes)) {
-        const idx = pane.tabs.findIndex(t => t.id === updatedTab.id);
+        const idx = pane.tabs.findIndex((t) => t.id === updatedTab.id);
         if (idx !== -1) {
           const newTabs = [...pane.tabs];
           newTabs[idx] = { ...newTabs[idx], ...updatedTab };
@@ -281,7 +275,7 @@ function createSplitStore() {
   }
 
   function updateSplitRatio(nodeId: string, ratio: number) {
-    store.update(state => {
+    store.update((state) => {
       function updateRatio(node: SplitNode): SplitNode {
         if (node.id === nodeId) return { ...node, splitRatio: ratio };
         if (node.type === 'split' && node.children) {
@@ -298,7 +292,7 @@ function createSplitStore() {
 
   function getSnapshot(): SplitState {
     let val: SplitState = null!;
-    store.subscribe(v => (val = v))();
+    store.subscribe((v) => (val = v))();
     return val;
   }
 

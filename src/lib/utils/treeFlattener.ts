@@ -1,12 +1,10 @@
 /**
- * treeFlattener.ts — Section 3.1 & 3.2
+ * treeFlattener.ts
  *
  * Converts a nested file tree into a flat array for virtual scrolling.
  * Virtual lists can only work on flat arrays, NOT on nested structures.
  *
- * Section 3.1 Golden Rule:
- *   "Flatten Before Virtualizing — Struktur tree HARUS diubah menjadi
- *    array linear terlebih dahulu sebelum bisa di-virtual-scroll."
+ * Golden Rule: flatten the tree into a linear array BEFORE virtualizing.
  */
 
 export interface FlatTreeNode {
@@ -44,9 +42,9 @@ export interface RawFileNode {
  * Perform a DFS traversal of the file tree and produce a flat array
  * of ONLY the visible nodes, based on the current set of expanded paths.
  *
- * This is the core function for Section 3.1 — Tree Flattening.
+ * This is the core tree-flattening function.
  *
- * PERF NOTE: loadingPaths parameter was removed intentionally.
+ * PERF: intentionally no loadingPaths parameter.
  * Previously it was passed here, making loadingPaths a dependency of flatList.
  * Every loading state change (add/remove path) triggered a full tree recompute.
  * Now loadingPaths is consumed directly by TreeNode via isLoading prop,
@@ -54,7 +52,7 @@ export interface RawFileNode {
  *
  * @param nodes      - Array of top-level nodes (root's children)
  * @param expandedSet - Set of paths that are currently expanded
- * @param childrenCache - Map from path → loaded children (Section 3.3 Node Cache)
+ * @param childrenCache - Map from path → loaded children (node cache)
  * @param depth      - Current recursion depth (starts at 0)
  * @param creatingItem - Optional item being created inline
  * @returns Flat array of visible nodes, ready for virtual scrolling

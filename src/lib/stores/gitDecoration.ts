@@ -7,7 +7,7 @@ export interface GitDecoration {
   index_code: string | null;
   worktree_code: string | null;
   renamed_from: string | null;
-  /** True when this entry is an aggregated folder badge (D.7.3), not a file. */
+  /** True when this entry is an aggregated folder badge, not a file. */
   is_rollup: boolean;
 }
 
@@ -22,7 +22,7 @@ function createDecorationStore() {
   return {
     subscribe,
     updateDelta: (delta: DecorationDelta) => {
-      update(state => {
+      update((state) => {
         const next = { ...state };
         for (const path of delta.removed) {
           delete next[path];
@@ -33,22 +33,22 @@ function createDecorationStore() {
         return next;
       });
     },
-    /** Optimistically drop decorations for paths that no longer exist (D.7). */
+    /** Optimistically drop decorations for paths that no longer exist. */
     removePaths: (paths: string[]) => {
       if (paths.length === 0) return;
-      update(state => {
+      update((state) => {
         const next = { ...state };
         for (const p of paths) delete next[p];
         return next;
       });
     },
-    clear: () => update(() => ({}))
+    clear: () => update(() => ({})),
   };
 }
 
 export const gitDecorationStore = createDecorationStore();
 
-// Setup listener
+// Keep the tree decorations in sync with the Rust watcher.
 if (typeof window !== 'undefined') {
   listen<DecorationDelta>('git-decorations-changed', (event) => {
     gitDecorationStore.updateDelta(event.payload);

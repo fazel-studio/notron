@@ -1,15 +1,28 @@
-import { writable } from 'svelte/store';
+import { writable, get } from 'svelte/store';
 import { listen } from '@tauri-apps/api/event';
 import {
-  getGitAvailability, getRepoState, getGitLog,
-  initRepo, stageFile, stageAll, unstageFile, unstageAll,
-  commit, discardFile, runNetworkOp, cancelOp,
-  type GitAvailability, type RepoState, type GitLogEntry,
+  getGitAvailability,
+  getRepoState,
+  getGitLog,
+  initRepo,
+  stageFile,
+  stageAll,
+  unstageFile,
+  unstageAll,
+  commit,
+  discardFile,
+  runNetworkOp,
+  cancelOp,
+  UNKNOWN_AVAILABILITY,
+  type GitAvailability,
+  type RepoState,
+  type GitLogEntry,
   type GitProgress,
 } from '../services/git';
+import { GIT_LOG_LIMIT, REFRESH_REPO_DEBOUNCE_MS, GIT_STATUS_DEBOUNCE_MS } from '../constants';
 
-// Module D — cwd-aware Git repository store. Owns the source-control panel
-// state (detection → repo state → log → operations) and reacts to the Rust
+// cwd-aware Git repository store: owns the source-control panel state
+// (detection → repo state → log → operations) and reacts to the Rust
 // watcher's `git-status-refresh` event instead of polling.
 
 interface RepoUiState {
@@ -21,7 +34,7 @@ interface RepoUiState {
   commitsLoading: boolean;
   committing: boolean;
   syncing: boolean;
-  syncingOp: string | null;      // op_id of the running push/pull/fetch
+  syncingOp: string | null; // op_id of the running push/pull/fetch
   progress: GitProgress | null;
   lastError: string | null;
   cwd: string | null;
@@ -29,7 +42,7 @@ interface RepoUiState {
 
 function createGitRepoStore() {
   const { subscribe, update, set } = writable<RepoUiState>({
-    availability: { status: 'Unknown', path: null, version: null, source: '' },
+    availability: UNKNOWN_AVAILABILITY,
     availabilityLoading: false,
     repo: null,
     repoLoading: false,
@@ -45,12 +58,13 @@ function createGitRepoStore() {
 
   let _cwd: string | null = null;
   let _opId: string | null = null;
-  let refreshRepoTimeout: any = null;
+  let refreshRepoTimeout: ReturnType<typeof setTimeout> | null = null;
   let unlistenStatus: (() => void) | null = null;
   let statusInFlight = false;
+  let pendingRefresh = false;
 
   function patch(p: Partial<RepoUiState>) {
-    update(s => ({ ...s, ...p }));
+    update((s) => ({ ...s, ...p }));
   }
 
   async function detect() {
@@ -65,14 +79,20 @@ function createGitRepoStore() {
     }
   }
 
-  async function refreshRepo(cwd: string) {
-    if (!cwd) return;
-    
+  /**
+   * Debounced repo state refresh. Concurrent calls are coalesced: a refresh
+   * requested while one is already running is re-scheduled immediately after
+   * the running one finishes instead of being silently dropped.
+   */
+  function refreshRepo(cwd: string): Promise<void> {
+    if (!cwd) return Promise.resolve();
+
     if (refreshRepoTimeout) clearTimeout(refreshRepoTimeout);
-    
+
     return new Promise<void>((resolve) => {
       refreshRepoTimeout = setTimeout(async () => {
         if (statusInFlight) {
+          pendingRefresh = true;
           resolve();
           return;
         }
@@ -80,14 +100,20 @@ function createGitRepoStore() {
         patch({ repoLoading: true, lastError: null });
         try {
           const repo = await getRepoState(cwd);
-          patch({ repo, repoLoading: false, cwd });
+          // Ignore the result if the workspace changed while we were waiting.
+          if (_cwd === cwd) patch({ repo, repoLoading: false, cwd });
         } catch (e) {
-          patch({ repoLoading: false, lastError: String(e) });
+          if (_cwd === cwd) patch({ repoLoading: false, lastError: String(e) });
         } finally {
           statusInFlight = false;
+          refreshRepoTimeout = null;
           resolve();
+          if (pendingRefresh) {
+            pendingRefresh = false;
+            void refreshRepo(cwd);
+          }
         }
-      }, 300); // 300ms inherent debounce for ALL callers
+      }, REFRESH_REPO_DEBOUNCE_MS);
     });
   }
 
@@ -95,10 +121,10 @@ function createGitRepoStore() {
     if (!cwd) return;
     patch({ commitsLoading: true });
     try {
-      const commits = await getGitLog(cwd, 50);
-      patch({ commits, commitsLoading: false });
+      const commits = await getGitLog(cwd, GIT_LOG_LIMIT);
+      if (_cwd === cwd) patch({ commits, commitsLoading: false });
     } catch {
-      patch({ commitsLoading: false });
+      if (_cwd === cwd) patch({ commitsLoading: false });
     }
   }
 
@@ -115,18 +141,21 @@ function createGitRepoStore() {
     }
     patch({ cwd, repo: null, commits: [] });
     const availability = await detect();
+    if (_cwd !== cwd) return; // workspace changed mid-detection
     if (availability?.status === 'Available') {
       terminalStore.addOutputLog(`[main] Validating found git in: "${availability.path}"`);
       terminalStore.addOutputLog(`[main] Using git "${availability.version}" from "${availability.path}"`);
       terminalStore.addOutputLog(`[Model][doInitialScan] Initial repository scan started`);
 
       await refreshRepo(cwd);
+      if (_cwd !== cwd) return;
       await refreshCommits(cwd);
 
-      // Count repositories
-      let repCount = 0;
-      subscribe(s => { if (s.repo && s.repo.status === 'Repo') repCount = 1; })();
-      terminalStore.addOutputLog(`[Model][doInitialScan] Initial repository scan completed - repositories (${repCount}), closed repositories (0), parent repositories (0), unsafe repositories (0)`);
+      const state = get({ subscribe });
+      const repCount = state.repo && state.repo.status === 'Repo' ? 1 : 0;
+      terminalStore.addOutputLog(
+        `[Model][doInitialScan] Initial repository scan completed - repositories (${repCount}), closed repositories (0), parent repositories (0), unsafe repositories (0)`
+      );
     } else {
       patch({ repo: null, repoLoading: false });
     }
@@ -137,27 +166,20 @@ function createGitRepoStore() {
 
     init: () => {
       if (unlistenStatus) return;
-      let timeoutId: any = null;
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-      // D.7 — react to Rust watcher's git-status-refresh event.
-      // Debounce: 400ms (VSCode-equivalent responsiveness).
-      // Fast-path: if gitignoreChanged, refresh immediately because
-      // gitignore changes directly alter which files are tracked/untracked.
+      // React to the Rust watcher's git-status-refresh event with a 400ms
+      // debounce (VSCode-equivalent responsiveness). A gitignore change
+      // alters tracked/untracked membership, so it refreshes immediately.
       listen<{ gitignoreChanged?: boolean }>('git-status-refresh', (e) => {
         if (!_cwd) return;
         const payload = e.payload ?? {};
-        if (payload.gitignoreChanged) {
-          // No extra debounce — gitignore change means git status changed NOW.
-          if (timeoutId) clearTimeout(timeoutId);
-          refreshRepo(_cwd);
-        } else {
-          if (timeoutId) clearTimeout(timeoutId);
-          timeoutId = setTimeout(() => {
-            refreshRepo(_cwd!);
-          }, 400);
-        }
-      }).then(un => (unlistenStatus = un));
-      
+        if (timeoutId) clearTimeout(timeoutId);
+        timeoutId = setTimeout(() => {
+          refreshRepo(_cwd!);
+        }, payload.gitignoreChanged ? 0 : GIT_STATUS_DEBOUNCE_MS);
+      }).then((un) => (unlistenStatus = un));
+
       listen<string>('git-output', async (e) => {
         const { terminalStore } = await import('./terminal');
         terminalStore.addOutputLog(e.payload, 'info');

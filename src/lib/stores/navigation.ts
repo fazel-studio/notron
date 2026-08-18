@@ -1,6 +1,8 @@
 import { writable, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { editorStore } from './editor';
+import { MAX_NAV_STACK, NAV_LINE_DELTA, GOTO_DISPATCH_MS, UNKNOWN_NAME } from '../constants';
+import { basename, isImageFile } from '../utils/path';
 
 export interface NavLocation {
   path: string;
@@ -12,7 +14,7 @@ function createNavigationStore() {
   const { subscribe, update } = writable({
     backStack: [] as NavLocation[],
     forwardStack: [] as NavLocation[],
-    currentLocation: null as NavLocation | null
+    currentLocation: null as NavLocation | null,
   });
 
   return {
@@ -20,24 +22,24 @@ function createNavigationStore() {
     isSignificantNavigation(prev: NavLocation | null, next: NavLocation): boolean {
       if (!prev) return true;
       if (prev.path !== next.path) return true;
-      if (Math.abs(prev.line - next.line) > 10) return true;
+      if (Math.abs(prev.line - next.line) > NAV_LINE_DELTA) return true;
       return false;
     },
 
     recordNavigation(location: NavLocation) {
-      update(state => {
+      update((state) => {
         if (!this.isSignificantNavigation(state.currentLocation, location)) return state;
 
         const newBackStack = [...state.backStack];
         if (state.currentLocation) {
           newBackStack.push(state.currentLocation);
-          if (newBackStack.length > 50) newBackStack.shift();
+          if (newBackStack.length > MAX_NAV_STACK) newBackStack.shift();
         }
 
         return {
           backStack: newBackStack,
           forwardStack: [],
-          currentLocation: location
+          currentLocation: location,
         };
       });
     },
@@ -53,11 +55,11 @@ function createNavigationStore() {
         newForwardStack.push(state.currentLocation);
       }
 
-      update(s => ({
+      update((s) => ({
         ...s,
         backStack: newBackStack,
         forwardStack: newForwardStack,
-        currentLocation: target
+        currentLocation: target,
       }));
 
       await this.navigateTo(target, { recordNav: false });
@@ -74,11 +76,11 @@ function createNavigationStore() {
         newBackStack.push(state.currentLocation);
       }
 
-      update(s => ({
+      update((s) => ({
         ...s,
         backStack: newBackStack,
         forwardStack: newForwardStack,
-        currentLocation: target
+        currentLocation: target,
       }));
 
       await this.navigateTo(target, { recordNav: false });
@@ -95,36 +97,37 @@ function createNavigationStore() {
         }
 
         let lang = 'plaintext';
-        const isImage = /\.(png|jpe?g|gif|webp|svg|ico|bmp)$/i.test(location.path);
-        if (isImage) {
-           lang = 'image';
+        if (isImageFile(location.path)) {
+          lang = 'image';
         } else {
-           lang = await invoke<string>('detect_language', { path: location.path }).catch(() => 'plaintext');
+          lang = await invoke<string>('detect_language', { path: location.path }).catch(() => 'plaintext');
         }
 
         // Switch to or open tab
-        const fileName = location.path.split(/[/\\]/).pop() || location.path;
+        const fileName = basename(location.path) || UNKNOWN_NAME;
         editorStore.addTab({
           id: location.path,
           path: location.path,
           name: fileName,
           content: null,
           language: lang,
-          isPreview: true
+          isPreview: true,
         });
 
         // Trigger scroll in editor
         setTimeout(() => {
-          window.dispatchEvent(new CustomEvent('editor:action', { 
-            detail: { action: 'goto', line: location.line, col: location.col } 
-          }));
-        }, 50);
+          window.dispatchEvent(
+            new CustomEvent('editor:action', {
+              detail: { action: 'goto', line: location.line, col: location.col },
+            })
+          );
+        }, GOTO_DISPATCH_MS);
 
         if (options.recordNav) this.recordNavigation(location);
       } catch (e) {
         console.error('Failed to navigate', e);
       }
-    }
+    },
   };
 }
 

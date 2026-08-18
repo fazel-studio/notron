@@ -1,6 +1,7 @@
 import { writable } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { Fzf } from 'fzf';
+import { FZF_LIMIT, MAX_PALETTE_INDEX_FILES, PALETTE_CACHE_TTL_MS, DEFAULT_EXCLUDE_DIRS } from '../constants';
 
 export interface PaletteItem {
   id: string;
@@ -12,9 +13,6 @@ export interface PaletteItem {
   shortcut?: string;
 }
 
-const MAX_PALETTE_FILES = 50_000;
-const CACHE_TTL_MS = 60_000;
-
 // Cache raw file lists per workspace so re-opening the palette (or switching
 // back to a workspace) never re-walks the whole tree.
 const workspaceFileCache = new Map<string, { paths: string[]; ts: number }>();
@@ -23,7 +21,7 @@ function createPaletteStore() {
   const { subscribe, set } = writable({
     items: [] as PaletteItem[],
     fzfInstance: null as Fzf<PaletteItem[]> | null,
-    isLoaded: false
+    isLoaded: false,
   });
 
   return {
@@ -31,7 +29,7 @@ function createPaletteStore() {
     initItems(items: PaletteItem[]) {
       const fzf = new Fzf(items, {
         selector: (item) => `${item.label} ${item.keywords?.join(' ') ?? ''}`,
-        limit: 15,
+        limit: FZF_LIMIT,
       });
       set({ items, fzfInstance: fzf, isLoaded: true });
     },
@@ -40,18 +38,18 @@ function createPaletteStore() {
         const now = Date.now();
         const cached = workspaceFileCache.get(workspacePath);
         let files: string[];
-        if (cached && now - cached.ts < CACHE_TTL_MS) {
+        if (cached && now - cached.ts < PALETTE_CACHE_TTL_MS) {
           files = cached.paths;
         } else {
           files = await invoke<string[]>('list_all_files', {
             path: workspacePath,
-            excludeDirs: ['node_modules', '.git', 'target', 'dist'],
-            maxResults: MAX_PALETTE_FILES,
+            excludeDirs: DEFAULT_EXCLUDE_DIRS,
+            maxResults: MAX_PALETTE_INDEX_FILES,
           }).catch(() => []); // graceful fallback
           workspaceFileCache.set(workspacePath, { paths: files, ts: now });
         }
 
-        const fileItems: PaletteItem[] = files.map(path => {
+        const fileItems: PaletteItem[] = files.map((path) => {
           const separator = path.includes('\\') ? '\\' : '/';
           const relativePath = path.replace(workspacePath + separator, '');
           return {
@@ -65,10 +63,10 @@ function createPaletteStore() {
 
         this.initItems([...baseCommands, ...fileItems]);
       } catch (err) {
-        console.error("Failed to load workspace files for palette", err);
+        console.error('Failed to load workspace files for palette', err);
         this.initItems(baseCommands);
       }
-    }
+    },
   };
 }
 

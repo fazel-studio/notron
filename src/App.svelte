@@ -8,20 +8,20 @@
   import { getHumanReadableError } from './lib/utils/error';
   import { settingsStore } from './lib/stores/settings.svelte';
   import { themeStore } from './lib/stores/theme';
-  import FileTree from './lib/components/FileTree.svelte';
-  import Tooltip from './lib/components/Tooltip.svelte';
+  import FileTree from './lib/components/explorer/FileTree.svelte';
+  import Tooltip from './lib/components/common/Tooltip.svelte';
   import { preloadMaterialIcons } from './lib/utils/materialIconRenderer.svelte';
-  import TitleMenuBar from './lib/components/TitleMenuBar.svelte';
-  import CloseTabDialog from './lib/components/CloseTabDialog.svelte';
-  import WelcomeTab from './lib/components/WelcomeTab.svelte';
-  import NewFileDialog from './lib/components/NewFileDialog.svelte';
-  import TrustModal from './lib/components/TrustModal.svelte';
-  import RecentFoldersModal from './lib/components/RecentFoldersModal.svelte';
-  import TerminalPanel from './lib/components/TerminalPanel.svelte';
-  import SmartSearchModal from './lib/components/SmartSearchModal.svelte';
-  import ToastContainer from './lib/components/ToastContainer.svelte';
+  import TitleMenuBar from './lib/components/panels/TitleMenuBar.svelte';
+  import CloseTabDialog from './lib/components/panels/CloseTabDialog.svelte';
+  import WelcomeTab from './lib/components/editor/WelcomeTab.svelte';
+  import NewFileDialog from './lib/components/panels/NewFileDialog.svelte';
+  import TrustModal from './lib/components/panels/TrustModal.svelte';
+  import RecentFoldersModal from './lib/components/panels/RecentFoldersModal.svelte';
+  import BottomPanel from './lib/components/panels/BottomPanel.svelte';
+  import SmartSearchModal from './lib/components/panels/SmartSearchModal.svelte';
+  import ToastContainer from './lib/components/common/ToastContainer.svelte';
 
-  import SplitView from './lib/components/SplitView.svelte';
+  import SplitView from './lib/components/editor/SplitView.svelte';
   import { terminalStore } from './lib/stores/terminal';
   import { paletteStore, type PaletteItem } from './lib/stores/palette';
   import { navigationStore } from './lib/stores/navigation';
@@ -168,28 +168,28 @@
   // Lazy load components only when needed (Bagian 17.1)
   $effect(() => {
     if (isCommandPaletteOpen && !CommandPaletteComponent) {
-      import('./lib/components/CommandPalette.svelte').then(m => CommandPaletteComponent = m.default);
+      import('./lib/components/panels/CommandPalette.svelte').then(m => CommandPaletteComponent = m.default);
     }
   });
   $effect(() => {
     if (isSettingsOpen && !SettingsPageComponent) {
-      import('./lib/components/SettingsPage.svelte').then(m => SettingsPageComponent = m.default);
+      import('./lib/components/panels/SettingsPage.svelte').then(m => SettingsPageComponent = m.default);
     }
   });
   $effect(() => {
     if (isGoToLineOpen && !GoToLineComponent) {
-      import('./lib/components/GoToLineDialog.svelte').then(m => GoToLineComponent = m.default);
+      import('./lib/components/editor/GoToLineDialog.svelte').then(m => GoToLineComponent = m.default);
     }
   });
   $effect(() => {
     if ($ui.activeSidebarPanel === 'search' && $ui.isSidebarOpen && !SearchPanelComponent) {
-      import('./lib/components/SearchPanel.svelte').then(m => SearchPanelComponent = m.default);
+      import('./lib/components/panels/SearchPanel.svelte').then(m => SearchPanelComponent = m.default);
     }
     if ($ui.activeSidebarPanel === 'git' && $ui.isSidebarOpen && !SourceControlPanelComponent) {
-      import('./lib/components/SourceControlPanel.svelte').then(m => SourceControlPanelComponent = m.default);
+      import('./lib/components/panels/SourceControlPanel.svelte').then(m => SourceControlPanelComponent = m.default);
     }
     if ($ui.activeSidebarPanel === 'run' && $ui.isSidebarOpen && !RunPanelComponent) {
-      import('./lib/components/RunPanel.svelte').then(m => RunPanelComponent = m.default);
+      import('./lib/components/panels/RunPanel.svelte').then(m => RunPanelComponent = m.default);
     }
   });
 
@@ -270,12 +270,12 @@
   });
   $effect(() => {
     if (activeTab && (activeTab.language === 'markdown-preview' || activeTab.language === 'markdown' || activeTab.path.toLowerCase().endsWith('.md')) && !MarkdownPreviewComponent) {
-      import('./lib/components/MarkdownPreview.svelte').then(m => MarkdownPreviewComponent = m.default);
+      import('./lib/components/editor/MarkdownPreview.svelte').then(m => MarkdownPreviewComponent = m.default);
     }
   });
   $effect(() => {
     if ((activeTab?.language === 'image' || activeTab?.path.toLowerCase().endsWith('.svg')) && !ImageViewerComponent) {
-      import('./lib/components/ImageViewer.svelte').then(m => ImageViewerComponent = m.default);
+      import('./lib/components/editor/ImageViewer.svelte').then(m => ImageViewerComponent = m.default);
     }
   });
 
@@ -666,13 +666,13 @@
     // Prefetch CommandPalette component
     idle(() => {
       if (!CommandPaletteComponent) {
-        import('./lib/components/CommandPalette.svelte').then(m => CommandPaletteComponent = m.default);
+        import('./lib/components/panels/CommandPalette.svelte').then(m => CommandPaletteComponent = m.default);
       }
     });
     // Prefetch Editor component
     idle(() => {
       if (!EditorComponent) {
-        import('./lib/components/Editor.svelte').then(m => EditorComponent = m.default);
+        import('./lib/components/editor/Editor.svelte').then(m => EditorComponent = m.default);
       }
     });
     // Warm the file index for Ctrl+P in the background (non-blocking)
@@ -869,10 +869,10 @@
   // Trigger EditorComponent lazy load as soon as a non-special tab exists (even with null content)
   $effect(() => {
     if (activeTab && activeTab.language !== 'markdown-preview' && activeTab.language !== 'image' && activeTab.language !== 'welcome' && !EditorComponent && !activeTab.isDiff) {
-      import('./lib/components/Editor.svelte').then(m => EditorComponent = m.default);
+      import('./lib/components/editor/Editor.svelte').then(m => EditorComponent = m.default);
     }
     if (activeTab && activeTab.isDiff && !DiffEditorComponent) {
-      import('./lib/components/DiffEditor.svelte').then(m => DiffEditorComponent = m.default);
+      import('./lib/components/editor/DiffEditor.svelte').then(m => DiffEditorComponent = m.default);
     }
   });
 
@@ -1032,7 +1032,7 @@
   function handleOpenTerminal() {
     const snap = terminalStore.getSnapshot();
     if (snap.terminals.length === 0) {
-      terminalStore.newTerminal('powershell', uiStore.getSnapshot().explorerRoot || '');
+      terminalStore.newTerminal(undefined, uiStore.getSnapshot().explorerRoot || '');
     } else {
       terminalStore.setVisibility(true);
     }
@@ -1550,7 +1550,7 @@
 >
 
 
-  <div class="h-9 flex items-center justify-between px-2 select-none bg-surface-2 text-primary border-b border-subtle" data-tauri-drag-region>
+  <div class="h-9 flex items-center justify-between pl-2 select-none bg-surface-2 text-primary border-b border-subtle" data-tauri-drag-region>
     <div class="flex items-center h-full" data-tauri-drag-region="false">
       <img src="/notron.png" alt="Notron Logo" class="w-4 h-4 ml-1 pointer-events-none" />
       <TitleMenuBar />
@@ -1838,7 +1838,7 @@
           onOpenTerminal={handleOpenTerminal}
         />
       </div>
-      <TerminalPanel />
+      <BottomPanel />
     </div>
   </div>
   {/if}

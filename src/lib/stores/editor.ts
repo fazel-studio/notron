@@ -2,38 +2,20 @@ import { writable, derived } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { getHumanReadableError } from '../utils/error';
 import { settingsStore } from './settings.svelte';
-
-export interface ReplaceMatchOptions {
-  query: string;
-  replace: string;
-  caseSensitive: boolean;
-  useRegex: boolean;
-  wholeWord: boolean;
-}
-
-/** Escape a literal query so it can be embedded in a RegExp safely. */
-export function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * Build a RegExp mirroring the Rust backend (`search.rs`):
- *  * literal queries are escaped, regex queries pass through,
- *  * whole-word wraps the pattern in `\b(?:...)\b`,
- *  * case sensitivity maps to the `i` flag.
- */
-export function buildReplaceRegex(query: string, opts: { caseSensitive: boolean; useRegex: boolean; wholeWord: boolean }): RegExp {
-  let pattern = opts.useRegex ? query : escapeRegExp(query);
-  if (opts.wholeWord) pattern = `\\b(?:${pattern})\\b`;
-  return new RegExp(pattern, opts.caseSensitive ? 'g' : 'gi');
-}
-
-/** Compute the replacement string for a matched substring (handles `$1` backrefs). */
-export function applyReplacement(matched: string, re: RegExp, opts: { useRegex: boolean; replace: string }): string {
-  const replacer = opts.useRegex ? opts.replace : opts.replace.replace(/\$/g, '$$');
-  const oneShot = new RegExp(re.source, re.flags.replace('g', ''));
-  return matched.replace(oneShot, replacer);
-}
+import {
+  UNTITLED_PREFIX,
+  UNKNOWN_NAME,
+  BINARY_SENTINEL,
+  LARGE_FILE_SENTINEL,
+  SUSPEND_TAB_AFTER_MS,
+  MAX_IN_MEMORY_TABS,
+  MAX_CLOSED_TABS,
+  AUTOSAVE_FALLBACK_DELAY_MS,
+  SAVE_STATUS_CLEAR_MS,
+  generateId,
+} from '../constants';
+import { isImageFile } from '../utils/path';
+import { buildReplaceRegex, applyReplacement, type ReplaceMatchOptions } from '../utils/replace';
 
 export interface ClosedTabEntry {
   path: string;
@@ -83,12 +65,13 @@ export type TabInput = {
   svgViewMode?: 'image' | 'code' | 'split';
 };
 
-// Removed duplicate invoke
-
-// Tab Suspension (LRU Eviction)
-const SUSPEND_AFTER_MS = 300_000;   // 5 minutes without access → suspend
-const MAX_ACTIVE_TABS  = 8;         // Max tabs with loaded content in memory
-const DEBOUNCE_SAVE_MS = 1500;
+// Cursor/scroll state lives in separate Maps (not in the tabs array) so the
+// tab bar and other subscribers are not re-rendered on every cursor move or
+// scroll event. cursorSignal is a lightweight change notification for the
+// consumers that do care.
+const cursorPositions = new Map<string, { line: number; column: number; endColumn?: number }>();
+const scrollPositions = new Map<string, { top: number; left: number }>();
+const cursorSignal = writable<number>(0);
 
 function createEditorStore() {
   const tabs = writable<EditorTab[]>([]);
@@ -97,29 +80,16 @@ function createEditorStore() {
   const closedTabStack: ClosedTabEntry[] = [];
   let autoSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  // PERF FIX: Separate cursor/scroll state from tab metadata.
-  // Previously, updateCursor/updateScroll called tabs.update()
-  // which rebuilt the entire tabs array every 500ms, causing
-  // tab bar and all subscribers to re-render unnecessarily.
-  //
-  // Now cursor/scroll positions are stored in separate Maps
-  // and exposed via a separate writable store. Tab bar does
-  // NOT subscribe to cursor changes.
-  const cursorPositions = new Map<string, { line: number; column: number; endColumn?: number }>();
-  const scrollPositions = new Map<string, { top: number; left: number }>();
-  // A lightweight signal that cursor/scroll consumers can subscribe to
-  const cursorSignal = writable<number>(0);
-
   const activeTab = derived([tabs, activeTabId], ([$tabs, $id]) =>
-    $tabs.find(t => t.id === $id) || null
+    $tabs.find((t) => t.id === $id) || null
   );
 
   function addTab(input: TabInput) {
-    tabs.update(state => {
-      const exists = state.find(t => t.id === input.id || (t.path === input.path && t.language === input.language));
+    tabs.update((state) => {
+      const exists = state.find((t) => t.id === input.id || (t.path === input.path && t.language === input.language));
       if (exists) {
         activeTabId.set(exists.id);
-        return state.map(t => {
+        return state.map((t) => {
           if (t.id === exists.id) {
             // Allow pinning an existing preview tab
             const isPreview = input.isPreview === false ? false : t.isPreview;
@@ -143,11 +113,11 @@ function createEditorStore() {
 
       let currentTabs = [...state];
       if (newTab.language !== 'welcome') {
-        currentTabs = currentTabs.filter(t => t.language !== 'welcome');
+        currentTabs = currentTabs.filter((t) => t.language !== 'welcome');
       }
 
       if (newTab.isPreview) {
-        const previewIndex = currentTabs.findIndex(t => t.isPreview && !t.isModified);
+        const previewIndex = currentTabs.findIndex((t) => t.isPreview && !t.isModified);
         if (previewIndex !== -1) {
           currentTabs[previewIndex] = newTab;
           activeTabId.set(newTab.id);
@@ -162,15 +132,15 @@ function createEditorStore() {
 
   function closeTab(id: string) {
     // Save to closed tab stack before closing
-    tabs.update(state => {
-      const tab = state.find(t => t.id === id);
-      if (tab && tab.path && !tab.path.startsWith('Untitled')) {
+    tabs.update((state) => {
+      const tab = state.find((t) => t.id === id);
+      if (tab && tab.path && !tab.path.startsWith(UNTITLED_PREFIX)) {
         closedTabStack.push({
           path: tab.path,
           cursorPos: cursorPositions.get(id),
           scrollTop: scrollPositions.get(id),
         });
-        if (closedTabStack.length > 10) closedTabStack.shift();
+        if (closedTabStack.length > MAX_CLOSED_TABS) closedTabStack.shift();
       }
       return state;
     });
@@ -179,9 +149,9 @@ function createEditorStore() {
     cursorPositions.delete(id);
     scrollPositions.delete(id);
 
-    tabs.update(state => {
-      const newTabs = state.filter(t => t.id !== id);
-      activeTabId.update(current => {
+    tabs.update((state) => {
+      const newTabs = state.filter((t) => t.id !== id);
+      activeTabId.update((current) => {
         if (current === id) {
           return newTabs.length > 0 ? newTabs[newTabs.length - 1].id : null;
         }
@@ -193,8 +163,8 @@ function createEditorStore() {
 
   function setActiveTab(id: string) {
     activeTabId.set(id);
-    tabs.update(state =>
-      state.map(t => ({
+    tabs.update((state) =>
+      state.map((t) => ({
         ...t,
         lastAccessed: t.id === id ? Date.now() : t.lastAccessed,
         status: t.id === id ? 'active' : t.status === 'active' ? 'loaded' : t.status,
@@ -203,8 +173,8 @@ function createEditorStore() {
   }
 
   function setInitialContent(id: string, content: string) {
-    tabs.update(state =>
-      state.map(t => {
+    tabs.update((state) =>
+      state.map((t) => {
         if (t.id === id) {
           return {
             ...t,
@@ -221,12 +191,14 @@ function createEditorStore() {
   }
 
   function updateContent(id: string, content: string) {
-    tabs.update(state =>
-      state.map(t => {
+    tabs.update((state) =>
+      state.map((t) => {
         if (t.id === id) {
           const isModified = content !== t.originalContent;
           return {
-            ...t, content, isModified,
+            ...t,
+            content,
+            isModified,
             status: isModified ? 'modified' : 'active',
             isPreview: isModified ? false : t.isPreview,
             lastAccessed: Date.now(),
@@ -238,19 +210,17 @@ function createEditorStore() {
     scheduleAutoSave(id);
   }
 
-  // PERF: cursor updates do NOT touch tabs store anymore
   function updateCursor(id: string, line: number, column: number, endColumn?: number) {
     cursorPositions.set(id, { line, column, endColumn });
-    cursorSignal.update(n => n + 1);
+    cursorSignal.update((n) => n + 1);
   }
 
   function updateUndoHistory(id: string, history: any) {
-    tabs.update(state =>
-      state.map(t => (t.id === id ? { ...t, undoHistory: history } : t))
+    tabs.update((state) =>
+      state.map((t) => (t.id === id ? { ...t, undoHistory: history } : t))
     );
   }
 
-  // PERF: scroll updates do NOT touch tabs store anymore
   function updateScroll(id: string, top: number, left: number) {
     scrollPositions.set(id, { top, left });
   }
@@ -264,11 +234,14 @@ function createEditorStore() {
   }
 
   function markSaved(id: string) {
-    tabs.update(state =>
-      state.map(t => {
+    tabs.update((state) =>
+      state.map((t) => {
         if (t.id === id) {
           return {
-            ...t, originalContent: t.content, isModified: false, autoSavePaused: false,
+            ...t,
+            originalContent: t.content,
+            isModified: false,
+            autoSavePaused: false,
             status: t.content !== null ? 'active' : 'loaded',
           };
         }
@@ -278,8 +251,8 @@ function createEditorStore() {
   }
 
   function markTabDeleted(id: string) {
-    tabs.update(state =>
-      state.map(t => {
+    tabs.update((state) =>
+      state.map((t) => {
         if (t.id === id) {
           return { ...t, status: 'deleted' as const };
         }
@@ -289,8 +262,8 @@ function createEditorStore() {
   }
 
   function markTabConflict(id: string) {
-    tabs.update(state =>
-      state.map(t => {
+    tabs.update((state) =>
+      state.map((t) => {
         if (t.id === id) {
           return { ...t, status: 'conflict' as const };
         }
@@ -300,8 +273,8 @@ function createEditorStore() {
   }
 
   function pinTab(id: string) {
-    tabs.update(state =>
-      state.map(t => {
+    tabs.update((state) =>
+      state.map((t) => {
         if (t.id === id) {
           return { ...t, isPreview: false };
         }
@@ -311,8 +284,8 @@ function createEditorStore() {
   }
 
   function togglePin(id: string) {
-    tabs.update(state =>
-      state.map(t => {
+    tabs.update((state) =>
+      state.map((t) => {
         if (t.id === id) {
           return { ...t, isPinned: !t.isPinned };
         }
@@ -327,8 +300,8 @@ function createEditorStore() {
   }
 
   function suspendTab(id: string) {
-    tabs.update(state =>
-      state.map(t => {
+    tabs.update((state) =>
+      state.map((t) => {
         if (t.id === id && !t.isModified && t.content !== null) {
           return { ...t, content: null, originalContent: null, status: 'suspended' as const, undoHistory: undefined };
         }
@@ -338,27 +311,28 @@ function createEditorStore() {
   }
 
   /**
-   * LRU Tab Suspension: If tab count with loaded content > MAX_ACTIVE_TABS,
-   * suspend the Least Recently Used non-modified tabs.
+   * LRU tab suspension: if the number of tabs holding content in memory
+   * exceeds MAX_IN_MEMORY_TABS, suspend the least-recently-used unmodified
+   * tabs (or any tab idle for longer than SUSPEND_TAB_AFTER_MS).
    */
   function enforceMemoryLimit() {
-    tabs.update(state => {
+    tabs.update((state) => {
       const activeId = getActiveTabIdSnapshot();
       const now = Date.now();
 
-      // Collect non-active, non-modified tabs that have content in memory
+      // Non-active, non-modified tabs that have content in memory, oldest first
       const candidates = state
-        .filter(t => t.id !== activeId && !t.isModified && t.content !== null)
-        .sort((a, b) => a.lastAccessed - b.lastAccessed); // oldest first
+        .filter((t) => t.id !== activeId && !t.isModified && t.content !== null)
+        .sort((a, b) => a.lastAccessed - b.lastAccessed);
 
-      let inMemoryCount = state.filter(t => t.content !== null && !t.isModified && t.id !== activeId).length;
+      let inMemoryCount = state.filter((t) => t.content !== null && !t.isModified && t.id !== activeId).length;
 
       for (const tab of candidates) {
-        const isIdleTooLong = now - tab.lastAccessed > SUSPEND_AFTER_MS;
-        const isOverLimit   = inMemoryCount > MAX_ACTIVE_TABS;
+        const isIdleTooLong = now - tab.lastAccessed > SUSPEND_TAB_AFTER_MS;
+        const isOverLimit = inMemoryCount > MAX_IN_MEMORY_TABS;
 
         if (isIdleTooLong || isOverLimit) {
-          state = state.map(t =>
+          state = state.map((t) =>
             t.id === tab.id
               ? { ...t, content: null, originalContent: null, status: 'suspended' as const, undoHistory: undefined }
               : t
@@ -366,7 +340,7 @@ function createEditorStore() {
           inMemoryCount--;
         }
 
-        if (inMemoryCount <= MAX_ACTIVE_TABS) break;
+        if (inMemoryCount <= MAX_IN_MEMORY_TABS) break;
       }
 
       return state;
@@ -374,31 +348,45 @@ function createEditorStore() {
   }
 
   function scheduleAutoSave(tabId: string) {
-    // Only auto-save when the setting is enabled, using the configured delay
-    // (falling back to the legacy 1500ms debounce).
+    // Only auto-save when the setting is enabled, using the configured delay.
     if (!settingsStore.effectiveSettings.auto_save) return;
     if (autoSaveTimers.has(tabId)) clearTimeout(autoSaveTimers.get(tabId)!);
-    const delay = settingsStore.effectiveSettings.auto_save_delay_ms || DEBOUNCE_SAVE_MS;
-    
+    const delay = settingsStore.effectiveSettings.auto_save_delay_ms || AUTOSAVE_FALLBACK_DELAY_MS;
+
     const timer = setTimeout(async () => {
       autoSaveTimers.delete(tabId);
       const snapshot = getTabsSnapshot();
-      const tab = snapshot.find(t => t.id === tabId);
-      if (tab && tab.isModified && !tab.path.startsWith('Untitled') && tab.content !== null && !tab.autoSavePaused) {
+      const tab = snapshot.find((t) => t.id === tabId);
+      if (tab && tab.isModified && !tab.path.startsWith(UNTITLED_PREFIX) && tab.content !== null && !tab.autoSavePaused) {
         saveStatus.set('Saving...');
+        // Snapshot what we are writing so edits made *while* the save was in
+        // flight still leave the tab marked as modified afterwards.
+        const savedContent = tab.content;
         try {
-          await invoke('save_file', { path: tab.path, content: tab.content });
-          markSaved(tabId);
+          await invoke('save_file', { path: tab.path, content: savedContent });
+          tabs.update((state) =>
+            state.map((t) =>
+              t.id === tabId && t.content === savedContent
+                ? {
+                    ...t,
+                    originalContent: savedContent,
+                    isModified: false,
+                    autoSavePaused: false,
+                    status: 'active',
+                  }
+                : t
+            )
+          );
           saveStatus.set('Saved');
-          setTimeout(() => clearSaveStatus(), 2000);
+          setTimeout(() => clearSaveStatus(), SAVE_STATUS_CLEAR_MS);
         } catch (err) {
           console.error('Auto-save failed:', err);
           saveStatus.set(`Save failed: ${getHumanReadableError(err)}`);
-          tabs.update(state => state.map(t => t.id === tabId ? { ...t, autoSavePaused: true } : t));
+          tabs.update((state) => state.map((t) => (t.id === tabId ? { ...t, autoSavePaused: true } : t)));
         }
       }
     }, delay);
-    
+
     autoSaveTimers.set(tabId, timer);
   }
 
@@ -407,21 +395,15 @@ function createEditorStore() {
   }
 
   function setTabLoading(id: string, loading: boolean) {
-    tabs.update(state =>
-      state.map(t => t.id === id ? { ...t, isLoading: loading } : t)
-    );
+    tabs.update((state) => state.map((t) => (t.id === id ? { ...t, isLoading: loading } : t)));
   }
 
   function setTabUnsupported(id: string, unsupported: boolean) {
-    tabs.update(state =>
-      state.map(t => t.id === id ? { ...t, isUnsupported: unsupported } : t)
-    );
+    tabs.update((state) => state.map((t) => (t.id === id ? { ...t, isUnsupported: unsupported } : t)));
   }
 
   function pauseAutoSave(id: string) {
-    tabs.update(state =>
-      state.map(t => t.id === id ? { ...t, autoSavePaused: true } : t)
-    );
+    tabs.update((state) => state.map((t) => (t.id === id ? { ...t, autoSavePaused: true } : t)));
   }
 
   /**
@@ -433,7 +415,7 @@ function createEditorStore() {
    * Returns the number of replaced occurrences, or 0 if none matched.
    */
   function applyReplacements(path: string, opts: ReplaceMatchOptions): number {
-    const tab = getTabsSnapshot().find(t => t.path === path && t.content !== null);
+    const tab = getTabsSnapshot().find((t) => t.path === path && t.content !== null);
     if (!tab || tab.content === null) return 0;
     const re = buildReplaceRegex(opts.query, opts);
     const matches = tab.content.match(re);
@@ -446,19 +428,19 @@ function createEditorStore() {
 
   function getTabsSnapshot(): EditorTab[] {
     let val: EditorTab[] = [];
-    tabs.subscribe(v => val = v)();
+    tabs.subscribe((v) => (val = v))();
     return val;
   }
 
   function getActiveTabIdSnapshot(): string | null {
     let val: string | null = null;
-    activeTabId.subscribe(v => val = v)();
+    activeTabId.subscribe((v) => (val = v))();
     return val;
   }
 
   /**
-   * Get snapshot of cursor/scroll for all tabs (for workspace session save).
-   * Returns array of { id, cursor, scroll } objects.
+   * Snapshot of cursor/scroll positions for all tabs (for workspace session
+   * save). Returns an array of { id, cursor, scroll } objects.
    */
   function getCursorScrollSnapshot() {
     const result: Array<{ id: string; cursor?: { line: number; column: number; endColumn?: number }; scroll?: { top: number; left: number } }> = [];
@@ -485,8 +467,8 @@ function createEditorStore() {
       scrollPositions.delete(oldPath);
     }
 
-    tabs.update(state =>
-      state.map(t => {
+    tabs.update((state) =>
+      state.map((t) => {
         if (t.path === oldPath) {
           const name = newPath.split(/[/\\]/).pop() || t.name;
           return { ...t, id: newPath, path: newPath, name };
@@ -494,40 +476,42 @@ function createEditorStore() {
         return t;
       })
     );
-    activeTabId.update(current => current === oldPath ? newPath : current);
+    activeTabId.update((current) => (current === oldPath ? newPath : current));
   }
 
   async function reopenClosedTab() {
     const entry = closedTabStack.pop();
     if (!entry) return;
-    
-    const fileName = entry.path.split(/[/\\]/).pop() || 'Unknown';
+
+    const fileName = entry.path.split(/[/\\]/).pop() || UNKNOWN_NAME;
     let content = '';
-    const isImage = /\.(png|jpe?g|gif|webp|ico|bmp)$/i.test(fileName);
     let isLargeFile = false;
-    if (!isImage) {
+    if (!isImageFile(fileName)) {
       try {
         content = await invoke<string>('read_file_text', { path: entry.path });
       } catch (e) {
-        if (String(e) === '__BINARY__') content = '';
-        else if (String(e) === '__LARGE_FILE__') {
+        if (String(e) === BINARY_SENTINEL) content = '';
+        else if (String(e) === LARGE_FILE_SENTINEL) {
           try {
             const chunked = await invoke<any>('read_file_chunked', { path: entry.path });
             content = chunked.content;
             isLargeFile = true;
-          } catch(err) { return; }
-        }
-        else return; // If file doesn't exist anymore, abort
+          } catch (err) {
+            return;
+          }
+        } else return; // If file doesn't exist anymore, abort
       }
     }
-    
+
     let language = 'plaintext';
-    if (isImage) language = 'image';
+    if (isImageFile(fileName)) language = 'image';
     else {
-      try { language = await invoke<string>('detect_language', { path: entry.path }); } catch {}
+      try {
+        language = await invoke<string>('detect_language', { path: entry.path });
+      } catch {}
     }
-    
-    const id = `tab-${Date.now()}`;
+
+    const id = generateId('tab');
     addTab({
       id,
       path: entry.path,
@@ -535,22 +519,18 @@ function createEditorStore() {
       content,
       language,
       isPreview: isLargeFile,
-      isLargeFile
+      isLargeFile,
     });
     setActiveTab(id);
-    
+
     if (entry.cursorPos) updateCursor(id, entry.cursorPos.line, entry.cursorPos.column, entry.cursorPos.endColumn);
     if (entry.scrollTop) updateScroll(id, entry.scrollTop.top, entry.scrollTop.left);
   }
 
   function updateTab(id: string, props: Partial<EditorTab>) {
-    tabs.update(tbs => {
-      const idx = tbs.findIndex(t => t.id === id);
-      if (idx !== -1) {
-        tbs[idx] = { ...tbs[idx], ...props };
-      }
-      return tbs;
-    });
+    tabs.update((tbs) =>
+      tbs.map((t) => (t.id === id ? { ...t, ...props } : t))
+    );
   }
 
   return {

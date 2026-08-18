@@ -1,31 +1,30 @@
-// ── Module F, §F.6 — Entry Point Resolution Engine ─────────────────────────
+// ── Entry Point Resolution Engine ───────────────────────────────────────────
 //
-// Implements modules/06-Notron-Module-RunAndDebug_V2.md §F.6. This engine
-// answers "what should Run launch?" without a hand-written launch.json.
+// Answers "what should Run launch?" without a hand-written launch.json,
+// using a strict signal hierarchy — never a hardcoded 1-2 favorite filenames:
 //
-//   §F.6.1 — Strict signal hierarchy, never a hardcoded 1-2 favorite filenames:
-//            1. explicit config (launch.json / manual pick)  → handled by caller
-//            2. project manifest (package.json / pyproject.toml)
-//            3. framework-aware override
-//            4. generic filename heuristic (fallback)
-//            5. active file (only for explicit "Run Current File")
-//    The engine returns candidates WITH a confidence tier so the caller can
-//    (a) pick the unique best entry immediately, or (b) surface a quick-pick
-//    when ≥2 equally-trusted candidates exist (§F.6.1 "never guess silently").
+//   1. explicit config (launch.json / manual pick)  → handled by caller
+//   2. project manifest (package.json / pyproject.toml)
+//   3. framework-aware override
+//   4. generic filename heuristic (fallback)
+//   5. active file (only for explicit "Run Current File")
+//   The engine returns candidates WITH a confidence tier so the caller can
+//   (a) pick the unique best entry immediately, or (b) surface a quick-pick
+//   when ≥2 equally-trusted candidates exist (never guess silently).
 //
-//   §F.6.2 — Node: package.json `scripts` first (command *parsed*, not just the
-//            script name), then `main`, then `exports`, then heuristic.
+//   Node: package.json `scripts` first (command *parsed*, not just the
+//         script name), then `main`, then `exports`, then heuristic.
 //
-//   §F.6.3 — Python: pyproject.toml [project.scripts]/[tool.poetry.scripts]
-//            resolved to a module file (src-layout aware), Django manage.py +
-//            FLASK_APP + FastAPI/uvicorn, then heuristics.
+//   Python: pyproject.toml [project.scripts]/[tool.poetry.scripts]
+//         resolved to a module file (src-layout aware), Django manage.py +
+//         FLASK_APP + FastAPI/uvicorn, then heuristics.
 //
-//   §F.6.4 — Monorepo: resolution prefers the nearest manifest to the active
-//            file; the returned candidates carry a `project` hint so the UI
-//            can pin a workspace sub-project.
+//   Monorepo: resolution prefers the nearest manifest to the active file;
+//         the returned candidates carry a `project` hint so the UI can pin
+//         a workspace sub-project.
 //
-//   §F.6.5 — Results cached per workspace (localStorage), invalidated when a
-//            manifest's mtime changes.
+//   Results are cached per workspace (localStorage), invalidated when a
+//   manifest's mtime changes.
 
 import { invoke } from '@tauri-apps/api/core';
 import type { RunConfiguration } from '../stores/run';
@@ -130,7 +129,7 @@ function isNodeFile(p: string): boolean {
   return NODE_EXTS.includes(ext(p));
 }
 
-// heuristic priorities (§F.6.2 step 3 / §F.6.3 step 3)
+// Heuristic filename priorities for Node and Python.
 const NODE_HEURISTIC = [
   'index.js', 'index.ts', 'index.mjs',
   'src/index.js', 'src/index.ts', 'src/main.js', 'src/main.ts',
@@ -456,7 +455,7 @@ async function resolvePython(root: string): Promise<ResolvedEntry[]> {
   return dedupe(out);
 }
 
-/** Python interpreter resolution (§F.6.3 step 4) — macOS/Windows convention. */
+/** Resolve the project's Python interpreter from common venv locations (macOS/Windows convention). */
 export async function resolvePythonInterpreter(root: string): Promise<string> {
   const candidates = [
     `${root}\\.venv\\Scripts\\python.exe`,
@@ -486,7 +485,7 @@ function dedupe(list: (ResolvedEntry | null)[]): ResolvedEntry[] {
   return out;
 }
 
-// ── caching (§F.6.5) ────────────────────────────────────────────────────────
+// ── caching ─────────────────────────────────────────────────────────────────
 
 function cacheKey(workspace: string): string {
   try {
@@ -526,9 +525,9 @@ export function invalidateEntryCache(workspace: string) {
 
 // ── public API ──────────────────────────────────────────────────────────────
 
-// ── Go & Ruby (§F.5.2 Fase 1) — manifest-based entry resolution ─────────────
+// ── Go & Ruby — manifest-based entry resolution ─────────────────────────────
 
-/** Basic heuristic resolution for Go and Ruby workspaces (Fase 1 adapters). */
+/** Basic heuristic resolution for Go and Ruby workspaces. */
 async function resolveGoRuby(root: string): Promise<ResolvedEntry[]> {
   const out: ResolvedEntry[] = [];
   const cwd = root;
@@ -562,7 +561,7 @@ async function resolveGoRuby(root: string): Promise<ResolvedEntry[]> {
   return dedupe(out);
 }
 
-// ── Rust (Cargo) & Deno (§F.6 extension) ────────────────────────────────────
+// ── Rust (Cargo) & Deno ─────────────────────────────────────────────────────
 
 /** JSON parse with trailing-comma + comment tolerance (deno.jsonc). */
 function parseJsonLoose(raw: string): any {

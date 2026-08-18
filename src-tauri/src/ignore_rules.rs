@@ -3,22 +3,22 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
-/// Shared Path/Ignore Rules (5.2, Module E — Ignore & Exclude Rules).
+/// Shared Path/Ignore Rules.
 ///
 /// Single source of truth for what counts as "ignored" across all consumers,
-/// split into **3 independent layers** (E.1) instead of one merged list:
+/// split into **3 independent layers** instead of one merged list:
 ///
-///   1. `EXPLORER_HARD_EXCLUDE`  — Lapis 1. Disappears entirely from the
+///   1. `EXPLORER_HARD_EXCLUDE`  — Layer 1. Disappears entirely from the
 ///      Explorer tree. Minimal on purpose (VCS/OS artifacts), and deliberately
-///      NOT customizable (E.2).
-///   2. `SEARCH_SCAN_EXCLUDE`    — Lapis 2. Stays visible in Explorer (can be
+///      NOT customizable.
+///   2. `SEARCH_SCAN_EXCLUDE`    — Layer 2. Stays visible in Explorer (can be
 ///      expanded manually) but is excluded from Global Search, Quick Open and
-///      whole-project scans (E.3). Customizable via Settings.
-///   3. `WATCHER_EXCLUDE`        — Lapis 3. Never recursively watched by the
+///      whole-project scans. Customizable via Settings.
+///   3. `WATCHER_EXCLUDE`        — Layer 3. Never recursively watched by the
 ///      file watcher (pure I/O performance, invisible to the user). Always a
-///      superset of `SEARCH_SCAN_EXCLUDE` (E.4).
+///      superset of `SEARCH_SCAN_EXCLUDE`.
 ///
-/// Priority when deciding whether a path is excluded (E.5):
+/// Priority when deciding whether a path is excluded:
 ///   1. `.notronignore` at the workspace root (and nested copies) — applied via
 ///      `WalkBuilder::add_custom_ignore_filename` (highest precedence among
 ///      ignore files, so `!pattern` negations can re-include defaults),
@@ -31,10 +31,10 @@ use std::sync::OnceLock;
 /// source** of ignore rules — so `.notronignore`/`.gitignore` negations always
 /// win over the built-in defaults, exactly like git semantics.
 
-// ── Lapis 1 — Explorer Hard Exclude (E.2) ──────────────────────────────────
+// ── Layer 1 — Explorer Hard Exclude ─────────────────────────────────────────
 // Items here NEVER appear in the Explorer tree, in any condition. Modeled on
 // VS Code's default `files.exclude`. Do NOT put big folders like node_modules
-// /dist/build here — that is Lapis 2's job.
+// /dist/build here — that is Layer 2's job.
 pub const EXPLORER_HARD_EXCLUDE: &[&str] = &[
     ".git",
     ".svn",
@@ -45,7 +45,7 @@ pub const EXPLORER_HARD_EXCLUDE: &[&str] = &[
     "desktop.ini",
 ];
 
-// ── Lapis 2 — Search & Scan Exclude (E.3) ──────────────────────────────────
+// ── Layer 2 — Search & Scan Exclude ─────────────────────────────────────────
 // Items here STAY VISIBLE in Explorer (expandable manually), but are excluded
 // from Global Search, Quick Open, and whole-project scans. Customizable by the
 // user through Settings (additions in `search_exclude`, removals in
@@ -93,13 +93,13 @@ pub const SEARCH_SCAN_EXCLUDE: &[&str] = &[
     ".vs",
 ];
 
-// ── Lapis 3 — Watcher/Scan Exclude (E.4) ───────────────────────────────────
+// ── Layer 3 — Watcher/Scan Exclude ──────────────────────────────────────────
 // Folders here are NEVER recursively watched by the Notron file watcher,
 // regardless of Explorer/Search state. Pure I/O performance decision, not a
 // user-visible setting. Superset of `SEARCH_SCAN_EXCLUDE` plus patterns that
 // are specifically expensive to watch.
 pub const WATCHER_EXCLUDE: &[&str] = &[
-    // -- all of SEARCH_SCAN_EXCLUDE (E.3) --
+    // -- all of SEARCH_SCAN_EXCLUDE --
     "node_modules",
     "bower_components",
     ".pnpm-store",
@@ -137,7 +137,7 @@ pub const WATCHER_EXCLUDE: &[&str] = &[
     ".idea",
     ".vs",
     // -- extra watcher-only excludes --
-    // .git: never watch recursively; Source Control (Modul D) watches only key
+    // .git: never watch recursively; Source Control (git) watches only key
     // files (HEAD/index/refs) instead. Also VCS internals are irrelevant here.
     ".git",
     ".log",
@@ -146,7 +146,7 @@ pub const WATCHER_EXCLUDE: &[&str] = &[
 
 // ── Fast single-path checks (watcher, symbol index, sync listing) ──────────
 
-/// Lapis 1 check by name — used by the Explorer scan (always active).
+/// Layer 1 check by name — used by the Explorer scan (always active).
 pub fn is_explorer_hard_excluded(name: &str) -> bool {
     EXPLORER_HARD_EXCLUDE.iter().any(|d| *d == name)
 }
@@ -182,19 +182,19 @@ fn normalize_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-/// Lapis 2 fast check for a single path (no ignore-file reading). Used by the
+/// Layer 2 fast check for a single path (no ignore-file reading). Used by the
 /// symbol index and other per-path scans; workspace-wide scans should use the
 /// walker factory below so user settings and ignore files also apply.
 pub fn is_search_excluded_path(path: &Path) -> bool {
     search_globset().is_match(normalize_path(path).as_str())
 }
 
-/// Lapis 3 fast check for a single path — used by the file watcher.
+/// Layer 3 fast check for a single path — used by the file watcher.
 pub fn is_watcher_excluded_path(path: &Path) -> bool {
     watcher_globset().is_match(normalize_path(path).as_str())
 }
 
-// ── App-level ignore file (defaults + user Settings, E.5 priority 3 & 4) ───
+// ── App-level ignore file (defaults + user Settings) ────────────────────────
 
 /// Render the effective "defaults + user settings" rules into gitignore-style
 /// lines. Order matters (last match wins within the file):

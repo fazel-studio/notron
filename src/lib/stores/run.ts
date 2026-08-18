@@ -17,13 +17,13 @@ export interface RunConfiguration {
   rubyPath?: string;
   source: 'launch.json' | 'detected';
   /**
-   * §F.6 — how this config was resolved (manifest/framework/heuristic/active),
+   * How this config was resolved (manifest/framework/heuristic/active),
    * shown as a hint in the Run dropdown and used for the "Save as launch
    * configuration" action.
    */
   detectedTier?: 'manifest' | 'framework' | 'heuristic' | 'active';
   /**
-   * §F.6 — dev-server command for framework entries (e.g. "next dev"). Used by
+   * Dev-server command for framework entries (e.g. "next dev"). Used by
    * the terminal Run path when there is no single program file.
    */
   command?: string;
@@ -38,7 +38,7 @@ interface RunStoreState {
 const initialState: RunStoreState = {
   configurations: [],
   selectedConfigurationName: null,
-  lastRunLabel: null
+  lastRunLabel: null,
 };
 
 function createRunStore() {
@@ -50,27 +50,27 @@ function createRunStore() {
     update,
 
     setConfigurations: (configurations: RunConfiguration[]) => {
-      update(s => {
+      update((s) => {
         const selectedConfigurationName =
-          s.selectedConfigurationName && configurations.some(c => c.name === s.selectedConfigurationName)
+          s.selectedConfigurationName && configurations.some((c) => c.name === s.selectedConfigurationName)
             ? s.selectedConfigurationName
             : (configurations[0]?.name ?? null);
 
         return {
           ...s,
           configurations,
-          selectedConfigurationName
+          selectedConfigurationName,
         };
       });
     },
 
     selectConfiguration: (name: string | null) => {
-      update(s => ({ ...s, selectedConfigurationName: name }));
+      update((s) => ({ ...s, selectedConfigurationName: name }));
     },
 
     setLastRunLabel: (lastRunLabel: string | null) => {
-      update(s => ({ ...s, lastRunLabel }));
-    }
+      update((s) => ({ ...s, lastRunLabel }));
+    },
   };
 }
 

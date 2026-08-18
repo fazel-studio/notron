@@ -77,7 +77,7 @@
 | Runtime / Package Mgr | Bun                                                |
 | Editor Engine       | CodeMirror 6                                            |
 | Database            | SQLite (via rusqlite) for settings and file history     |
-| Styling             | Vanilla CSS & Tailwind CSS                              |
+| Styling             | Tailwind CSS v4 + CSS custom properties (theme variables) |
 
 ## 5. Non-Functional Requirements
 
@@ -108,21 +108,64 @@ The application is optimized using the modern **Svelte 5 Store Pattern**:
 
 ### 6.1. Frontend (Svelte 5)
 
-- `src/lib/components/` — UI components (Editor, FileTree, Terminal, CommandPalette, etc.).
-- `src/lib/stores/` — Svelte stores and runes (`editor`, `settings`, `terminal`, `theme`, `run`, `git`, `palette`, `navigation`, `ui`).
-- `src/lib/services/` — Service layer (`runService`, `git`).
-- `src/lib/utils/` — Utilities (explorer, symbol engine, language detector, markdown renderer, stream helpers).
+```
+src/main.ts                      — bootstrap & theme pre-load (derived from the theme catalog)
+src/App.svelte                   — application shell: title bar, activity bar, sidebar, editor
+                                   area, bottom panel, status bar, global modals & shortcuts
+src/lib/constants.ts             — single source of truth for timings, thresholds and defaults
+src/lib/components/common/       — shared UI primitives (Modal, Tooltip, Select, MultiSelect,
+                                   DropdownMenu, ToastContainer, VirtualList, MaterialIcon, ...)
+src/lib/components/explorer/     — file tree (FileTree.svelte, TreeNode.svelte)
+src/lib/components/editor/       — editor & tab surfaces (Editor, SplitEditorPane, SplitView,
+                                   DiffEditor, MarkdownPreview, ImageViewer, GoToLineDialog,
+                                   EditorSearchWidget, WelcomeTab)
+src/lib/components/panels/       — panels & dialogs (BottomPanel/Terminal, SourceControlPanel,
+                                   SearchPanel, RunPanel, CommandPalette, SmartSearchModal,
+                                   SettingsPage, TitleMenuBar, ...)
+src/lib/stores/                  — reactive stores (runes): editor, settings.svelte.ts, theme,
+                                   terminal, ui, navigation, palette, run, split, gitRepo,
+                                   gitDecoration
+src/lib/services/                — service layer: git (git CLI), runService (DAP),
+                                   entryPointResolver
+src/lib/editor/                  — CodeMirror 6 module-level extensions shared by every editor
+                                   instance (breadcrumbs.ts, commonExtensions.ts)
+src/lib/utils/                   — pure helpers: path, replace, fileIcons, gitStatusStyles,
+                                   treeFlattener, explorer, symbolEngine, languageDetector,
+                                   markdownRender, materialIconMap, materialIconRenderer,
+                                   breadcrumbPathIcons, stream, error
+```
+
+- **Store pattern:** components read stores through runes (`$state`, `$derived`, `$effect`)
+  and never call `.subscribe()` manually; heavy side effects (file watcher, IPC hydration)
+  are isolated in single `$effect` blocks.
+- **Settings scoping:** settings are layered like VS Code — `HARDCODED_DEFAULTS ← user
+  (global) ← workspace` — and persisted through `save_global_setting` /
+  `save_workspace_setting` IPC (see `settings.svelte.ts`).
+- **IPC:** all frontend↔backend communication uses `invoke()` from `@tauri-apps/api/core`
+  with snake_case command names (`load_global_settings`, `read_directory`, `fs-change`
+  events, ...).
 
 ### 6.2. Backend (Tauri / Rust)
 
-- `src-tauri/src/config.rs` — Application and critical configuration management.
-- `src-tauri/src/db.rs` — SQLite connection pool and tiered settings/state persistence.
-- `src-tauri/src/file_ops.rs` — File/directory operations and streaming reads.
-- `src-tauri/src/search.rs` — Global search (ripgrep engine) and replace-all.
-- `src-tauri/src/watcher_service.rs` — Unified file watcher service.
-- `src-tauri/src/workspace_cache.rs` — Rust-side explorer cache (source of truth for the tree).
-- `src-tauri/src/symbol_index.rs` — Symbol extraction and workspace indexing.
-- `src-tauri/src/git_service.rs` — Git integration and detection.
+- `src-tauri/src/main.rs` / `lib.rs` — entry points.
+- `src-tauri/src/config.rs` — application & critical configuration management.
+- `src-tauri/src/db.rs` — SQLite persistence (rusqlite + r2d2 pool) for settings,
+  workspace state and file history.
+- `src-tauri/src/file_ops.rs` — file/directory operations and streaming reads
+  (`stream.rs`).
+- `src-tauri/src/search.rs` — global search (ripgrep `grep` crate) and replace-all.
+- `src-tauri/src/watcher_service.rs` — unified file watcher (`notify`); emits the single
+  `fs-change` event the frontend reacts to.
+- `src-tauri/src/workspace_cache.rs` — Rust-side explorer cache (source of truth for the
+  file tree).
+- `src-tauri/src/git_service.rs` — git operations (status/stage/commit/log/... via the
+  git CLI).
+- `src-tauri/src/symbol_index.rs` — symbol extraction (regex) and workspace indexing.
+- `src-tauri/src/ignore_rules.rs` — `.gitignore` / `.notronignore` parsing and matching
+  (`ignore` crate).
+- `src-tauri/src/startup.rs` — startup orchestration: workspace restore and state
+  hydration in a single IPC round-trip.
+- `src-tauri/src/discord.rs` — Discord Rich Presence integration.
 
 ## 7. Development Roadmap
 

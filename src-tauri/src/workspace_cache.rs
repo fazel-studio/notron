@@ -6,15 +6,15 @@ use crate::file_ops::FileNode;
 use crate::ignore_rules;
 use crate::stream::StreamedBatch;
 
-/// 0.2 — "Read model ringan di depan, I/O berat di belakang, cache di tengah."
+/// "Light read model in front, heavy I/O behind, cache in the middle."
 ///
 /// The WorkspaceCache is the Rust-side source of truth for the Explorer tree.
 /// The webview only ever asks for *one* directory level at a time; this cache
 /// serves it from memory and only hits the filesystem on a miss. Invalidation
-/// happens through the unified file watcher (5.1) and via mutation commands,
+/// happens through the unified file watcher and via mutation commands,
 /// so the frontend never re-scans from scratch.
 ///
-/// B.3.5 — locking is granular: the outer map is guarded by a single `RwLock`
+/// Locking is granular: the outer map is guarded by a single `RwLock`
 /// that is only held to resolve a path to its entry, then per-entry `RwLock`
 /// guards are used for the actual read/write of children. A long-running scan
 /// for one folder therefore never blocks lookups of unrelated folders (no
@@ -29,7 +29,7 @@ struct CacheEntry {
     children: Vec<FileNode>,
 }
 
-/// B.2 — Result of a lazy `expand_folder` request: only the direct children
+/// Result of a lazy `expand_folder` request: only the direct children
 /// of one level (never recursive), served from the in-memory cache on a hit.
 #[derive(serde::Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -110,9 +110,9 @@ impl WorkspaceCache {
 }
 
 /// Blocking one-level directory scan. Runs inside spawn_blocking so it never
-/// blocks the webview / event loop (0.1).
+/// blocks the webview / event loop.
 ///
-/// **VS Code parity (Module E overhaul):**
+/// **VS Code parity:**
 ///
 /// VS Code Explorer shows ALL dot-files by default (`.gitignore`, `.github`,
 /// `.env`, etc.). Only the hard-exclude list (`.git`, `.svn`, `.DS_Store`, …)
@@ -213,7 +213,7 @@ fn node_for_dir(path: &str, children: Vec<FileNode>) -> FileNode {
     }
 }
 
-/// B.2 — Canonical lazy-expand command. Returns only the direct children of
+/// Canonical lazy-expand command. Returns only the direct children of
 /// `path` (never recursive), from the in-memory cache on a hit. The cache is
 /// invalidated by the unified file watcher when the folder changes, so repeated
 /// expands of the same folder are instant.
@@ -233,7 +233,7 @@ pub async fn expand_folder(
     })
 }
 
-/// 0.3 — Stream a directory listing over a Channel, per-batch of 200.
+/// Stream a directory listing over a Channel, per-batch of 200.
 /// Preferred over one giant IPC response for large folders (thousands of
 /// entries): the webview can render progressively while the scan continues.
 #[tauri::command]
@@ -276,7 +276,7 @@ pub async fn read_directory_stream(
     Ok(())
 }
 
-/// 0.2 — Cache-backed one-level directory read (used by Explorer lazy expand).
+/// Cache-backed one-level directory read (used by Explorer lazy expand).
 #[tauri::command]
 pub async fn read_directory_cached(
     path: String,

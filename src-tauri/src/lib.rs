@@ -244,7 +244,7 @@ pub fn run() {
             }
         }))
         .setup(|app| {
-            // 0.6 — startup timers: every phase below is measured and
+            // Startup timers: every phase below is measured and
             // queryable via `get_startup_timers` / `record_startup_timer`.
             app.manage(startup::StartupTimers::new());
             {
@@ -258,7 +258,7 @@ pub fn run() {
             #[cfg(not(debug_assertions))]
             setup_logging(app);
 
-            // Phase 0: Read critical config synchronously BEFORE anything else
+            // Read critical config synchronously BEFORE anything else
             let critical_cfg = config::read_critical_config(app.handle());
             
             if let Some(window) = app.get_webview_window("main") {
@@ -268,6 +268,18 @@ pub fn run() {
                     width: min_width,
                     height: min_height,
                 })));
+                // Windows records the pre-maximize bounds as the size restored
+                // on un-maximize. The window is created from tauri.conf.json at
+                // 800x600, which can sit BELOW the min size above — so fit the
+                // normal size up to the minimum BEFORE maximizing. Restore then
+                // can never land below the minimum resize limit.
+                let scale = window.scale_factor().unwrap_or(1.0);
+                let current = window.inner_size().unwrap_or_default();
+                let restore = tauri::LogicalSize::new(
+                    (current.width as f64 / scale).max(min_width),
+                    (current.height as f64 / scale).max(min_height),
+                );
+                let _ = window.set_size(tauri::Size::Logical(restore));
                 let _ = window.maximize();
             }
 
@@ -288,9 +300,9 @@ pub fn run() {
             let config = config::load_config(app.handle());
             app.manage(config::ConfigState(std::sync::Mutex::new(config)));
 
-            // 0.2 — Rust-side Explorer cache (source of truth for the tree).
+            // Rust-side Explorer cache (source of truth for the tree).
             app.manage(workspace_cache::WorkspaceCache::new());
-            // 5.1 — Unified file watcher service (one watcher per workspace root).
+            // Unified file watcher service (one watcher per workspace root).
             app.manage(watcher_service::WatcherState::new());
             
             app.manage(file_ops::SearchRegistry {
@@ -299,7 +311,7 @@ pub fn run() {
             app.manage(git_service::GitState::new(app.handle()));
             app.manage(discord::DiscordState::new());
 
-            // D.1 — Git detected ONCE at startup (background, non-blocking):
+            // Git detected ONCE at startup (background, non-blocking):
             // fix the macOS shell PATH first, then run the tiered detection and
             // persist the result. The frontend later reads the cached value via
             // `get_git_availability` instead of re-detecting on every command.
@@ -390,22 +402,22 @@ pub fn run() {
             file_ops::copy_item,
             file_ops::copy_items,
             file_ops::create_file,
-            // ── Module C — Global Search (ripgrep engine) ──
+            // ── Global Search (ripgrep engine) ──
             search::search_files_stream,
             search::replace_all_files,
             file_ops::cancel_search,
             file_ops::list_all_files,
-            // ── FS Watcher (unified service 5.1) ──
+            // ── File Operations (batch reads) ──
             file_ops::batch_read_files,
             file_ops::get_files_metadata,
-            // ── FS Watcher (unified service 5.1) ──
+            // ── FS Watcher ──
             watcher_service::start_fs_watch,
             watcher_service::stop_fs_watch,
-            // ── Workspace Cache / Streaming (0.2, 0.3) ──
+            // ── Workspace Cache / Streaming ──
             workspace_cache::expand_folder,
             workspace_cache::read_directory_stream,
             workspace_cache::read_directory_cached,
-            // ── Startup Timers (0.6) ──
+            // ── Startup Timers ──
             startup::get_startup_timers,
             startup::record_startup_timer,
             // ── Symbol Index ──
@@ -417,7 +429,7 @@ pub fn run() {
             symbol_index::rename_symbol,
             show_main_window,
             open_new_window,
-            // ── Module D — Source Control ──
+            // ── Source Control (Git) ──
             git_service::get_git_availability,
             git_service::check_git_availability,
             git_service::re_detect_git,

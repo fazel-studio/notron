@@ -3,13 +3,13 @@ use std::time::Instant;
 use serde::Serialize;
 use tauri::State;
 
-/// 0.6 — Profiling as a habit, built in from day one.
+/// Profiling as a habit, built in from day one.
 ///
 /// A lightweight startup/profile timer. Every phase (backend setup steps and,
 /// via `record_startup_timer`, frontend phases such as "window interactive" or
 /// "first tab ready") is timestamped and queryable through `get_startup_timers`.
-/// This is the `notron://startup-timers` instrumentation from the architecture
-/// doc: every performance fix can be measured against explicit targets (6)
+/// This is the `notron://startup-timers` instrumentation used by the
+/// frontend: every performance fix can be measured against explicit targets
 /// instead of "feels faster".
 #[derive(Serialize, Clone, Debug)]
 pub struct StartupPhase {

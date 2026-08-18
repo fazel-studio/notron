@@ -10,25 +10,25 @@ use tokio::time::{Duration, Instant};
 use crate::ignore_rules;
 use crate::workspace_cache::WorkspaceCache;
 
-/// 5.1 — Unified File Watcher Service.
+/// Unified File Watcher Service.
 ///
 /// One `notify::Watcher` per workspace root (started by the frontend via
-/// `start_fs_watch`). Raw events are coalesced within a debounce window
-/// (0.4), deduplicated, then fanned out to every consumer:
+/// `start_fs_watch`). Raw events are coalesced within a debounce window,
+/// deduplicated, then fanned out to every consumer:
 ///   1. Explorer cache invalidation (Rust WorkspaceCache)
 ///   2. `fs-change` event → webview (tree + open tabs)
 ///   3. `git-status-refresh` event → Source Control (hint)
 ///
 /// Modules must NOT create their own watchers for the same directory.
 ///
-/// D.3 — A SECOND `notify::Watcher` lives inside this same service and watches
+/// A SECOND `notify::Watcher` lives inside this same service and watches
 /// only the `.git` *key files* (`HEAD`, `index`, `MERGE_HEAD`, `rebase-merge`,
 /// `rebase-apply`, `refs/**`, `logs/refs/**`). It is NOT a duplicate watch of
 /// the working tree — the Explorer watcher intentionally skips `.git`
 /// (`WATCHER_EXCLUDE`). Events from this watcher only trigger a Git status
 /// refresh (never an Explorer refresh), so external git operations (terminal
 /// checkout, `git add`, branch switch from another tool) are picked up through
-/// the SAME debounced pipeline (D.7.5).
+/// the SAME debounced pipeline.
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FsChangeItem {
@@ -65,7 +65,7 @@ impl WatcherState {
     }
 }
 
-/// 0.4 — Debounce window. Events within this quiet period are coalesced into
+/// Debounce window. Events within this quiet period are coalesced into
 /// one batch instead of triggering N separate re-renders / re-scans.
 const DEBOUNCE_MS: u64 = 250;
 
@@ -73,7 +73,7 @@ fn get_parent_path(path: &Path) -> Option<String> {
     path.parent().map(|p| p.to_string_lossy().to_string())
 }
 
-/// E.4 — Register a `NonRecursive` watch for `dir` and every subdirectory
+/// Register a `NonRecursive` watch for `dir` and every subdirectory
 /// under it, **skipping** excluded directories (WATCHER_EXCLUDE) so they are
 /// never watched recursively. This is a manual tree walk because a single
 /// `RecursiveMode::Recursive` watch cannot selectively skip subtrees.
@@ -98,7 +98,7 @@ fn register_tree(watcher: &mut RecommendedWatcher, root: &Path) -> Result<(), St
     Ok(())
 }
 
-/// D.3 — Watch only the `.git` key files for Source Control. Non-recursive on
+/// Watch only the `.git` key files for Source Control. Non-recursive on
 /// `.git` itself (catches `HEAD`, `index`, `MERGE_HEAD`, `ORIG_HEAD`,
 /// `rebase-merge/`, `rebase-apply/`, `packed-refs`), plus recursive watches on
 /// `refs/**` (branches/tags) and `logs/refs/**` (reflog). Cheap — never
@@ -177,7 +177,7 @@ fn event_to_items(event: &Event) -> Vec<FsChangeItem> {
     items
 }
 
-/// 0.4 — Coalesce + dedupe. "Latest event wins" per path so a burst of
+/// Coalesce + dedupe. "Latest event wins" per path so a burst of
 /// modify events for the same file collapses to a single notification.
 fn coalesce(items: Vec<FsChangeItem>) -> Vec<FsChangeItem> {
     let mut by_path: HashMap<String, FsChangeItem> = HashMap::new();
@@ -231,7 +231,7 @@ pub async fn start_fs_watch(
             return;
         }
 
-        // D.3 — .git key-file watcher (Source Control only).
+        // .git key-file watcher (Source Control only).
         let (gtx, grx) = mpsc::channel();
         let mut git_watcher = match notify::recommended_watcher(gtx) {
             Ok(w) => w,
@@ -267,7 +267,7 @@ pub async fn start_fs_watch(
                             }
 
                             // A newly created directory must be registered so
-                            // E.4 stays effective for fresh subtrees (E.6).
+                            // watch coverage stays effective for fresh subtrees.
                             if let EventKind::Create(_) = e.kind {
                                 if let Some(created) = e.paths.first() {
                                     let created = created.as_path();
@@ -312,7 +312,7 @@ pub async fn start_fs_watch(
                             let changes = coalesce(batch);
 
                             if !changes.is_empty() {
-                                // 5.1 fan-out (1): invalidate the Explorer cache.
+                                // Fan-out (1): invalidate the Explorer cache.
                                 for change in &changes {
                                     match change.kind.as_str() {
                                         "deleted" | "renamed" => {
@@ -342,17 +342,17 @@ pub async fn start_fs_watch(
                                 });
                                 let payload = FsChangePayload { changes, gitignore_changed };
 
-                                // 5.1 fan-out (2): notify the webview (tree + tabs).
+                                // Fan-out (2): notify the webview (tree + tabs).
                                 let _ = app_clone.emit("fs-change", &payload);
 
-                                // 5.1 fan-out (3): hint Git status refresh.
+                                // Fan-out (3): hint Git status refresh.
                                 // If gitignore changed, refresh immediately (no extra delay)
                                 // because gitignore changes directly affect git status.
                                 let _ = app_clone.emit("git-status-refresh", &payload);
                             }
                         } else {
                             // Only .git internals changed (e.g. external checkout):
-                            // Source Control refresh only, no Explorer churn (D.7.5).
+                            // Source Control refresh only, no Explorer churn.
                             let _ = app_clone.emit("git-status-refresh", &FsChangePayload { changes: vec![], gitignore_changed: false });
                         }
                     }

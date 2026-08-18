@@ -1,4 +1,17 @@
+/**
+ * Settings store.
+ *
+ * Two scopes are layered like VSCode:
+ *  - User (global): saved via `save_global_setting`, applies to every workspace.
+ *  - Workspace: saved via `save_workspace_setting`, overrides the user scope
+ *    for the current workspace only.
+ *
+ * Effective value = HARDCODED_DEFAULTS ← user ← workspace.
+ */
+
 import { invoke } from '@tauri-apps/api/core';
+import { SETTINGS_SAVE_DEBOUNCE_MS } from '../constants';
+import type { TerminalType } from '../constants';
 
 export interface AppSettings {
   theme: string;
@@ -16,6 +29,7 @@ export interface AppSettings {
   default_svg_view: 'image' | 'code' | 'split';
   default_md_view: 'preview' | 'code' | 'split';
   discord_presence: boolean;
+  default_shell: TerminalType;
 }
 
 export const HARDCODED_DEFAULTS: AppSettings = {
@@ -34,16 +48,19 @@ export const HARDCODED_DEFAULTS: AppSettings = {
   default_svg_view: 'image',
   default_md_view: 'preview',
   discord_presence: true,
+  default_shell: 'powershell',
 };
+
+export type SettingsScope = 'global' | 'workspace';
 
 class SettingsStore {
   effectiveSettings = $state<AppSettings>({ ...HARDCODED_DEFAULTS });
   rawGlobalSettings = $state<Partial<AppSettings>>({});
   rawWorkspaceSettings = $state<Partial<AppSettings>>({});
-  
+
   savePending = new Map<string, ReturnType<typeof setTimeout>>();
   workspaceId: string | null = null;
-  
+
   async loadAllSettings(workspaceId?: string) {
     this.workspaceId = workspaceId ?? null;
     try {
@@ -51,10 +68,10 @@ class SettingsStore {
         invoke<Partial<AppSettings>>('load_global_settings'),
         workspaceId ? invoke<Partial<AppSettings>>('load_workspace_settings', { workspaceId }) : Promise.resolve({}),
       ]);
-      
+
       this.applyLoadedSettings(globalSettings, workspaceSettings, workspaceId);
     } catch (e) {
-      console.error("Failed to load settings:", e);
+      console.error('Failed to load settings:', e);
     }
   }
 
@@ -70,7 +87,7 @@ class SettingsStore {
     this.rawWorkspaceSettings = workspace || {};
     this.effectiveSettings = this.resolveSettings(this.rawGlobalSettings, this.rawWorkspaceSettings);
   }
-  
+
   resolveSettings(global: Partial<AppSettings>, workspace: Partial<AppSettings>): AppSettings {
     const result = { ...HARDCODED_DEFAULTS };
     const apply = (map: Partial<AppSettings>) => {
@@ -88,8 +105,8 @@ class SettingsStore {
     apply(workspace);
     return result;
   }
-  
-  updateSetting(key: keyof AppSettings, value: any, scope: 'global' | 'workspace' = 'global') {
+
+  updateSetting(key: keyof AppSettings, value: any, scope: SettingsScope = 'global') {
     (this.effectiveSettings as any)[key] = value;
     if (scope === 'global') {
       (this.rawGlobalSettings as any)[key] = value;
@@ -99,18 +116,19 @@ class SettingsStore {
     this.scheduleSave(key as string, value, scope);
   }
 
-  // Module E — Layer 2 search exclude / include pattern lists.
+  // Search include/exclude pattern lists (Layer 2 of the search config).
   private updatePatternList(
     field: 'search_exclude' | 'search_include',
     pattern: string,
     remove: boolean,
-    scope: 'global' | 'workspace'
+    scope: SettingsScope
   ) {
     const p = pattern.trim();
     if (!p) return;
     const cur: string[] = (this.effectiveSettings as any)[field] ?? [];
-    const next = remove ? cur.filter((x) => x !== p) : cur.includes(p) ? cur : [...cur, p];
-    if (next === cur) return;
+    const changed = remove ? cur.includes(p) : !cur.includes(p);
+    if (!changed) return;
+    const next = remove ? cur.filter((x) => x !== p) : [...cur, p];
     (this.effectiveSettings as any)[field] = next;
     if (scope === 'workspace') (this.rawWorkspaceSettings as any)[field] = next;
     else (this.rawGlobalSettings as any)[field] = next;
@@ -129,12 +147,12 @@ class SettingsStore {
   removeSearchInclude(pattern: string) {
     this.updatePatternList('search_include', pattern, true, 'workspace');
   }
-  
-  scheduleSave(key: string, value: any, scope: 'global' | 'workspace') {
+
+  scheduleSave(key: string, value: any, scope: SettingsScope) {
     const existing = this.savePending.get(key);
     if (existing) clearTimeout(existing);
-    
-    this.savePending.set(key, setTimeout(async () => {
+
+    const timer = setTimeout(async () => {
       try {
         if (scope === 'global') {
           await invoke('save_global_setting', { key, value });
@@ -142,21 +160,32 @@ class SettingsStore {
           await invoke('save_workspace_setting', { workspaceId: this.workspaceId, key, value });
         }
       } catch (e) {
-        console.error("Failed to save setting:", e);
+        console.error('Failed to save setting:', e);
       }
-      this.savePending.delete(key);
-    }, 500));
+      // Only clear the marker if this is still the latest timer for the key.
+      if (this.savePending.get(key) === timer) {
+        this.savePending.delete(key);
+      }
+    }, SETTINGS_SAVE_DEBOUNCE_MS);
+
+    this.savePending.set(key, timer);
   }
-  
+
   async resetToGlobal(key: keyof AppSettings) {
     if (!this.workspaceId) return;
+    // Cancel any pending workspace save so it cannot overwrite the deletion.
+    const pending = this.savePending.get(key as string);
+    if (pending) {
+      clearTimeout(pending);
+      this.savePending.delete(key as string);
+    }
     try {
       await invoke('delete_workspace_setting', { workspaceId: this.workspaceId, key: key as string });
       delete (this.rawWorkspaceSettings as any)[key];
       const globalVal = (this.rawGlobalSettings as any)[key] ?? HARDCODED_DEFAULTS[key];
       (this.effectiveSettings as any)[key] = globalVal;
     } catch (e) {
-      console.error("Failed to reset setting:", e);
+      console.error('Failed to reset setting:', e);
     }
   }
 }

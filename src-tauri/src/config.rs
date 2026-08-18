@@ -75,7 +75,7 @@ pub async fn set_config(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     // Update in-memory state immediately (fast), persist to disk off the
-    // main thread so the handler never blocks the event loop (0.1).
+    // main thread so the handler never blocks the event loop.
     {
         let mut lock = state.0.lock().unwrap();
         *lock = config.clone();
@@ -87,7 +87,7 @@ pub async fn set_config(
         .map_err(|e| e.to_string())?
 }
 
-// ── Critical Config (Phase 0: Pre-render sync read) ──
+// ── Critical Config (Pre-render sync read) ──
 
 /// Pre-render critical config read synchronously from a small JSON file.
 /// NOT from SQLite — SQLite is too slow for pre-render.
@@ -167,7 +167,7 @@ pub async fn save_critical_config(
         let mut lock = state.0.lock().unwrap();
         *lock = config.clone();
     }
-    // Persist off the main thread (0.1).
+    // Persist off the main thread.
     tokio::task::spawn_blocking(move || save_critical_config_to_file(&app_handle, &config))
         .await
         .map_err(|e| e.to_string())?

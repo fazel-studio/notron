@@ -354,7 +354,7 @@ fn detect_language_from_ext(path: &str) -> &'static str {
     }
 }
 
-/// Shared ignore rules (5.2, Module E) — Layer 2 search/scan exclude.
+/// Shared ignore rules — Layer 2 search/scan exclude.
 fn is_ignored(path: &str) -> bool {
     crate::ignore_rules::is_search_excluded_path(Path::new(path))
 }

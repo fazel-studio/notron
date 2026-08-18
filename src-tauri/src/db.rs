@@ -61,7 +61,7 @@ pub struct SessionStateRow {
     pub editor_snapshots_json: Option<String>,
 }
 
-// IPC batch query types (Section 1.4 + 6.1)
+// IPC batch query types
 #[derive(Deserialize, Debug, Clone)]
 pub struct BatchOperation {
     pub op: String,
@@ -634,7 +634,7 @@ pub async fn delete_workspace_setting(workspace_id: String, key: String, state: 
 /// Effective user-configured ignore rules for a workspace: `search_exclude`
 /// and `search_include` (gitignore-style patterns; `search_include` entries are
 /// negated with `!` in the rendered ignore file). Global settings are merged
-/// first, workspace settings appended last so they win (Module E, E.3). Used
+/// first, workspace settings appended last so they win. Used
 /// by workspace-wide scans (Search, Quick Open) to build the Layer-2 app
 /// ignore file.
 #[derive(Debug, Clone, Default)]

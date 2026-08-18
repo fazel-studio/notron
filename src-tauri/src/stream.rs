@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::collections::HashMap;
 
-/// Unified IPC Channel convention (5.3).
+/// Unified IPC Channel convention.
 ///
 /// Every streaming command (Explorer directory scans, Search results, Git
 /// progress) sends payloads of this single shape so the frontend can consume

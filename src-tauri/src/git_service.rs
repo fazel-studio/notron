@@ -1,30 +1,28 @@
-// ── Module D — Source Control (Git Integration) ─────────────────────────────
+// ── Source Control (Git Integration) ─────────────────────────────────────────
 //
-// Implements modules/04-Notron-Module-SourceControl.md:
+// Git is integrated by shelling out to the git CLI (credential-helper
+// compatibility + always-latest features) instead of libgit2. Key design
+// points:
 //
-//   D.1 — Tiered Git detection service (PATH → per-OS common locations →
-//         Windows registry / macOS xcode-select → manual override). Results are
-//         cached in memory AND persisted to disk, so detection runs once at
-//         startup, not on every command. A cached result is only re-detected
-//         when a spawned git process reports NotFound (stale path) or the user
-//         explicitly re-detects.
-//   D.2 — Explicit state machine: GitAvailability (device-wide) → RepoState
-//         (per workspace). Repo status is derived from a SINGLE
-//         `git status --porcelain=v2 --branch -z -M` invocation (branch,
-//         ahead/behind and every file state in one exec). History (git log)
-//         stays lazy & paged.
-//   D.4 — All operations are async, network ops stream real git progress over
-//         a tauri Channel and can be truly cancelled (taskkill/kill on the
-//         spawned child pid). Timeout guards every network operation.
-//   D.7 — DecorationMap is a first-class model keyed by ABSOLUTE path
-//         (independent from the Explorer tree), distributed to the frontend as
-//         a DELTA (changed/removed), with folder rollups (Conflict > Deleted >
-//         Added/Untracked > Modified > Renamed) and rename/copy (R/C) handled
-//         as a single record instead of Delete + Untracked.
-//
-// Decision (D.5): keep shelling out to the git binary (credential-helper
-// compatibility + always-latest features) instead of libgit2. D.1 (PATH
-// detection) is the root fix for "Git Not Found" — not the library choice.
+//   * Tiered Git detection: PATH → per-OS common locations → Windows registry /
+//     macOS xcode-select → manual override. Results are cached in memory AND
+//     persisted to disk, so detection runs once at startup, not on every
+//     command. A cached result is only re-detected when a spawned git process
+//     reports NotFound (stale path) or the user explicitly re-detects a PATH.
+//     This is the root fix for "Git Not Found" — not the library choice.
+//   * Explicit state machine: GitAvailability (device-wide) → RepoState
+//     (per workspace). Repo status is derived from a SINGLE
+//     `git status --porcelain=v2 --branch -z -M` invocation (branch,
+//     ahead/behind and every file state in one exec). History (git log)
+//     stays lazy & paged.
+//   * All operations are async; network ops stream real git progress over a
+//     tauri Channel and can be truly cancelled (taskkill/kill on the spawned
+//     child pid). A timeout guards every network operation.
+//   * DecorationMap is a first-class model keyed by ABSOLUTE path (independent
+//     from the Explorer tree), distributed to the frontend as a DELTA
+//     (changed/removed), with folder rollups (Conflict > Deleted >
+//     Added/Untracked > Modified > Renamed) and rename/copy (R/C) handled as a
+//     single record instead of Delete + Untracked.
 
 use std::collections::HashMap;
 use std::io::ErrorKind as IoErrorKind;
@@ -38,7 +36,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-// ── D.1 — Git Availability (device-wide, cached & persisted) ────────────────
+// ── Git Availability (device-wide, cached & persisted) ────────────────
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GitAvailability {
@@ -93,7 +91,7 @@ fn save_persisted(app: &AppHandle, s: &PersistedGitState) {
     }
 }
 
-// ── D.2 — Repo state (per workspace) ────────────────────────────────────────
+// ── Repo state (per workspace) ────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GitFileStatus {
@@ -153,7 +151,7 @@ impl RepoState {
     }
 }
 
-// ── D.7 — Decoration model (keyed by absolute path, separate from the tree) ─
+// ── Decoration model (keyed by absolute path, separate from the tree) ─
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GitDecoration {
@@ -164,7 +162,7 @@ pub struct GitDecoration {
     pub worktree_code: Option<char>,
     #[serde(default)]
     pub renamed_from: Option<String>,
-    /// True when this entry is an aggregated folder badge (D.7.3), not a file.
+    /// True when this entry is an aggregated folder badge, not a file.
     #[serde(default)]
     pub is_rollup: bool,
 }
@@ -181,7 +179,7 @@ pub struct GitState {
     pub availability: Mutex<GitAvailability>,
     pub manual_path: Mutex<Option<String>>,
     pub decorations: Mutex<HashMap<String, GitDecoration>>,
-    /// op_id → child pid for running network operations (D.4 cancel).
+    /// op_id → child pid for running network operations.
     pub ops: Mutex<HashMap<String, u32>>,
 }
 
@@ -212,7 +210,7 @@ impl GitState {
         Some(avail.path.clone().unwrap_or_else(|| "git".to_string()))
     }
 
-    /// D.1 (4a) — the configured git binary no longer spawns; forget the cache
+    /// The configured git binary no longer spawns; forget the cache
     /// so the next probe re-detects instead of failing forever.
     fn invalidate(&self) {
         let mut avail = self.availability.lock().unwrap();
@@ -270,7 +268,7 @@ async fn run_git_raw(
 }
 
 /// Run a git command; on success return stdout text (lossy). On spawn failure
-/// with ErrorKind::NotFound, invalidate the cached availability (D.1).
+/// with ErrorKind::NotFound, invalidate the cached availability.
 async fn run_git(
     git: &str,
     args: &[&str],
@@ -290,7 +288,7 @@ async fn run_git(
     }
 }
 
-// ── D.1 — Tiered detection ──────────────────────────────────────────────────
+// ── Tiered detection ──────────────────────────────────────────────────
 
 const WINDOWS_COMMON: &[&str] = &[
     "C:\\Program Files\\Git\\cmd\\git.exe",
@@ -411,7 +409,7 @@ async fn git_version(path: &str) -> Option<String> {
     }
 }
 
-/// D.1 — run the full tiered detection. `manual` (if Some) is tried FIRST and,
+/// Run the full tiered detection. `manual` (if Some) is tried FIRST and,
 /// when valid, overrides everything else.
 pub(crate) async fn detect_git_async(manual: Option<&str>) -> GitAvailability {
     if let Some(mp) = manual {
@@ -451,7 +449,7 @@ pub(crate) async fn detect_git_async(manual: Option<&str>) -> GitAvailability {
     GitAvailability::not_found()
 }
 
-/// D.1 — macOS "fix-path" pattern: sync the app PATH with the interactive
+/// macOS "fix-path" pattern: sync the app PATH with the interactive
 /// shell so GUI-launched apps see the same tools as the terminal. Called once
 /// at startup (before any detection).
 #[cfg(target_os = "macos")]
@@ -494,7 +492,7 @@ pub async fn get_git_availability(
     Ok(detected)
 }
 
-/// Force a full re-detection (D.1 item 4b — user clicks "Re-detect Git").
+/// Force a full re-detection (user clicks "Re-detect Git").
 #[tauri::command]
 pub async fn re_detect_git(
     app: AppHandle,
@@ -508,7 +506,7 @@ pub async fn re_detect_git(
 }
 
 /// Set (or clear) the manual git executable path — highest precedence override.
-/// Persisted and immediately re-detected (D.1 item 3).
+/// Persisted and immediately re-detected.
 #[tauri::command]
 pub async fn set_git_manual_path(
     app: AppHandle,
@@ -536,7 +534,7 @@ pub async fn check_git_availability(
     get_git_availability(app, state).await
 }
 
-// ── D.2 — Repo state + D.7 decorations (single porcelain v2 exec) ───────────
+// ── Repo state + decorations (single porcelain v2 exec) ───────────
 
 fn abs_path(cwd: &str, rel: &str) -> String {
     let rel = rel.trim_end_matches('/');
@@ -548,7 +546,7 @@ fn abs_path(cwd: &str, rel: &str) -> String {
     Path::new(cwd).join(rel).to_string_lossy().into_owned()
 }
 
-/// Priority used for folder rollups (D.7.3): exact VSCode order:
+/// Priority used for folder rollups: exact VSCode order:
 /// Conflict(!) > Deleted(D) > Added(A, staged new) > Untracked(U) > Modified(M) > Renamed(R) > Copied(C) > other.
 /// This matches VS Code's scm/git decoration provider priority exactly.
 fn code_priority(code: &str) -> u8 {
@@ -564,7 +562,7 @@ fn code_priority(code: &str) -> u8 {
     }
 }
 
-/// D.7.3 — For every changed file, mark every ancestor folder (relative to the
+/// For every changed file, mark every ancestor folder (relative to the
 /// workspace root) with the highest-priority decoration present underneath it.
 /// Folders keep a single badge (most significant code), matching VS Code exactly.
 fn add_folder_rollups(decorations: &mut HashMap<String, GitDecoration>) {
@@ -623,7 +621,7 @@ fn add_folder_rollups(decorations: &mut HashMap<String, GitDecoration>) {
 }
 
 /// Insert one porcelain entry into the repo state + decoration map. `orig_path`
-/// is present only for rename/copy (R/C) records (D.7.4).
+/// is present only for rename/copy (R/C) records.
 #[allow(clippy::too_many_arguments)]
 fn add_file_entry(
     repo: &mut RepoState,
@@ -677,14 +675,14 @@ fn add_file_entry(
         repo.unstaged.push(us);
     }
 
-    // D.7.4 — a rename/copy is ONE record; drop any decoration that may still
+    // A rename/copy is ONE record; drop any decoration that may still
     // linger on the old path so the Explorer never shows a ghost badge.
     if let Some(old) = orig_path {
         rel_decorations.remove(old.trim_end_matches('/'));
     }
 }
 
-/// D.7.2 — compute the delta against the previous DecorationMap, store the new
+/// Compute the delta against the previous DecorationMap, store the new
 /// map, and return the delta to be emitted.
 fn compute_delta(state: &GitState, new_map: HashMap<String, GitDecoration>) -> DecorationDelta {
     let mut old = state.decorations.lock().unwrap();
@@ -724,7 +722,7 @@ pub async fn get_repo_state(
         return Err("Git is not available".to_string());
     };
 
-    // D.2 — cheap gate before any heavy work.
+    // Cheap gate before any heavy work.
     let inside = match run_git_raw(&git, &["rev-parse", "--is-inside-work-tree"], Some(&cwd), Some(&app)).await {
         Ok(out) => out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true",
         Err(e) => {
@@ -741,7 +739,7 @@ pub async fn get_repo_state(
         return Ok(RepoState::not_a_repo());
     }
 
-    // D.2 + D.7.1 — ONE exec for branch + ahead/behind + every file state.
+    // ONE exec for branch + ahead/behind + every file state.
     // -M enables rename detection (porcelain v2 otherwise reports R as A+D).
     let out = match run_git_raw(&git, &["status", "--porcelain=v2", "--branch", "-z", "-M"], Some(&cwd), Some(&app)).await {
         Ok(out) => out,
@@ -865,7 +863,7 @@ pub async fn get_repo_state(
         i += 1;
     }
 
-    // D.7.3 — folder rollups computed in Rust (cheap, data already in memory).
+    // Folder rollups computed in Rust (cheap, data already in memory).
     add_folder_rollups(&mut rel_decorations);
 
     // Convert to absolute-path keys so the Explorer tree / tabs can join on
@@ -875,14 +873,14 @@ pub async fn get_repo_state(
         .map(|(rel, dec)| (abs_path(&cwd, &rel), dec))
         .collect();
 
-    // D.7.2 — emit DELTA only (changed/removed), never the whole map.
+    // Emit DELTA only (changed/removed), never the whole map.
     let delta = compute_delta(&state, abs_map);
     let _ = app.emit("git-decorations-changed", delta);
 
     Ok(repo)
 }
 
-// ── D.4 — Operations: async, cancellable, with streamed progress ────────────
+// ── Operations (async, cancellable, streamed progress) ────────────
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GitProgress {
@@ -902,7 +900,7 @@ fn parse_progress(line: &str) -> Option<u32> {
 
 /// Run a git operation. When a progress channel is supplied, git's real
 /// stderr progress (e.g. "Receiving objects:  42%") is parsed and streamed to
-/// the frontend (D.4). The child pid is registered so `git_cancel_op` can kill
+/// the frontend. The child pid is registered so `git_cancel_op` can kill
 /// the actual process, and a timeout guards network operations.
 #[allow(clippy::too_many_arguments)]
 async fn run_streaming(
@@ -1003,7 +1001,7 @@ async fn run_streaming(
     result
 }
 
-/// Cancel a running operation by really killing the child process tree (D.4).
+/// Cancel a running operation by really killing the child process tree.
 #[tauri::command]
 pub async fn git_cancel_op(op_id: String, state: State<'_, GitState>) -> Result<(), String> {
     let pid = state.ops.lock().unwrap().remove(&op_id);
@@ -1132,7 +1130,7 @@ pub async fn git_clone(
     run_streaming(&git, &["clone", "--progress", &url, &dest], &parent, "clone", &op_id, &progress, &state).await
 }
 
-// ── D.2(4) — History: lazy & paged ──────────────────────────────────────────
+// ── History: lazy & paged ──────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GitLogEntry {

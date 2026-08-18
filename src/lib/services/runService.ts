@@ -215,7 +215,7 @@ async function detectConfigurations(workspaceFolder: string, activeFile: string 
     }
   }
 
-  // ── §F.6 — Entry Point Resolution Engine (manifest → framework → heuristic).
+  // ── Entry point resolution engine (manifest → framework → heuristic).
   // Replaces the old hardcoded extension check: reads package.json / pyproject
   // BEFORE guessing filenames, so "src/index.js" is honored over a root one.
   const activeDir = activeFile ? dirname(activeFile) : undefined;
@@ -223,7 +223,7 @@ async function detectConfigurations(workspaceFolder: string, activeFile: string 
   const resolvedConfigs = resolved.map(entryToRunConfig);
 
   // For Python we can pin the venv interpreter for the *manifest* entries so
-  // the program runs in the same environment the developer uses (§F.6.3#4).
+  // the program runs in the same environment the developer uses.
   const pythonEntries = resolved.filter(e => e.type === 'python' && e.program);
   if (pythonEntries.length > 0) {
     const py = await resolvePythonInterpreter(workspaceFolder);
@@ -234,7 +234,7 @@ async function detectConfigurations(workspaceFolder: string, activeFile: string 
     }
   }
 
-  // ── §F.6.1#5 — active file fallback (only for explicit "Current File" runs).
+  // ── Active file fallback (only for explicit "Current File" runs).
   // Collected separately and appended last — it is the weakest tier.
   const currentFileConfigs: RunConfiguration[] = [];
   if (activeFile) {
@@ -282,7 +282,7 @@ async function detectConfigurations(workspaceFolder: string, activeFile: string 
     }
   }
 
-  // §F.6.1 — confidence order: launch.json (explicit) → engine (manifest /
+  // Confidence order: launch.json (explicit) → engine (manifest /
   // framework / heuristic) → "Current File" fallback. Dedup by (type + program)
   // while never collapsing framework dev-servers that have no program file.
   const ordered = [...configs, ...resolvedConfigs, ...currentFileConfigs];
@@ -340,7 +340,7 @@ export async function createLaunchJsonFile() {
 }
 
 /**
- * §F.6.5 — "Save as launch configuration": lift an auto-detected entry point
+ * "Save as launch configuration": lift an auto-detected entry point
  * into an explicit launch.json entry so the heuristic can never be re-guessed.
  */
 export async function saveResolvedEntryAsConfig(entry: ResolvedEntry) {
@@ -412,7 +412,7 @@ function buildTerminalCommand(config: RunConfiguration) {
     return { unsupported: `Attach request is not supported yet for "${resolved.name}".` };
   }
 
-  // §F.6 framework dev-server entries carry a `command` hint the resolver
+  // Framework dev-server entries carry a `command` hint the resolver
   // produced (e.g. "next dev", "vite", "python manage.py runserver"). Their
   // `program` may be empty — run the command directly in the terminal.
   if (config.command) {
@@ -453,7 +453,7 @@ function buildTerminalCommand(config: RunConfiguration) {
     };
   }
 
-  // §F.5.2 — Go: `go run <file>`
+  // Go: `go run <file>`
   if (resolved.type === 'go') {
     if (!resolved.program) {
       return { unsupported: `Configuration "${resolved.name}" does not define a program.` };
@@ -465,7 +465,7 @@ function buildTerminalCommand(config: RunConfiguration) {
     };
   }
 
-  // §F.5.2 — Ruby: `ruby <file>`
+  // Ruby: `ruby <file>`
   if (resolved.type === 'ruby' || resolved.type === 'rdbg') {
     if (!resolved.program) {
       return { unsupported: `Configuration "${resolved.name}" does not define a program.` };

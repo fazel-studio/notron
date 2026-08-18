@@ -1,5 +1,5 @@
 /**
- * stream.ts — 5.3 StreamedBatch Channel convention
+ * stream.ts — StreamedBatch channel convention
  *
  * The backend streams long-running results (directory scans, workspace
  * searches) over a Tauri `Channel` instead of blocking on one giant

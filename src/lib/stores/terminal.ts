@@ -1,6 +1,19 @@
 import { writable } from 'svelte/store';
+import {
+  DEFAULT_TERMINAL_HEIGHT,
+  MIN_TERMINAL_HEIGHT,
+  TERMINAL_BOTTOM_MARGIN,
+  MAX_OUTPUT_LOGS,
+  TERMINAL_TYPES,
+  SHELL_DISPLAY_NAMES,
+  type TerminalType,
+  type BottomPanelName,
+  generateId,
+} from '../constants';
+import { settingsStore } from './settings.svelte';
 
-export type TerminalType = 'powershell' | 'cmd';
+export type { TerminalType };
+export { TERMINAL_TYPES };
 
 export interface TerminalInstance {
   id: string;
@@ -17,117 +30,157 @@ interface TerminalState {
   isMaximized: boolean;
   height: number;
   isResizing: boolean;
-  activePanel: 'problems' | 'output' | 'terminal';
+  activePanel: BottomPanelName;
   outputLogs: string[];
+}
+
+const HEIGHT_KEY = 'terminal_height';
+const VISIBLE_KEY = 'terminal_isVisible';
+const MAXIMIZED_KEY = 'terminal_isMaximized';
+
+function readStorageNumber(key: string, fallback: number): number {
+  if (typeof window === 'undefined') return fallback;
+  const value = parseInt(localStorage.getItem(key) || '', 10);
+  return Number.isNaN(value) ? fallback : value;
+}
+
+function readStorageFlag(key: string): boolean {
+  if (typeof window === 'undefined') return false;
+  return localStorage.getItem(key) === 'true';
+}
+
+function clampHeight(height: number): number {
+  if (Number.isNaN(height)) return DEFAULT_TERMINAL_HEIGHT;
+  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 600;
+  const max = Math.max(MIN_TERMINAL_HEIGHT, viewportHeight - TERMINAL_BOTTOM_MARGIN);
+  return Math.max(MIN_TERMINAL_HEIGHT, Math.min(max, height));
+}
+
+/** VSCode-style timestamp: YYYY-MM-DD HH:mm:ss.SSS */
+function formatLogTimestamp(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3, '0')}`;
 }
 
 function createTerminalStore() {
   const state = writable<TerminalState>({
     terminals: [],
     activeTerminalId: null,
-    isVisible: typeof window !== 'undefined' ? localStorage.getItem('terminal_isVisible') === 'true' : false,
-    isMaximized: typeof window !== 'undefined' ? localStorage.getItem('terminal_isMaximized') === 'true' : false,
-    height: typeof window !== 'undefined' ? parseInt(localStorage.getItem('terminal_height') || '250', 10) : 250,
+    isVisible: readStorageFlag(VISIBLE_KEY),
+    isMaximized: readStorageFlag(MAXIMIZED_KEY),
+    height: readStorageNumber(HEIGHT_KEY, DEFAULT_TERMINAL_HEIGHT),
     isResizing: false,
     activePanel: 'terminal',
-    outputLogs: []
+    outputLogs: [],
   });
 
   function update(fn: (s: TerminalState) => Partial<TerminalState>) {
-    state.update(s => ({ ...s, ...fn(s) }));
+    state.update((s) => ({ ...s, ...fn(s) }));
   }
 
   return {
     subscribe: state.subscribe,
-    newTerminal: (type: TerminalType = 'powershell', cwd: string = '', options?: { initialCommand?: string; name?: string }) => {
-      state.update(s => {
-        const id = `term-${Date.now()}`;
-        const name = options?.name || (type === 'powershell' ? 'PowerShell' : 'Command Prompt');
-        const newTerm = { id, name: `${name} ${s.terminals.length + 1}`, type, cwd, initialCommand: options?.initialCommand };
-        localStorage.setItem('terminal_isVisible', 'true');
+    newTerminal: (type: TerminalType = settingsStore.effectiveSettings.default_shell, cwd: string = '', options?: { initialCommand?: string; name?: string }) => {
+      state.update((s) => {
+        // Guard against a stale/invalid value persisted in settings.
+        const safeType = TERMINAL_TYPES.includes(type) ? type : TERMINAL_TYPES[0];
+        const id = generateId('term');
+        const name = options?.name || SHELL_DISPLAY_NAMES[safeType];
+        const newTerm = { id, name: `${name} ${s.terminals.length + 1}`, type: safeType, cwd, initialCommand: options?.initialCommand };
+        localStorage.setItem(VISIBLE_KEY, 'true');
         return {
           ...s,
           terminals: [...s.terminals, newTerm],
           activeTerminalId: id,
-          isVisible: true
+          isVisible: true,
         };
       });
     },
     closeTerminal: (id: string) => {
-      state.update(s => {
-        const filtered = s.terminals.filter(t => t.id !== id);
+      state.update((s) => {
+        const filtered = s.terminals.filter((t) => t.id !== id);
         let activeId = s.activeTerminalId;
         if (activeId === id) {
           activeId = filtered.length > 0 ? filtered[0].id : null;
         }
         const v = filtered.length > 0 ? s.isVisible : false;
-        if (s.isVisible !== v) localStorage.setItem('terminal_isVisible', String(v));
+        if (s.isVisible !== v) localStorage.setItem(VISIBLE_KEY, String(v));
         return {
           ...s,
           terminals: filtered,
           activeTerminalId: activeId,
-          isVisible: v
+          isVisible: v,
         };
       });
     },
     consumeInitialCommand: (id: string) => {
-      state.update(s => ({
+      state.update((s) => ({
         ...s,
-        terminals: s.terminals.map(t => t.id === id ? { ...t, initialCommand: undefined } : t)
+        terminals: s.terminals.map((t) => (t.id === id ? { ...t, initialCommand: undefined } : t)),
       }));
     },
     setTerminals: (terminals: TerminalInstance[], activeTerminalId: string | null) => update(() => ({ terminals, activeTerminalId })),
     setActive: (id: string) => update(() => ({ activeTerminalId: id })),
-    setActivePanel: (panel: 'problems' | 'output' | 'terminal') => {
-      state.update(s => {
-        localStorage.setItem('terminal_isVisible', 'true');
+    setActivePanel: (panel: BottomPanelName) => {
+      state.update((s) => {
+        localStorage.setItem(VISIBLE_KEY, 'true');
         return { ...s, activePanel: panel, isVisible: true };
       });
     },
-    addOutputLog: (log: string, level: string = 'info') => update(s => {
-      const now = new Date();
-      // Format: YYYY-MM-DD HH:mm:ss.SSS
-      const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}.${String(now.getMilliseconds()).padStart(3, '0')}`;
-      return { outputLogs: [...s.outputLogs, `${ts} [${level}] ${log}`] };
-    }),
+    addOutputLog: (log: string, level: string = 'info') =>
+      update((s) => {
+        const entry = `${formatLogTimestamp(new Date())} [${level}] ${log}`;
+        const outputLogs = [...s.outputLogs, entry];
+        if (outputLogs.length > MAX_OUTPUT_LOGS) {
+          outputLogs.splice(0, outputLogs.length - MAX_OUTPUT_LOGS);
+        }
+        return { outputLogs };
+      }),
     clearOutput: () => update(() => ({ outputLogs: [] })),
     setResizing: (val: boolean) => update(() => ({ isResizing: val })),
-    toggleVisibility: () => state.update(s => {
-      const v = !s.isVisible;
-      localStorage.setItem('terminal_isVisible', String(v));
-      return { ...s, isVisible: v };
-    }),
-    setVisibility: (visible: boolean) => update(() => {
-      localStorage.setItem('terminal_isVisible', String(visible));
-      return { isVisible: visible };
-    }),
-    toggleMaximize: () => state.update(s => {
-      const v = !s.isMaximized;
-      localStorage.setItem('terminal_isMaximized', String(v));
-      return { ...s, isMaximized: v };
-    }),
-    setMaximize: (val: boolean) => update(() => {
-      localStorage.setItem('terminal_isMaximized', String(val));
-      return { isMaximized: val };
-    }),
-    setHeight: (h: number) => update(() => {
-      localStorage.setItem('terminal_height', String(h));
-      return { height: h };
-    }),
+    toggleVisibility: () =>
+      state.update((s) => {
+        const v = !s.isVisible;
+        localStorage.setItem(VISIBLE_KEY, String(v));
+        return { ...s, isVisible: v };
+      }),
+    setVisibility: (visible: boolean) =>
+      update(() => {
+        localStorage.setItem(VISIBLE_KEY, String(visible));
+        return { isVisible: visible };
+      }),
+    toggleMaximize: () =>
+      state.update((s) => {
+        const v = !s.isMaximized;
+        localStorage.setItem(MAXIMIZED_KEY, String(v));
+        return { ...s, isMaximized: v };
+      }),
+    setMaximize: (val: boolean) =>
+      update(() => {
+        localStorage.setItem(MAXIMIZED_KEY, String(val));
+        return { isMaximized: val };
+      }),
+    setHeight: (h: number) =>
+      update(() => {
+        const height = clampHeight(h);
+        localStorage.setItem(HEIGHT_KEY, String(height));
+        return { height };
+      }),
     getSnapshot: (): TerminalState => {
       let val: TerminalState = null!;
-      state.subscribe(v => val = v)();
+      state.subscribe((v) => (val = v))();
       return val;
     },
     initFromState: (savedState: TerminalState) => {
-      state.set(savedState);
+      state.set({ ...savedState, height: clampHeight(savedState.height) });
     },
     initFromStorage: () => {
-      const isVisible = localStorage.getItem('terminal_isVisible') === 'true';
-      const isMaximized = localStorage.getItem('terminal_isMaximized') === 'true';
-      const height = parseInt(localStorage.getItem('terminal_height') || '250', 10);
-      update(() => ({ isVisible, isMaximized, height }));
-    }
+      update(() => ({
+        isVisible: readStorageFlag(VISIBLE_KEY),
+        isMaximized: readStorageFlag(MAXIMIZED_KEY),
+        height: readStorageNumber(HEIGHT_KEY, DEFAULT_TERMINAL_HEIGHT),
+      }));
+    },
   };
 }
 

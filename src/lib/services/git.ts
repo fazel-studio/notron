@@ -1,6 +1,6 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 
-// ── Module D types (mirror src-tauri/src/git_service.rs) ─────────────────────
+// Types mirror src-tauri/src/git_service.rs
 
 export interface GitFileStatus {
   path: string;
@@ -52,13 +52,20 @@ export interface GitLogEntry {
   stats: string;
 }
 
-// ── Detection (D.1) ──────────────────────────────────────────────────────────
+// ── Detection ────────────────────────────────────────────────────────────────
+
+export const UNKNOWN_AVAILABILITY: GitAvailability = {
+  status: 'Unknown',
+  path: null,
+  version: null,
+  source: '',
+};
 
 export async function getGitAvailability(): Promise<GitAvailability> {
   try {
     return await invoke<GitAvailability>('get_git_availability');
   } catch {
-    return { status: 'Unknown', path: null, version: null, source: '' };
+    return UNKNOWN_AVAILABILITY;
   }
 }
 
@@ -79,7 +86,7 @@ export async function setGitManualPath(path: string): Promise<GitAvailability> {
   return await invoke<GitAvailability>('set_git_manual_path', { path });
 }
 
-// ── Repo state (D.2) ─────────────────────────────────────────────────────────
+// ── Repo state ───────────────────────────────────────────────────────────────
 
 export async function getRepoState(cwd: string): Promise<RepoState> {
   return await invoke<RepoState>('get_repo_state', { cwd });
@@ -110,7 +117,7 @@ export async function getGitStatus(cwd: string): Promise<GitStatusResult> {
   }
 }
 
-// ── Operations (D.4) ─────────────────────────────────────────────────────────
+// ── Operations ───────────────────────────────────────────────────────────────
 
 export async function initRepo(cwd: string): Promise<void> {
   await invoke('git_init', { cwd });

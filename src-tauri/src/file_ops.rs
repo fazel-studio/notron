@@ -234,7 +234,7 @@ pub async fn read_directory_batch(
 ) -> Result<Vec<DirBatchEntry>, String> {
     let show_dot = show_dot_files.unwrap_or(false);
 
-    // All reads go through the shared cache (load-or-cache, 0.2). Requests
+    // All reads go through the shared cache (load-or-cache). Requests
     // are issued concurrently; failed dirs are skipped silently.
     let mut handles = Vec::with_capacity(paths.len());
     for path in paths {
@@ -271,7 +271,7 @@ pub async fn save_file(
     let enc = Encoding::for_label(enc_str.as_bytes()).unwrap_or(encoding_rs::UTF_8);
     let (cow, _, _) = enc.encode(&content);
     fs::write(&path, cow).await.map_err(|e| e.to_string())?;
-    // 0.2 — drop the stale entry so the next read reflects the write.
+    // Drop the stale entry so the next read reflects the write.
     cache.invalidate_parent(&path);
     Ok(())
 }
@@ -313,7 +313,7 @@ pub fn resolve_symlink_safe(path: &Path, workspace_root: &Path) -> Option<std::p
 /// Returns a FileNode with immediate children only. Children of subdirectories
 /// are not populated (they use empty Vec to save space).
 ///
-/// Served from the Rust WorkspaceCache (0.2): cache hit is instant, a miss
+/// Served from the Rust WorkspaceCache: cache hit is instant, a miss
 /// scans the FS off the main thread and warms the cache.
 #[tauri::command]
 pub async fn read_directory(
@@ -345,7 +345,7 @@ pub async fn read_directory_flat(
     cache: State<'_, WorkspaceCache>,
 ) -> Result<Vec<FileNode>, String> {
     let show_dot = show_dot_files.unwrap_or(false);
-    // Served from the shared cache like the tree reads (0.2).
+    // Served from the shared cache like the tree reads.
     cache.get_children(&path, show_dot).await
 }
 
@@ -406,7 +406,7 @@ pub async fn create_directory(path: String, cache: State<'_, WorkspaceCache>, ap
     Ok(())
 }
 
-/// B.5 — Move a file/dir to a new location.
+/// Move a file/dir to a new location.
 ///
 /// `std::fs::rename` is instant when source & destination live on the same
 /// filesystem (true move, not copy+delete). When the OS reports a cross-device
@@ -659,7 +659,7 @@ pub async fn detect_language(path: String) -> String {
 /// List all files in the workspace
 /// Optionally cap the number of returned files to bound IPC payload + memory.
 /// Applies the workspace's Layer-2 ignore rules (search.exclude / search.include)
-/// so Quick Open respects the user's Search Exclude settings (Module E, E.3).
+/// so Quick Open respects the user's Search Exclude settings.
 #[tauri::command]
 pub async fn list_all_files(
     path: String,
@@ -694,7 +694,7 @@ pub async fn list_all_files(
     .map_err(|e| e.to_string())?
 }
 
-/// Batch read multiple files in one IPC call (Phase 4: restore other tabs)
+/// Batch read multiple files in one IPC call (restores other tabs at startup)
 #[tauri::command]
 pub async fn batch_read_files(
     paths: Vec<String>,

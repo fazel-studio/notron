@@ -1,11 +1,11 @@
-// ── Module C — Global Search & Safe Replace All ─────────────────────────────
+// ── Global Search & Safe Replace All ─────────────────────────────────────────
 //
 // Search is backed by the `grep` crate facade (the same library ripgrep is built
 // on) instead of a hand-rolled scan. Results stream over a `tauri::ipc::Channel`
-// in the `StreamedBatch<T>` shape (5.3) so the frontend can render batches as
+// in the `StreamedBatch<T>` shape so the frontend can render batches as
 // they arrive and never block on a full-workspace scan.
 //
-// Replace All follows the safe protocol from module spec C.4:
+// Replace All follows a safe protocol:
 //   * preview first (the frontend shows every file/match, with per-file exclude),
 //   * re-scan each file at commit time with the SAME regex (offsets from the
 //     earlier search are never trusted — the file may have changed),
@@ -245,7 +245,7 @@ pub async fn search_files_stream(
     let max_file_size = max_file_size.unwrap_or(5 * 1024 * 1024);
     let registry_clone = registry.inner().active_searches.clone();
 
-    // Module E — Layer 2: render user settings (search.exclude / search.include)
+    // Layer 2: render user settings (search.exclude / search.include)
     // into the app ignore file lines that the walker applies at lowest precedence.
     let user_ignore = crate::db::get_ignore_settings(db.inner(), &workspace_path).await?;
     let app_ignore_lines = ignore_rules::effective_ignore_lines(
@@ -406,7 +406,7 @@ pub async fn replace_all_files(
             let _ = channel.send(StreamedBatch::finish(batch, meta));
         });
 
-        // Bounded concurrency (C.4.4): a dedicated 8-thread pool keeps disk I/O
+        // Bounded concurrency: a dedicated 8-thread pool keeps disk I/O
         // and memory usage predictable on huge workspaces.
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(8)
@@ -509,8 +509,8 @@ fn replace_one_file(path: &str, re: &regex::Regex, opts: &ReplaceOptions) -> Rep
     let (new_text, replaced_count) = apply_regex_replace(&normalized, re, opts);
 
     if replaced_count == 0 {
-        // File changed since the search — it no longer matches. Per C.4.2,
-        // report and skip instead of blindly writing stale replacements.
+        // File changed since the search — it no longer matches. Report and
+        // skip instead of blindly writing stale replacements.
         return fail("skipped", "file no longer matches the search".to_string());
     }
 
